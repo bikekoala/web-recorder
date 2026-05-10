@@ -31,6 +31,16 @@ A new tech choice should always become an adapter, never a `core/` import.
 
 One end-to-end recording attempt: `start() → goto → act/observe/scroll/wait* → stop()`. Owns one Browser + BrowserContext + Page + recordVideo file. Always cleaned up in `finally`.
 
+## BlockerPrelude
+
+A pre-recording phase that probes the page for visual blockers (cookie consent, paused-video play overlays, login modals) and dismisses them by clicking — BEFORE the recording window opens. Lives in `src/core/blocker-prelude.ts`. Bounded by `maxIterations` and `maxMs`. Decisions written to the action log use NEGATIVE `decisionId`s so they never collide with the Director's positive numbering.
+
+Distinct from the Director's own blocker awareness (§0020 SYSTEM_PROMPT clause), which handles blockers that appear DURING recording. The prelude handles "blockers visible at page-load time"; the Director handles "blockers that appear later". See `docs/decisions.md` §0021.
+
+## Page diagnostic
+
+A coarse page-health snapshot (`url`, `title`, `interactiveElementCount`, `visibleHeadings`, `blockerSignals`) returned by `IPageSession.pageDiagnostic()`. Same shape as the body of the `page_diagnostic` ActionLogEntry variant, minus `t`/`scrollY`/`viewport` which are filled in by the caller when (and if) the snapshot is logged. Heuristic-only — false positives/negatives are expected.
+
 ## Architecture A / B / C
 
 Three competing recording approaches considered in [`decisions.md`](./decisions.md) §0001:

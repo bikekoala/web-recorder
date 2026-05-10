@@ -5,6 +5,7 @@ import { logger as rootLogger } from '../infra/logger.js';
 import type { IPageSession } from '../ports/page-session.js';
 import type { IPlanner } from '../ports/planner.js';
 import type { DirectorReport, IDirector } from '../ports/director.js';
+import type { BlockerPrelude, BlockerPreludeReport } from './blocker-prelude.js';
 
 /**
  * Orchestrates a single recording job end-to-end.
@@ -21,10 +22,17 @@ import type { DirectorReport, IDirector } from '../ports/director.js';
  *      - planner.brief(...)           ONE LLM call → DirectorBriefing
  *        (resolveTarget calls happen inside brief())
  *
- *   3. Record window (RECORDED — owned by IDirector)
+ *   3. BlockerPrelude (NOT recorded — also BEFORE the recording window)
+ *      - blockerPrelude.run(...)      probe → dismiss loop → re-probe.
+ *        Skipped if the runner was constructed without one.
+ *        Why pre-recording: dismissing in the deliverable shows clicks the
+ *        user did not ask for and eats the budget. Doing it here is free
+ *        and produces a cleaner deliverable. (goals.md #2 #3.)
+ *
+ *   4. Record window (RECORDED — owned by IDirector)
  *      - director.run(briefing, session)
  *
- *   4. Stop + trim (NOT recorded)
+ *   5. Stop + trim (NOT recorded)
  *      - session.stop()               raw .webm finalized
  *      - ffmpeg trim raw → recording.webm using session.recording window
  *
@@ -65,6 +73,8 @@ export interface RunMetrics {
   fallbackClicks: number;
   /** Stable-step deadline timeouts during recording. */
   stableTimeouts: number;
+  /** BlockerPrelude summary, or null if the runner was constructed without one. */
+  blockerPrelude: BlockerPreludeReport | null;
 }
 
 export class RecordJobRunner {
@@ -74,6 +84,11 @@ export class RecordJobRunner {
     private readonly session: IPageSession,
     private readonly planner: IPlanner,
     private readonly director: IDirector,
+    /**
+     * Optional pre-recording blocker dismissal phase. When null, the runner
+     * skips it and goes straight from brief() → director.run.
+     */
+    private readonly blockerPrelude: BlockerPrelude | null = null,
   ) {}
 
   async run(req: RunRequest): Promise<RunResult> {
@@ -111,7 +126,28 @@ export class RecordJobRunner {
     const setupMs = Date.now() - tSetup;
     this.logger.info({ setupMs, screenshotMs, briefMs, hintCount: briefing.hints.length }, 'setup + brief complete');
 
-    // ------------------------------------ 2. Director (owns recording window)
+    // ------------------------------------ 2. BlockerPrelude (NOT recorded)
+    // Probe the page for visual blockers (cookie/consent dialogs, paused-video
+    // play overlays, login modals). If any are present, dismiss them BEFORE
+    // the recording window opens so the deliverable starts on a clean page.
+    // Failures here never break the run — see BlockerPrelude.run() docs.
+    const blockerPreludeReport = this.blockerPrelude
+      ? await this.blockerPrelude.run(this.session, briefing)
+      : null;
+    if (blockerPreludeReport) {
+      this.logger.info(
+        {
+          iterations: blockerPreludeReport.iterations,
+          endReason: blockerPreludeReport.endReason,
+          resolved: blockerPreludeReport.resolvedSignals,
+          remaining: blockerPreludeReport.remainingSignals,
+          totalMs: blockerPreludeReport.totalMs,
+        },
+        'blocker prelude complete',
+      );
+    }
+
+    // ------------------------------------ 3. Director (owns recording window)
     const directorReport = await this.director.run(briefing, this.session);
 
     // ------------------------------------ 3. Stop + trim
@@ -146,6 +182,7 @@ export class RecordJobRunner {
       resolvedClicks: briefing.hints.length,
       fallbackClicks: 0,
       stableTimeouts: 0,                       // tracked by Director if needed
+      blockerPrelude: blockerPreludeReport,
     };
 
     return {

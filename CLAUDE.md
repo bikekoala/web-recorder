@@ -6,7 +6,7 @@ This is an **exploratory project**. The underlying tech stack is expected to evo
 
 ## Hard rules
 
-These are non-negotiable across iterations. Read [`docs/architecture.md`](./docs/architecture.md) before adding code.
+These are non-negotiable across iterations. Read [`docs/goals.md`](./docs/goals.md) FIRST every session — it's the north star, and any change that doesn't serve a goal there does not ship. Then [`docs/architecture.md`](./docs/architecture.md) before adding code.
 
 1. **Ports & Adapters (Hexagonal)**. Business logic lives in `src/core/` and depends only on interfaces defined in `src/ports/`. Concrete tech (Stagehand, Playwright, ffmpeg, OpenAI) lives in `src/adapters/`. Never import an adapter from `core/` directly.
 2. **Schema-first**. Anything crossing a boundary (LLM output, HTTP request, project file, persisted action log) is defined as a Zod schema in `src/domain/`. Parse before use.
@@ -28,12 +28,13 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `IPlanner` + LlmPlanner adapter (now `brief()` only) | ✅ |
 | `IDirector` + StreamingDirector (streaming LLM-in-the-loop) | ✅ |
 | `IFastDecider` + LlmFastDecider (gpt-4o-mini default; Gemini Flash Lite preview too slow) | ✅ |
-| `RecordJobRunner` (orchestrates plan → director → trim) | ✅ |
+| `RecordJobRunner` (orchestrates plan → prelude → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (56 passing) | ✅ |
+| Vitest unit tests (68 passing) | ✅ |
 | Integration test on Recordly scenario | ✅ |
 | Operation log: `decision` / `decision_failure` / `page_diagnostic` entries | ✅ |
 | Visual-blocker prompt rules (auto-clicks paused-video play overlays etc.) | ✅ |
+| Pre-recording `BlockerPrelude` (probe → dismiss loop, NOT in deliverable) | ✅ |
 | Cursor trajectory synth (`ICursorSynthesizer`) | ⏳ |
 | HTTP API | ⏳ |
 

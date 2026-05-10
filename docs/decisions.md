@@ -485,6 +485,54 @@ Setup is unchanged from §0016: planner fires once with screenshot, extracts lik
 
 ---
 
+## 0021 · Pre-recording BlockerPrelude (dismiss visual blockers BEFORE the recording window opens)
+
+**Date**: 2026-05-10
+
+**Context**: §0020 added a SYSTEM_PROMPT clause telling the in-window FastDecider to handle visual blockers (cookie consent, paused-video play overlays, login modals) FIRST. That works, but it puts the dismissal click inside the deliverable: the viewer sees the cursor click "Accept all", then the user's actual task. Two problems:
+1. The deliverable is no longer a clean recording of the user's intent — it shows non-user-intent clicks the user did not ask for. (Conflicts with goals.md #3 "user intent satisfied or transparently not".)
+2. The dismissal eats budget. A 10s recording with 4 prelude actions has only ~6s left for the user's actual task. (Conflicts with #2 "fluid, no visible stalls" — the recording feels rushed.)
+
+We had a related observation from §0020's YouTube test: blockers detected by the heuristic at `recording_start` are reliable enough to act on programmatically. The information is already there *before* recording opens; we just weren't using it.
+
+**Options considered**:
+- **A**: Keep the SYSTEM_PROMPT rule as the only mechanism. Dismissal stays in the deliverable.
+- **B**: New BlockerPrelude phase that runs probe → dismiss-loop → re-probe BEFORE the recording window opens. Re-uses `IFastDecider` (small dismissal loop, not the full Director). The Director's blocker rule remains as a safety net for blockers that appear AFTER the recording starts.
+- **C**: Try to dismiss blockers during planner.brief() with a special verb in the briefing schema. Rejected: planner is one-shot and vision-only; it does not own action execution.
+
+**Choice**: **B**.
+
+The BlockerPrelude:
+- Probes `IPageSession.pageDiagnostic()` (newly promoted from a private `gatherPageDiagnostic`). If `blockerSignals` is empty, returns immediately — the common case for content pages costs nothing.
+- Otherwise loops `(probe → ask FastDecider → click → wait_for_stability → re-probe)` bounded by `maxIterations=3` and `maxMs=15000`.
+- Uses a dedicated `[BLOCKER PRELUDE]` prompt prefix so the LLM understands its job is dismissal, not the user's actual task.
+- Decision log entries use NEGATIVE `decisionId`s (`-1, -2, ...`) so they never collide with the Director's positive numbering and are grep-friendly: "negative decisionId == prelude".
+- Failures are absorbed: a click failure logs a `decision_failure` and bails; an unexpected error returns a clean report. The recording continues regardless.
+
+`IPageSession` gains a public `pageDiagnostic(): Promise<PageDiagnostic>` method (the existing `gatherPageDiagnostic` is promoted). `RecordJobRunner` takes an optional `BlockerPrelude` constructor parameter (null skips it). `RunMetrics` gains a `blockerPrelude: BlockerPreludeReport | null` field.
+
+**Rationale**:
+- Cleaner deliverable: the recording window starts AFTER blockers are gone, so the trimmed video is purely the user's intent in motion.
+- Bigger budget: the full `durationMs` is available for the user's actual task.
+- Same model, same cost surface: re-uses `IFastDecider`. No new model, no new prompt for the Director.
+- Hexagonal compliance: BlockerPrelude lives in `core/`, depends only on ports — `IFastDecider`, `IPageSession`, and the `DirectorBriefing` / `PageDiagnostic` domain types.
+- Bounded: `maxIterations` and `maxMs` cap the worst case. A pathological page that keeps regenerating overlays will hit one of the caps and recording proceeds anyway (with the remaining signals captured in the report).
+- Optional: `RecordJobRunner` accepts a `null` BlockerPrelude. Tests that don't care about the prelude (the existing 56 unit tests) keep working unchanged.
+
+**Consequences**:
+- Setup time grows by 0-15s depending on blockers. For the common no-blocker case, the cost is one `pageDiagnostic()` call (~50-200ms).
+- The recording window stays exactly the user's `durationMs` (within the existing trim tolerances).
+- Negative `decisionId` means downstream consumers (cursor synth, analytics) that filter by `decisionId >= 0` automatically skip prelude entries. Good for the deliverable; the introspection trail is still there for operators.
+- The Director's SYSTEM_PROMPT blocker rule (§0020) remains as a defense against blockers that appear AFTER recording opens (e.g. a delayed cookie banner or a SPA route triggers a modal mid-recording). The prelude handles "blockers visible at page-load time", the Director handles "blockers that appear later".
+- New tests: 12 BlockerPrelude unit tests covering clean-page skip, single dismissal, multi-iteration, iter/time caps, decider-done bailout, click-failed bailout, prompt routing.
+- Total unit tests: 56 → 68.
+
+**Preserves**: §0019 (Streaming Director architecture; Director still owns the recording window and is unchanged), §0020 (introspection log entries — `decision`/`decision_failure`/`page_diagnostic` are now used by the prelude too), §0017/§0018 (click + scroll choreography).
+
+**Open**: the prelude currently doesn't pass `lastActionFailure` between iterations (each LLM call sees a fresh recentActions list, but the failure context is best-effort). If a real-world site shows the same blocker repeatedly through 3 dismissal attempts, we may want to surface "previous attempts didn't reduce blockerSignals" as a hint to the LLM. Punted for now — the iter cap protects us.
+
+---
+
 ## Template for new entries
 
 ```

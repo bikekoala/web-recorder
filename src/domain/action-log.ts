@@ -29,6 +29,41 @@ export const Viewport = z.object({
 export type Viewport = z.infer<typeof Viewport>;
 
 /**
+ * PageDiagnostic — coarse page-health snapshot returned by
+ * `IPageSession.pageDiagnostic()`. Same shape as the body of the
+ * `page_diagnostic` ActionLogEntry variant, minus `t`/`scrollY`/`viewport`
+ * which are filled in by the caller when (and if) the snapshot is logged.
+ *
+ * Used by the BlockerPrelude (pre-recording) to decide whether any visual
+ * blockers (cookie consent, login modal, paused-video play overlay, etc.)
+ * need dismissing before the recording window opens. Also captured as a
+ * `page_diagnostic` ActionLogEntry at recording_start by the session.
+ *
+ * Heuristic-only — false positives/negatives are expected.
+ */
+export const PageDiagnostic = z.object({
+  url: z.string(),
+  title: z.string(),
+  /**
+   * Approximate count of clickable / focusable elements on the page —
+   * `button`, `a`, `input`, `[role=button]`, `[role=link]`, `[tabindex]`.
+   * A surprisingly low number on a content-rich page is a strong signal
+   * the page didn't load as expected.
+   */
+  interactiveElementCount: z.number().int().nonnegative(),
+  /** First few visible h1/h2/h3 texts to anchor what's on screen. */
+  visibleHeadings: z.array(z.string()),
+  /**
+   * Heuristic blocker detection. Each entry is one of:
+   *   `consent_dialog` | `auth_modal` | `play_overlay` | `region_gate`
+   *   `search_only` (page is essentially just a search box, e.g. logged-out
+   *   YouTube)
+   */
+  blockerSignals: z.array(z.string()),
+});
+export type PageDiagnostic = z.infer<typeof PageDiagnostic>;
+
+/**
  * Discriminated union of action types. When adding a new type:
  * 1. Add a new variant here.
  * 2. Update IPageSession to record it (or expose appendEntry()).

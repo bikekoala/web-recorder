@@ -7,7 +7,11 @@ import OpenAI from 'openai';
 import { CustomOpenAIClient, Stagehand } from '@browserbasehq/stagehand';
 import { chromium, type BrowserContext, type Page } from 'playwright';
 
-import { ActionLog, type ActionLogEntry } from '../../domain/action-log.js';
+import {
+  ActionLog,
+  type ActionLogEntry,
+  type PageDiagnostic,
+} from '../../domain/action-log.js';
 import {
   ElementNotFoundError,
   RecordingError,
@@ -57,6 +61,14 @@ export interface StagehandPageSessionConfig extends PageSessionConfig {
  */
 const DEVTOOLS_PORT_FILE_TIMEOUT_MS = 5000;
 const DEVTOOLS_PORT_FILE_POLL_MS = 50;
+
+/**
+ * A real-world stable Chrome on macOS UA. Updated occasionally — staleness
+ * is fine; the goal is just "no `HeadlessChrome` substring", not perfect
+ * fingerprint mimicry. (See `docs/goals.md` non-goals: not a stealth project.)
+ */
+const REALISTIC_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36';
 
 /**
  * Browser-side runtime helpers, injected via `context.addInitScript`.
@@ -192,13 +204,30 @@ export class StagehandPageSession implements IPageSession {
 
     // Step 1: launch Chromium via Playwright with recordVideo + a
     // remote-debugging-port so Stagehand can attach over CDP.
+    //
+    // Bot-detection mitigations are deliberately modest — see
+    // `docs/goals.md` non-goals: we are not building a stealth research
+    // project. These three knobs catch the common "page renders empty for
+    // bots" cases without going to war with Cloudflare/etc:
+    //
+    //   1. `--disable-blink-features=AutomationControlled` removes the
+    //      `navigator.webdriver === true` flag. Cheap, no side effects.
+    //   2. A real Chrome User-Agent string (no "HeadlessChrome"). Servers
+    //      that gate on the UA string for "real users only" stop noticing.
+    //   3. Optional `storageState` from disk so the user can sign into
+    //      sites once (in a separate browser session) and reuse cookies
+    //      here. Path comes from STORAGE_STATE_PATH env var. Only loaded
+    //      if present; falls back to a fresh persistent profile.
     try {
       this.userDataDir = await mkdtemp(join(tmpdir(), 'web-recorder-'));
       this.context = await chromium.launchPersistentContext(this.userDataDir, {
         headless: this.cfg.headless,
         viewport: this.cfg.viewport,
-        // 0 → Chromium picks a free port. We read it from DevToolsActivePort.
-        args: ['--remote-debugging-port=0'],
+        args: [
+          '--remote-debugging-port=0',
+          '--disable-blink-features=AutomationControlled',
+        ],
+        userAgent: REALISTIC_USER_AGENT,
         recordVideo: {
           dir: this.cfg.outputDir,
           size: this.cfg.viewport,
@@ -206,6 +235,13 @@ export class StagehandPageSession implements IPageSession {
         // `channel` is a Playwright option naming a Chromium variant
         // (chrome | msedge | ...). Undefined means "use bundled Chromium".
         ...(config.browserChannel ? { channel: config.browserChannel } : {}),
+        // Optional persistent login state. The storage-state file is
+        // produced offline by `npx playwright codegen --save-storage=...`
+        // (or any other Playwright session). We do NOT manage credentials
+        // here — see `docs/goals.md` non-goals.
+        ...(config.storageStatePath
+          ? { storageState: config.storageStatePath }
+          : {}),
       });
 
       // launchPersistentContext returns a context with one page already open.
@@ -831,7 +867,7 @@ export class StagehandPageSession implements IPageSession {
     // Capture page-health diagnostic right at recording_start. Best-effort —
     // never let this block the recording itself.
     try {
-      const diag = await this.gatherPageDiagnostic();
+      const diag = await this.pageDiagnostic();
       this.recordEntry({
         t: this.elapsed(),
         type: 'page_diagnostic',
@@ -1044,14 +1080,12 @@ export class StagehandPageSession implements IPageSession {
    * Best-effort: every step is wrapped in try/catch and degrades to
    * defaults so a partial failure here never breaks the recording.
    * Heuristic-only — false positives/negatives are expected.
+   *
+   * Public per IPageSession.pageDiagnostic — used by the BlockerPrelude to
+   * detect visual blockers BEFORE the recording window opens, and by
+   * `beginRecording` to capture a snapshot at recording_start.
    */
-  private async gatherPageDiagnostic(): Promise<{
-    url: string;
-    title: string;
-    interactiveElementCount: number;
-    visibleHeadings: string[];
-    blockerSignals: string[];
-  }> {
+  async pageDiagnostic(): Promise<PageDiagnostic> {
     const page = this.requirePage();
     const url = page.url();
     let title = '';

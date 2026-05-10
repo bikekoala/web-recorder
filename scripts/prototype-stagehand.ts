@@ -22,6 +22,7 @@ import { LlmFastDecider } from '../src/adapters/decider/llm-fast-decider.js';
 import { StreamingDirector } from '../src/adapters/director/streaming-director.js';
 import { StagehandPageSession } from '../src/adapters/agent/stagehand-session.js';
 import { LlmPlanner } from '../src/adapters/planner/llm-planner.js';
+import { BlockerPrelude } from '../src/core/blocker-prelude.js';
 import { RecordJobRunner } from '../src/core/record-job-runner.js';
 import { config } from '../src/infra/config.js';
 import { logger } from '../src/infra/logger.js';
@@ -49,9 +50,13 @@ async function main(): Promise<void> {
     verbose: 1,
   });
   const planner = new LlmPlanner();
+  // The Director and BlockerPrelude share an LlmFastDecider implementation
+  // (same model, same OpenRouter endpoint). Each constructs its own instance
+  // so latency stats from the prelude don't pollute the Director's report.
   const director = new StreamingDirector({ decider: new LlmFastDecider() });
+  const blockerPrelude = new BlockerPrelude({ decider: new LlmFastDecider() });
 
-  const runner = new RecordJobRunner(session, planner, director);
+  const runner = new RecordJobRunner(session, planner, director, blockerPrelude);
 
   try {
     const result = await runner.run({
@@ -63,6 +68,9 @@ async function main(): Promise<void> {
 
     log.info({ metrics: result.metrics }, '📊 RUN METRICS');
     log.info({ directorReport: result.directorReport }, '🎬 DIRECTOR REPORT');
+    if (result.metrics.blockerPrelude) {
+      log.info({ blockerPrelude: result.metrics.blockerPrelude }, '🚧 BLOCKER PRELUDE');
+    }
     log.info(
       `\n  Trimmed video: open "${result.videoPath}"`
         + `\n  Raw video:     open "${result.rawVideoPath}"`

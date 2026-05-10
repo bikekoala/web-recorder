@@ -1,4 +1,10 @@
-import type { ActionLog, ActionLogEntry, Bbox, Viewport } from '../../src/domain/action-log.js';
+import type {
+  ActionLog,
+  ActionLogEntry,
+  Bbox,
+  PageDiagnostic,
+  Viewport,
+} from '../../src/domain/action-log.js';
 import type {
   IPageSession,
   ObservedElement,
@@ -33,6 +39,21 @@ export class FakePageSession implements IPageSession {
   resolveTargetResult: ObservedElement | null = null;
   /** If set, observe(...) returns this. */
   observeResults: ObservedElement[] = [];
+
+  /**
+   * Queue of {@link PageDiagnostic} responses. Each call to
+   * {@link pageDiagnostic} shifts one off; if the queue is empty a
+   * conservative "clean" snapshot is returned. Tests can simulate a
+   * "first probe shows blocker, second probe clean" sequence by
+   * enqueueing two snapshots in order.
+   */
+  pageDiagnosticResults: PageDiagnostic[] = [];
+  /**
+   * If set to a function, it overrides the queue entirely — used by tests
+   * that need to compute the snapshot dynamically based on session state
+   * (e.g. "after N clicks, no more blockers"). Falls back to the queue.
+   */
+  pageDiagnosticImpl: (() => PageDiagnostic) | null = null;
 
   private record(kind: string, payload: unknown) {
     this.events.push({ kind, payload, t: Date.now() - this.startedAt });
@@ -79,8 +100,17 @@ export class FakePageSession implements IPageSession {
     this.record('click', { selector, description: opts?.description });
     await new Promise((r) => setTimeout(r, 50));
   }
+  /**
+   * Optional test hook — if set, called by `clickByDescription` after
+   * recording the event. Use this to simulate failures, e.g.
+   * `session.clickByDescriptionImpl = () => { throw new ElementNotFoundError(...); }`.
+   */
+  clickByDescriptionImpl: ((description: string) => Promise<void> | void) | null = null;
   async clickByDescription(description: string, opts?: { searchBudgetPx?: number }) {
     this.record('clickByDescription', { description, searchBudgetPx: opts?.searchBudgetPx });
+    if (this.clickByDescriptionImpl) {
+      await this.clickByDescriptionImpl(description);
+    }
     await new Promise((r) => setTimeout(r, 50));
   }
   async quickFindInViewport(): Promise<ObservedElement | null> {
@@ -98,5 +128,21 @@ export class FakePageSession implements IPageSession {
   appendEntry(entry: ActionLogEntry): void {
     this.appendedEntries.push(entry);
     this.record('appendEntry', { type: entry.type });
+  }
+
+  async pageDiagnostic(): Promise<PageDiagnostic> {
+    this.record('pageDiagnostic', null);
+    if (this.pageDiagnosticImpl) {
+      return this.pageDiagnosticImpl();
+    }
+    const next = this.pageDiagnosticResults.shift();
+    if (next) return next;
+    return {
+      url: this.url,
+      title: '',
+      interactiveElementCount: 0,
+      visibleHeadings: [],
+      blockerSignals: [],
+    };
   }
 }

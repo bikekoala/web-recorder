@@ -1,4 +1,13 @@
-import type { ActionLog, ActionLogEntry, Bbox, RecordingWindow, Viewport } from '../domain/action-log.js';
+import type {
+  ActionLog,
+  ActionLogEntry,
+  Bbox,
+  PageDiagnostic,
+  RecordingWindow,
+  Viewport,
+} from '../domain/action-log.js';
+
+export type { PageDiagnostic } from '../domain/action-log.js';
 
 /**
  * Velocity profile for animated scrolls. See `IPageSession.scroll()` docs
@@ -198,6 +207,25 @@ export interface IPageSession {
    * point for upstream callers.
    */
   appendEntry(entry: ActionLogEntry): void;
+
+  /**
+   * Read coarse page-health signals — title, interactive element count,
+   * top visible headings, and detected blocker signals (e.g.
+   * `consent_dialog`, `auth_modal`, `play_overlay`, `search_only`).
+   *
+   * Used by the BlockerPrelude (pre-recording) to decide whether any visual
+   * blockers need dismissing before the recording window opens, and by the
+   * session itself at `recording_start` to write a `page_diagnostic`
+   * entry into the action log.
+   *
+   * The returned shape excludes `t`, `scrollY`, and `viewport` — those are
+   * filled in by the caller if/when the snapshot is logged. Heuristic-only;
+   * false positives/negatives are expected.
+   *
+   * Best-effort: implementations should never throw; on failure return a
+   * conservative empty snapshot.
+   */
+  pageDiagnostic(): Promise<PageDiagnostic>;
 }
 
 export interface ObservedElement {

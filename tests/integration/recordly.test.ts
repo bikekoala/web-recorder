@@ -5,6 +5,7 @@ import { LlmFastDecider } from '../../src/adapters/decider/llm-fast-decider.js';
 import { StreamingDirector } from '../../src/adapters/director/streaming-director.js';
 import { LlmPlanner } from '../../src/adapters/planner/llm-planner.js';
 import { StagehandPageSession } from '../../src/adapters/agent/stagehand-session.js';
+import { BlockerPrelude } from '../../src/core/blocker-prelude.js';
 import { RecordJobRunner } from '../../src/core/record-job-runner.js';
 import { config } from '../../src/infra/config.js';
 
@@ -25,7 +26,10 @@ describe('integration: Recordly scenario via Streaming Director', () => {
     const planner = new LlmPlanner();
     const decider = new LlmFastDecider();
     const director = new StreamingDirector({ decider });
-    const runner = new RecordJobRunner(session, planner, director);
+    // The Recordly README has no real blockers so the prelude should be a no-op
+    // (zero iterations, endReason 'clean') — verified by the test below.
+    const blockerPrelude = new BlockerPrelude({ decider: new LlmFastDecider() });
+    const runner = new RecordJobRunner(session, planner, director, blockerPrelude);
 
     const result = await runner.run({
       url: 'https://github.com/webadderallorg/Recordly',
@@ -37,6 +41,7 @@ describe('integration: Recordly scenario via Streaming Director', () => {
     // Print diagnostics BEFORE assertions so a failed run still surfaces them.
     console.log('Integration metrics:', result.metrics);
     console.log('Director report:', result.directorReport);
+    console.log('BlockerPrelude:', result.metrics.blockerPrelude);
 
     // Assertion 1: trimmed video duration within ±10% of target.
     expect(result.metrics.trimmedVideoMs).not.toBeNull();
@@ -61,5 +66,13 @@ describe('integration: Recordly scenario via Streaming Director', () => {
     // Assertion 4: no expectAfter mismatches on this stable page.
     expect(result.directorReport.expectAfterMismatchCount).toBeLessThanOrEqual(1);
 
+    // Assertion 5: BlockerPrelude ran but found nothing to dismiss on the
+    // Recordly README (no consent, no auth, no play overlay). At most one
+    // iteration is tolerated to absorb a brief false-positive on a slow
+    // first paint.
+    expect(result.metrics.blockerPrelude).not.toBeNull();
+    if (result.metrics.blockerPrelude) {
+      expect(result.metrics.blockerPrelude.iterations).toBeLessThanOrEqual(1);
+    }
   }, 90_000);
 });
