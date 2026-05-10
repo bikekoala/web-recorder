@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ActionLogEntry, RecordingWindow } from '../domain/action-log.js';
-import { computeIntentSatisfaction } from './record-job-runner.js';
+import type { ActionLogEntry, RecordingWindow } from '../../../src/domain/action-log.js';
+import { computeIntentSatisfaction } from '../../../src/core/record-job-runner.js';
 
 const VIEWPORT = { width: 1280, height: 720 };
 const WINDOW: RecordingWindow = { startedAtMs: 1000, endedAtMs: 11000 };

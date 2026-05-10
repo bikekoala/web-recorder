@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ActionLog, ActionLogEntry } from './action-log.js';
+import { ActionLog, ActionLogEntry } from '../../../src/domain/action-log.js';
 
 const VIEWPORT = { width: 1280, height: 720 };
 

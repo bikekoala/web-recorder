@@ -16,8 +16,6 @@
  *   PROTOTYPE_DURATION_MS  the target recording duration in ms
  */
 
-import { resolve } from 'node:path';
-
 import { LlmFastDecider } from '../src/adapters/decider/llm-fast-decider.js';
 import { StreamingDirector } from '../src/adapters/director/streaming-director.js';
 import { StagehandPageSession } from '../src/adapters/agent/stagehand-session.js';
@@ -26,6 +24,7 @@ import { BlockerPrelude } from '../src/core/blocker-prelude.js';
 import { RecordJobRunner } from '../src/core/record-job-runner.js';
 import { config } from '../src/infra/config.js';
 import { logger } from '../src/infra/logger.js';
+import { buildRunDir } from '../src/infra/run-dir.js';
 
 const TARGET_URL = process.env.PROTOTYPE_URL ?? 'https://github.com/webadderallorg/Recordly';
 const USER_PROMPT =
@@ -41,7 +40,7 @@ async function main(): Promise<void> {
     'starting',
   );
 
-  const outputDir = resolve(config.outputDir, `prototype-${Date.now()}`);
+  const outputDir = buildRunDir({ outputRoot: config.outputDir, kind: 'prototype' });
 
   const session = new StagehandPageSession({
     outputDir,

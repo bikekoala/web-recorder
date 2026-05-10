@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { track } from './pending.js';
+import { track } from '../../../src/infra/pending.js';
 
 describe('Pending<T> tracker', () => {
   it('starts as not resolved', () => {

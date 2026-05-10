@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import OpenAI from 'openai';
 
-import { LlmFastDecider } from './llm-fast-decider.js';
-import type { DirectorState } from '../../domain/director-state.js';
+import { LlmFastDecider } from '../../../../src/adapters/decider/llm-fast-decider.js';
+import type { DirectorState } from '../../../../src/domain/director-state.js';
 
 function buildState(overrides: Partial<DirectorState> = {}): DirectorState {
   return {

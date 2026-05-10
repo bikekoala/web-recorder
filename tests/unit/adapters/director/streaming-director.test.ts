@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { FakeFastDecider } from '../../../tests/fakes/fake-fast-decider.js';
-import { FakePageSession } from '../../../tests/fakes/fake-page-session.js';
-import { StreamingDirector } from './streaming-director.js';
-import type { DirectorBriefing } from '../../domain/plan.js';
+import { FakeFastDecider } from '../../../fakes/fake-fast-decider.js';
+import { FakePageSession } from '../../../fakes/fake-page-session.js';
+import { StreamingDirector } from '../../../../src/adapters/director/streaming-director.js';
+import type { DirectorBriefing } from '../../../../src/domain/plan.js';
 
 const briefing = (durationMs = 5_000): DirectorBriefing => ({
   prompt: 'do the thing',

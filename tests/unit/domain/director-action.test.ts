@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { DirectorAction } from './director-action.js';
+import { DirectorAction } from '../../../src/domain/director-action.js';
 
 /**
  * Schema sanity for DirectorAction. We trust TypeScript+Zod for shape; the

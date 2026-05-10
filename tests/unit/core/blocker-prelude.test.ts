@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { ElementNotFoundError } from '../domain/errors.js';
-import type { DirectorBriefing } from '../domain/plan.js';
-import type { PageDiagnostic } from '../domain/action-log.js';
-import { FakeFastDecider } from '../../tests/fakes/fake-fast-decider.js';
-import { FakePageSession } from '../../tests/fakes/fake-page-session.js';
-import { BlockerPrelude } from './blocker-prelude.js';
+import { ElementNotFoundError } from '../../../src/domain/errors.js';
+import type { DirectorBriefing } from '../../../src/domain/plan.js';
+import type { PageDiagnostic } from '../../../src/domain/action-log.js';
+import { FakeFastDecider } from '../../fakes/fake-fast-decider.js';
+import { FakePageSession } from '../../fakes/fake-page-session.js';
+import { BlockerPrelude } from '../../../src/core/blocker-prelude.js';
 
 const briefing = (overrides: Partial<DirectorBriefing> = {}): DirectorBriefing => ({
   prompt: 'click play and watch the video',

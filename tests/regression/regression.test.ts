@@ -1,4 +1,3 @@
-import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { LlmFastDecider } from '../../src/adapters/decider/llm-fast-decider.js';
@@ -8,6 +7,7 @@ import { StagehandPageSession } from '../../src/adapters/agent/stagehand-session
 import { BlockerPrelude } from '../../src/core/blocker-prelude.js';
 import { RecordJobRunner } from '../../src/core/record-job-runner.js';
 import { config } from '../../src/infra/config.js';
+import { buildRunDir } from '../../src/infra/run-dir.js';
 import { REGRESSION_CASES } from './cases.js';
 
 /**
@@ -42,10 +42,11 @@ describe('regression suite', () => {
           return;
         }
 
-        const outputDir = resolve(
-          config.outputDir,
-          `regression-${c.id}-${p.label}-${Date.now()}`,
-        );
+        const outputDir = buildRunDir({
+          outputRoot: config.outputDir,
+          kind: 'regression',
+          sub: `${c.id}-${p.label}`,
+        });
 
         const session = new StagehandPageSession({
           outputDir,

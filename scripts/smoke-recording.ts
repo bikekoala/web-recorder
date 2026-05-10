@@ -23,6 +23,7 @@ import { chromium } from 'playwright';
 
 import { config } from '../src/infra/config.js';
 import { logger } from '../src/infra/logger.js';
+import { buildRunDir } from '../src/infra/run-dir.js';
 
 async function readDevToolsPort(userDataDir: string, timeoutMs = 5000): Promise<number> {
   const portFile = join(userDataDir, 'DevToolsActivePort');
@@ -45,7 +46,7 @@ async function readDevToolsPort(userDataDir: string, timeoutMs = 5000): Promise<
 async function main(): Promise<void> {
   const log = logger.child({ script: 'smoke-recording' });
 
-  const outputDir = resolve(config.outputDir, `smoke-${Date.now()}`);
+  const outputDir = buildRunDir({ outputRoot: config.outputDir, kind: 'smoke' });
   await mkdir(outputDir, { recursive: true });
 
   const userDataDir = await mkdtemp(join(tmpdir(), 'web-recorder-smoke-'));
