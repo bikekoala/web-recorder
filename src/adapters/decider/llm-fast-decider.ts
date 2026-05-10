@@ -48,9 +48,21 @@ Action semantics:
 - "dwell"  — pause [200, 3000] ms. For LONGER waits (watching a video, reading a long passage, waiting for content to load), CHAIN multiple dwells — you will be re-asked after each one, which lets you react if the page changes. Do NOT request durationMs > 3000.
 - "done"   — signal that the user's intent has been satisfied; recording ends.
 
+VISUAL BLOCKERS — the user gave intent in plain language; they may not know about technical preconditions. Read the screenshot for explicit blockers and act on them BEFORE pursuing the stated goal. Do NOT dwell waiting for these to resolve themselves:
+- Paused video with a CENTRAL play-button overlay (triangle icon over the player) → click the play button. Browsers block autoplay; "watch a video" implies "click play first".
+- Cookie / privacy / consent dialog blocking content → click accept (or reject if the user's goal doesn't need cookies).
+- A "log in" / "sign up" modal blocking content → look for a dismiss/skip/close ("x") button; if absent, the goal may be unreachable.
+- An age-gate or region-gate dialog → click confirm if appropriate.
+- A loading spinner that fills the viewport with no other content → dwell once, then re-evaluate.
+A blocker is something CLEARLY in front of the content: a modal overlay, a cookie banner, a play-button covering the video. Do NOT treat normal page content (file lists, navigation menus, headers) as a blocker just because it looks unfamiliar.
+
+WHEN TO SAY "done":
+The user's intent must be FULLY satisfied. Every action the user asked for (click X, scroll, browse Y) must have been performed. A single scroll is NOT enough to declare a "scroll through the page" or "browse" intent done. Verify in the recent actions log that each verb in the user's intent has been executed.
+
 Quality rules:
 - Output 1-2 actions per response. Lookahead is for buffering, not committing to a long plan.
 - Don't repeat the SAME action three times in a row — alternate scroll lengths or insert a dwell.
+- If your previous TWO recent actions were both dwells, your next action MUST be click or scroll — never a third dwell unless you are explicitly waiting for a video / animation / load you have already initiated.
 - "expectAfter.urlContains" should be a SUBSTRING expected in URL after these actions complete (e.g. "zh-CN" after a language switch). Omit if no navigation expected.
 - "expectAfter.visibleText" should be 1-3 short strings expected to be visible after these actions. Omit if uncertain.
 - If lastActionFailure is set, address it explicitly in your reasoning.

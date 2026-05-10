@@ -19,17 +19,27 @@ const Schema = z.object({
   outputDir: z.string().min(1).default('output'),
 
   // OpenRouter (OpenAI-API-compatible aggregator). The OpenRouter model id
-  // (e.g. `anthropic/claude-sonnet-4.5`) goes in `LLM_MODEL`.
+  // (e.g. `google/gemini-3.1-pro-preview`) goes in `LLM_MODEL`.
   openrouterApiKey: z.string().min(1),
   openrouterBaseUrl: z.string().url().default('https://openrouter.ai/api/v1'),
-  llmModel: z.string().min(1).default('anthropic/claude-sonnet-4.5'),
+  /**
+   * Planner model — used once per job for the brief() vision call. Needs
+   * strong visual reasoning to extract click hints from a screenshot.
+   * Default: `google/gemini-3.1-pro-preview` (most capable Google model).
+   */
+  llmModel: z.string().min(1).default('google/gemini-3.1-pro-preview'),
 
   /**
    * FastDecider model — used by the Director's per-action decision calls.
-   * Optimized for low latency + cost. Default: `google/gemini-2.5-flash-lite`.
+   * Optimized for low latency + cost.
+   *
+   * Default `openai/gpt-4o-mini` — empirically faster (~0.6-1.0s p95) than
+   * `google/gemini-3.1-flash-lite` on OpenRouter today (preview, ~1.5s p95).
+   * Revisit when 3.1 Flash Lite goes GA (non-preview).
+   *
    * Override with LLM_DECIDER_MODEL.
    */
-  llmDeciderModel: z.string().min(1).default('google/gemini-2.5-flash-lite'),
+  llmDeciderModel: z.string().min(1).default('openai/gpt-4o-mini'),
 
   /**
    * Maximum actions per FastDecider response (lookahead depth).

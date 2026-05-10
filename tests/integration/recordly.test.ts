@@ -34,6 +34,10 @@ describe('integration: Recordly scenario via Streaming Director', () => {
       outputDir,
     });
 
+    // Print diagnostics BEFORE assertions so a failed run still surfaces them.
+    console.log('Integration metrics:', result.metrics);
+    console.log('Director report:', result.directorReport);
+
     // Assertion 1: trimmed video duration within ±10% of target.
     expect(result.metrics.trimmedVideoMs).not.toBeNull();
     if (result.metrics.trimmedVideoMs !== null) {
@@ -57,7 +61,5 @@ describe('integration: Recordly scenario via Streaming Director', () => {
     // Assertion 4: no expectAfter mismatches on this stable page.
     expect(result.directorReport.expectAfterMismatchCount).toBeLessThanOrEqual(1);
 
-    console.log('Integration metrics:', result.metrics);
-    console.log('Director report:', result.directorReport);
   }, 90_000);
 });
