@@ -85,8 +85,24 @@ export class StreamingDirector implements IDirector {
             'consecutive implicit dwells hit cap — LLM tail latency or stuck',
           );
         }
+        // Hard-cap enforcement: if the deadline has already passed we MUST
+        // exit immediately, even if the LLM call hasn't returned. Without
+        // this, a slow LLM blocks here unboundedly, blowing the budget.
+        if (Date.now() >= hardDeadlineAt) {
+          return this.endReport('budget', startedAt, decisionCount, implicitDwellCount, expectAfterMismatchCount);
+        }
+        // Race the LLM call against remaining budget so a tail-latency
+        // outlier cannot run past the hard deadline.
+        const remainingBudget = Math.max(50, hardDeadlineAt - Date.now());
         try {
-          const decision = await pending.promise;
+          const decision = await Promise.race([
+            pending.promise,
+            new Promise<null>((r) => setTimeout(() => r(null), remainingBudget)),
+          ]);
+          if (decision === null) {
+            // Budget exhausted while waiting on LLM — exit cleanly.
+            return this.endReport('budget', startedAt, decisionCount, implicitDwellCount, expectAfterMismatchCount);
+          }
           actionQueue = [...decision.actions];
           expectAfter = decision.expectAfter ?? null;
           pending = null;
