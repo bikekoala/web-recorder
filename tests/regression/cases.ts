@@ -1,143 +1,148 @@
 /**
  * Regression case library — pure data, no I/O.
  *
- * Each case exercises a different axis of the (URL, prompt, durationMs) →
- * recording pipeline. The `coverageNotes` string is the canonical record of
- * "why this case exists". When the suite catches a regression, that note tells
- * future maintainers which capability the case was guarding.
+ * The library is deliberately SMALL but each case exercises multiple action
+ * types in one recording (a real human doesn't do exactly one thing per
+ * session). Every case ships with 2 prompt variants — natural-conversational
+ * and distracting/embellished — to verify behaviour holds across phrasings.
+ *
+ * Per `docs/goals.md` Hard rule #6 (AI-first, not magic-numbers):
+ *   - NO mechanical thresholds (dwell counts, mismatch counts).
+ *   - Categorical signals only (recording produced, no crash).
+ *   - Naturalness is judged by humans reviewing the videos.
  *
  * Hexagonal note: this file MUST stay free of I/O. The vitest test consumes
- * it; nothing else depends on it. Keep it that way.
+ * it; nothing else depends on it.
  */
 
 export interface RegressionCase {
   /** Stable kebab-case id; used in test names + output dir names. */
   id: string;
   url: string;
-  prompt: string;
+  /**
+   * Target recording length. The Director enforces durationMs × 1.05 hard
+   * cap; the suite does not assert specific durations beyond "non-zero".
+   */
   durationMs: number;
   /** One-line summary printed in test output. */
   description: string;
   /** Multi-line: which capability axes does this case exercise. */
   coverageNotes: string;
-  expect: CaseExpectations;
+  /**
+   * 2-3 phrasings of the SAME intent. Tests behaviour stability across
+   * how a real human might describe the task — terse vs verbose, neat vs
+   * with extraneous chatter.
+   */
+  prompts: ReadonlyArray<PromptVariant>;
 }
 
-export interface CaseExpectations {
-  /** Trimmed video duration must fall within [min, max] ms. */
-  trimmedVideoMsMin: number;
-  trimmedVideoMsMax: number;
-  /** Maximum tolerated implicit dwells (≤ this number). */
-  implicitDwellMax: number;
-  /** Maximum tolerated expectAfter mismatches (≤). */
-  expectAfterMismatchMax: number;
+export interface PromptVariant {
   /**
-   * Acceptable intentSatisfaction.level values for THIS case. Empty array
-   * means any level is acceptable (case is a "soft" check).
-   *
-   * 'unmet' is currently a known-issue level (clicks watchdog-cut mid-flight)
-   * — cases that hit this should still PASS the suite if their other
-   * mechanical metrics are fine. The level is informational.
+   * `natural` — how a regular user would phrase it conversationally.
+   * `distracting` — natural phrasing PLUS some unrelated chatter ("by
+   *   the way…", "I'm bored, let me…") to verify the planner isolates
+   *   intent from social filler.
+   * Each case picks the labels that make sense for it; not every case
+   *   needs every variant.
    */
-  acceptableIntentLevels: ReadonlyArray<'complete' | 'partial' | 'unmet' | 'unknown'>;
-  /** Min number of pre-resolved click hints. 0 = vague-prompt cases. */
-  resolvedClicksMin: number;
+  label: 'natural' | 'distracting' | 'concise';
+  text: string;
 }
 
 export const REGRESSION_CASES: ReadonlyArray<RegressionCase> = [
+  // ────────────────────────────────────────────────────────────────────────
+  // 1. GitHub multi-step navigation. Single prompt covers four discrete
+  //    actions: language switch, back-nav, folder browse, file inspection.
+  //    Tests the agent's ability to chain — most prior runs only attempted
+  //    one click before budget exhausted.
+  // ────────────────────────────────────────────────────────────────────────
   {
-    id: 'github-readme',
+    id: 'github-multistep',
     url: 'https://github.com/webadderallorg/Recordly',
-    prompt: '点击页面上的"简体中文"链接，然后慢慢向下滑动浏览内容',
-    durationMs: 10_000,
-    description: 'CJK explicit-click + below-fold target + turbo-frame SPA',
+    durationMs: 30_000,
+    description: 'GitHub: 简中 → back → folder → file source (multi-step nav)',
     coverageNotes: [
-      '- JSON safety on CJK quotes (planner must paraphrase)',
-      '- Below-fold click target (briefing-hint surfacing)',
-      '- Explicit named target (planner extraction)',
-      "- Turbo-frame navigation (URL doesn't change → expectAfter mismatches happen)",
-      '- No blockers expected (interactive count high)',
+      '- Multi-action chain in one recording (4 distinct user verbs)',
+      '- CJK-quoted phrase the planner must paraphrase',
+      '- Below-fold first target (briefing-hint surfacing)',
+      '- Turbo-frame nav (URL stable, content swaps)',
+      '- Browser-back semantics (LLM must understand "回首页")',
+      '- Directory-tree navigation (clickable folder names)',
+      '- File-source view (final destination in the file viewer)',
     ].join('\n'),
-    expect: {
-      trimmedVideoMsMin: 9_000,
-      trimmedVideoMsMax: 11_000,
-      implicitDwellMax: 14,
-      expectAfterMismatchMax: 3,
-      // 'unmet' is a known issue (clicks watchdog-cut mid-flight); keep tolerated.
-      acceptableIntentLevels: ['complete', 'partial', 'unmet'],
-      resolvedClicksMin: 1,
-    },
+    prompts: [
+      {
+        label: 'natural',
+        text: '去看看 Recordly 这个项目，先把页面切换成中文版，然后回到项目首页，进 build 目录看看，最后打开 package.json 查看源码',
+      },
+      {
+        label: 'distracting',
+        text: '听说 Recordly 是个录屏工具，看着挺有意思。我想先看看中文版的 README 怎么样，对了项目结构是怎么组织的呢，build 目录里有什么东西？最后能看一眼 package.json 吗，我对它的依赖项好奇',
+      },
+    ],
   },
+
+  // ────────────────────────────────────────────────────────────────────────
+  // 2. YouTube creator browsing. Tests open-ended navigation: from a logged-
+  //    out homepage (which shows the "search to start" minimal state) the
+  //    agent must search, pick a creator, open their channel, and scroll
+  //    through recent works.
+  // ────────────────────────────────────────────────────────────────────────
   {
-    id: 'youtube-watch',
-    url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-    prompt: '等视频开始播放后看一会儿，然后向下滑动到评论区慢慢浏览',
+    id: 'youtube-creator',
+    url: 'https://www.youtube.com',
     durationMs: 25_000,
-    description: 'Video play-overlay blocker + watch dwell + scroll-to-comments',
+    description: 'YouTube: search → creator channel → browse recent works',
     coverageNotes: [
-      '- Visual blocker recognition (paused-video play button)',
-      '- Implicit click intent (user said "watch", not "click play")',
-      '- Long-form chained dwells (watching the video)',
-      '- Below-fold scroll (comments appear after scrolling)',
-      '- No cookie consent expected on direct watch URL',
+      '- Logged-out empty homepage (search-only blocker signal)',
+      '- Implicit search step (no specific button mentioned)',
+      "- Creator name as the click target across search results",
+      '- Channel page navigation (URL change to /@handle or /channel/...)',
+      '- Recent-videos section reveal (scroll on channel page)',
+      '- No specific "click play" required (browsing thumbnails, not playing)',
     ].join('\n'),
-    expect: {
-      // 25s ±10%
-      trimmedVideoMsMin: 22_500,
-      trimmedVideoMsMax: 27_500,
-      // longer recording → more dwells, larger budget
-      implicitDwellMax: 25,
-      expectAfterMismatchMax: 3,
-      acceptableIntentLevels: ['complete', 'partial', 'unmet', 'unknown'],
-      // planner may or may not extract the play button as a hint
-      resolvedClicksMin: 0,
-    },
+    prompts: [
+      {
+        label: 'natural',
+        text: '在 YouTube 上找到 MrBeast 的频道，看看他最近发了什么视频',
+      },
+      {
+        label: 'distracting',
+        text: '今天有点无聊，YouTube 上 MrBeast 最近的视频我还没看过，能帮我打开他的频道页面看看最新作品吗',
+      },
+    ],
   },
+
+  // ────────────────────────────────────────────────────────────────────────
+  // 3. Google Maps search-only. The interesting test is what the agent does
+  //    NOT do: the prompt explicitly asks to NOT move the canvas. Maps is
+  //    full of click-and-drag affordances; the agent has no drag primitive
+  //    so it can't drag, but it could waste budget clicking inappropriate
+  //    elements (street view, layer toggles, etc.). The case verifies the
+  //    agent stays focused on the search → results path.
+  // ────────────────────────────────────────────────────────────────────────
   {
-    id: 'wikipedia-article',
-    url: 'https://en.wikipedia.org/wiki/Photography',
-    prompt: 'Slowly browse the article from top to bottom',
+    id: 'gmaps-search-stay',
+    url: 'https://www.google.com/maps',
     durationMs: 15_000,
-    description: 'Pure-scroll, no click intent — tests planner empty-targets path',
+    description: 'Google Maps: search "New York" then JUST observe (no canvas drag)',
     coverageNotes: [
-      '- Vague prompt with NO click intent (planner must return targets:[])',
-      "- intentSatisfaction.level should be 'unknown' (no hints, scrolls happened)",
-      '- English prompt (planner without CJK)',
-      '- Reading-pace scroll behavior (slow speed)',
-      '- Stable long article (low risk of layout shift mid-recording)',
+      '- Cookie consent dialog (Google EU compliance often shows it)',
+      '- Search input field (text entry inside a complex page)',
+      '- Result panel reveal (sidebar slides in)',
+      '- Negative test: agent must NOT pan/zoom the map (no drag primitive,',
+      '  but should not waste budget on irrelevant controls either)',
+      '- Canvas-heavy page (testing scroll behavior on non-document scroller)',
     ].join('\n'),
-    expect: {
-      trimmedVideoMsMin: 13_500,
-      trimmedVideoMsMax: 16_500,
-      implicitDwellMax: 20,
-      // no clicks → no expectAfter set
-      expectAfterMismatchMax: 1,
-      acceptableIntentLevels: ['unknown', 'complete'],
-      // we WANT this to be 0 — verifies planner behaves correctly on vague prompts
-      resolvedClicksMin: 0,
-    },
-  },
-  {
-    id: 'hackernews-top',
-    url: 'https://news.ycombinator.com',
-    prompt: 'Open the top story to read it',
-    durationMs: 12_000,
-    description: 'Implicit "top"-position click + URL navigation',
-    coverageNotes: [
-      '- Implicit position-based click (the planner must figure out which link)',
-      '- Real URL navigation (target opens a different page)',
-      '- English prompt',
-      '- Plain-text page, minimal styling, no blockers',
-      '- expectAfter URL change should match cleanly (true cross-page nav, not SPA)',
-    ].join('\n'),
-    expect: {
-      trimmedVideoMsMin: 10_800,
-      trimmedVideoMsMax: 13_200,
-      implicitDwellMax: 16,
-      expectAfterMismatchMax: 2,
-      acceptableIntentLevels: ['complete', 'partial', 'unmet', 'unknown'],
-      // planner may extract "the top story link" or may not
-      resolvedClicksMin: 0,
-    },
+    prompts: [
+      {
+        label: 'natural',
+        text: '在 Google Maps 上搜一下纽约，等结果出来后看看就行，不要去拖动地图',
+      },
+      {
+        label: 'distracting',
+        text: '我想去纽约玩，先在地图上搜一下看看大致位置，结果出来看一眼就好，地图本身不用动它',
+      },
+    ],
   },
 ];

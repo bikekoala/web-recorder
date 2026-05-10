@@ -27,6 +27,39 @@ describe('ActionLogEntry — introspection variants', () => {
     expect(e.expectAfter?.urlContains).toBe('zh-CN');
   });
 
+  it('accepts NEGATIVE decisionId (BlockerPrelude phase, see §0021)', () => {
+    // Regression guard: an early version of the schema declared decisionId
+    // as `int().nonnegative()`, which conflicted with §0021's design where
+    // BlockerPrelude uses negative ids (-1, -2, ...) to mark prelude-phase
+    // decisions. ActionLog.parse() then crashed at session.stop() whenever
+    // the prelude actually fired (e.g. on YouTube watch URLs). The fix is
+    // here in the schema — negative ids are valid; this test locks it in.
+    const e = ActionLogEntry.parse({
+      t: 800,
+      type: 'decision',
+      decisionId: -1,
+      modelId: 'fake',
+      latencyMs: 200,
+      actions: [{ kind: 'click', reasoning: 'dismiss banner', brief: 'click X' }],
+      scrollY: 0,
+      viewport: VIEWPORT,
+    });
+    expect(e.type).toBe('decision');
+    if (e.type !== 'decision') throw new Error('narrowing');
+    expect(e.decisionId).toBe(-1);
+
+    const f = ActionLogEntry.parse({
+      t: 850,
+      type: 'decision_failure',
+      decisionId: -2,
+      reason: 'click_failed',
+      details: 'prelude bail',
+      scrollY: 0,
+      viewport: VIEWPORT,
+    });
+    expect(f.type).toBe('decision_failure');
+  });
+
   it('rejects a `decision` with empty actions array? actions array allows empty for now', () => {
     // Schema allows zero-length actions for `decision` (vs DecisionResponse which
     // requires ≥1). The action log is a record of what happened — if the LLM

@@ -164,8 +164,15 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
   z.object({
     t: z.number().nonnegative(),
     type: z.literal('decision'),
-    /** Monotonic per-session sequence number, useful for cross-referencing. */
-    decisionId: z.number().int().nonnegative(),
+    /**
+     * Sequence number for cross-referencing.
+     *
+     * Positive ids (1, 2, …) belong to the Director's recording-window
+     * decisions. NEGATIVE ids (−1, −2, …) belong to the BlockerPrelude
+     * (see §0021) — the sign distinguishes which phase the decision came
+     * from at a glance. Either is valid; the schema accepts any integer.
+     */
+    decisionId: z.number().int(),
     /** Model id reported by the FastDecider (e.g., `openai/gpt-4o-mini`). */
     modelId: z.string().min(1),
     /** End-to-end latency of the LLM call, in ms. */
@@ -199,7 +206,8 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
   z.object({
     t: z.number().nonnegative(),
     type: z.literal('decision_failure'),
-    decisionId: z.number().int().nonnegative().optional(),
+    /** See `decision.decisionId` doc — accepts negative for prelude phase. */
+    decisionId: z.number().int().optional(),
     reason: z.enum([
       'schema_validation',
       'expect_after_mismatch',

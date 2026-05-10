@@ -20,6 +20,14 @@ These are properties of the *output*, not the code. Code freedom is fine; output
 
 5. **Cheap to run.** Per recording cost target: < $0.01 in LLM, < 60s wall-clock, < 100MB disk. We optimize for getting close to "free" so the service can run at scale.
 
+6. **AI-first, not magic-numbers.** The system is **bionic and open-ended** — we will never know in advance which website the user records or how they phrase intent. Every behavioural decision should therefore be made by the LLM at the moment it sees the page, not by a number we wrote into the code six months ago.
+
+   **Hardcoded numbers are acceptable** for: pure rendering parameters (scroll px/s, frame rate, easing curves), schema-safety bounds that bound the LLM's output (e.g. dwell ≤ 3000 ms keeps it in the loop), and test infrastructure (timeouts, retry counts).
+
+   **Hardcoded numbers are NOT acceptable** for: thresholds that say "this page is/isn't OK", "this many actions counts as success", "this is a blocker", or "this is too slow". When you reach for a number to gate behaviour, ask first: *would a real human's decision here vary by website or context?* If yes, the right answer is to ask the LLM, not to pick a number.
+
+   **Tests follow the same rule.** Pass/fail must not depend on counts that drift with model versions ("≤ 14 implicit dwells", "≤ 3 expectAfter mismatches"). Assert on categorical behaviour (recording produced, intent satisfaction computed, no crash) and let humans review the videos for naturalness — that's the only ground truth we trust.
+
 ## Non-goals
 
 These keep the project from sprawling. **Don't build them unless this list is updated first.**

@@ -11,84 +11,94 @@ import { config } from '../../src/infra/config.js';
 import { REGRESSION_CASES } from './cases.js';
 
 /**
- * Regression suite — vitest's red/green output IS the report.
+ * Regression suite — vitest's red/green output IS the report; the videos
+ * the runs produce are the GROUND TRUTH for naturalness.
  *
- * Each case is a self-contained `(URL, prompt, durationMs)` exercising a
- * different axis of the pipeline. The mechanical assertions only check
- * metric ranges; per-case `coverageNotes` in `cases.ts` document WHY.
+ * Per `docs/goals.md` Hard rule #6 (AI-first, not magic-numbers): we do NOT
+ * assert on dwell counts, mismatch counts, or any other numeric threshold
+ * that drifts when models change. We assert only that:
+ *   - The pipeline did not crash.
+ *   - A non-trivial recording was produced.
+ *   - `intentSatisfaction` was computed (the value can be ANY level — we
+ *     log it, humans interpret it).
  *
- * Per-case timeout 120s = ~50s setup + ≤30s recording + headroom.
- * Suite total bound by `vitest.regression.config.ts` testTimeout.
+ * Naturalness is judged by opening `recording.webm` and watching it.
  *
- * Tests run SEQUENTIALLY (vitest default) — parallel would launch 4 browsers,
- * which is not what we want.
+ * Each (case × prompt) pair runs as its own `it()` so individual ones can
+ * be filtered (e.g. `npx vitest -t youtube-creator-natural`).
+ *
+ * Per-test timeout: durationMs × 2 + 30s (covers setup + recording + trim
+ * + slack). Sequential by default — parallel would launch N browsers.
  */
 describe('regression suite', () => {
   for (const c of REGRESSION_CASES) {
-    it(`[${c.id}] ${c.description}`, async () => {
-      if (!process.env.OPENROUTER_API_KEY) {
-        console.warn(`skipping ${c.id} — OPENROUTER_API_KEY not set`);
-        return;
-      }
-      const outputDir = resolve(config.outputDir, `regression-${c.id}-${Date.now()}`);
-      const session = new StagehandPageSession({
-        outputDir,
-        headless: false,
-        viewport: config.viewport,
-        verbose: 0,
-      });
-      const planner = new LlmPlanner();
-      const director = new StreamingDirector({ decider: new LlmFastDecider() });
-      const blockerPrelude = new BlockerPrelude({ decider: new LlmFastDecider() });
-      const preFireDecider = new LlmFastDecider();
-      const runner = new RecordJobRunner(
-        session,
-        planner,
-        director,
-        blockerPrelude,
-        preFireDecider,
-      );
+    for (const p of c.prompts) {
+      const name = `[${c.id} · ${p.label}] ${c.description}`;
+      const timeoutMs = c.durationMs * 2 + 30_000;
 
-      const result = await runner.run({
-        url: c.url,
-        prompt: c.prompt,
-        durationMs: c.durationMs,
-        outputDir,
-      });
+      it(name, async () => {
+        if (!process.env.OPENROUTER_API_KEY) {
+          console.warn(`skipping ${c.id}/${p.label} — OPENROUTER_API_KEY not set`);
+          return;
+        }
 
-      // Print BEFORE assertions so failures show metrics.
-      console.log(`\n=== [${c.id}] ===`);
-      console.log('  description:', c.description);
-      console.log('  metrics:', JSON.stringify(result.metrics, null, 2));
-      console.log('  director:', JSON.stringify(result.directorReport, null, 2));
+        const outputDir = resolve(
+          config.outputDir,
+          `regression-${c.id}-${p.label}-${Date.now()}`,
+        );
 
-      // Mechanical assertions — keep messages descriptive.
-      expect(
-        result.metrics.trimmedVideoMs,
-        `${c.id}: trimmed duration`,
-      ).toBeGreaterThanOrEqual(c.expect.trimmedVideoMsMin);
-      expect(
-        result.metrics.trimmedVideoMs,
-        `${c.id}: trimmed duration`,
-      ).toBeLessThanOrEqual(c.expect.trimmedVideoMsMax);
-      expect(
-        result.directorReport.implicitDwellCount,
-        `${c.id}: implicit dwells`,
-      ).toBeLessThanOrEqual(c.expect.implicitDwellMax);
-      expect(
-        result.directorReport.expectAfterMismatchCount,
-        `${c.id}: expectAfter mismatches`,
-      ).toBeLessThanOrEqual(c.expect.expectAfterMismatchMax);
-      expect(
-        result.metrics.resolvedClicks,
-        `${c.id}: resolved click hints`,
-      ).toBeGreaterThanOrEqual(c.expect.resolvedClicksMin);
-      if (c.expect.acceptableIntentLevels.length > 0) {
+        const session = new StagehandPageSession({
+          outputDir,
+          headless: false,
+          viewport: config.viewport,
+          verbose: 0,
+        });
+        const runner = new RecordJobRunner(
+          session,
+          new LlmPlanner(),
+          new StreamingDirector({ decider: new LlmFastDecider() }),
+          new BlockerPrelude({ decider: new LlmFastDecider() }),
+          new LlmFastDecider(), // pre-fire decider
+        );
+
+        const result = await runner.run({
+          url: c.url,
+          prompt: p.text,
+          durationMs: c.durationMs,
+          outputDir,
+        });
+
+        // Always print full diagnostics — videos + metrics are the report.
+        console.log(`\n══ [${c.id} · ${p.label}] ════════════════════════`);
+        console.log(`  prompt:   ${p.text}`);
+        console.log(`  url:      ${c.url}`);
+        console.log(`  video:    ${result.videoPath}`);
+        console.log(`  rawVideo: ${result.rawVideoPath}`);
+        console.log(`  log:      ${result.actionLogPath}`);
+        console.log(`  metrics: ${JSON.stringify(result.metrics, null, 2)}`);
+        console.log(`  director: ${JSON.stringify(result.directorReport, null, 2)}`);
+
+        // Categorical assertions only — see Hard rule #6 in docs/goals.md.
+        // These say "the pipeline functioned"; they say nothing about quality.
+        // Quality = humans reviewing the videos.
+        expect(result.videoPath, 'video path produced').toBeTruthy();
         expect(
-          c.expect.acceptableIntentLevels,
-          `${c.id}: intent level`,
-        ).toContain(result.metrics.intentSatisfaction.level);
-      }
-    }, 120_000);
+          result.metrics.trimmedVideoMs,
+          'trimmed video has non-zero duration',
+        ).toBeGreaterThan(0);
+        expect(
+          result.metrics.intentSatisfaction.level,
+          'intentSatisfaction.level was computed',
+        ).toMatch(/^(complete|partial|unmet|unknown)$/);
+        expect(
+          result.metrics.blockerPrelude?.endReason,
+          'BlockerPrelude reached an endReason',
+        ).toMatch(/^(clean|iter_cap|time_cap|decider_done|click_failed)$/);
+        expect(
+          result.directorReport.endReason,
+          'Director reached an endReason',
+        ).toMatch(/^(done|budget|error)$/);
+      }, timeoutMs);
+    }
   }
 });

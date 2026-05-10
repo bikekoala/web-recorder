@@ -635,6 +635,63 @@ The cold-start window — formerly 1-7 seconds of implicit dwells — is now hid
 
 ---
 
+## 0024 · Regression library + AI-first testing principle
+
+**Date**: 2026-05-10
+
+**Context**: The single `recordly.test.ts` integration test had calcified into a magic-number ratchet. Each model upgrade or prompt change pushed dwell counts and mismatch counts up; we kept bumping thresholds (`≤8` → `≤14` → ...) to "make the test green" without asking whether the recording was actually getting better or worse. Test green / red lost meaning.
+
+The user surfaced the deeper principle: the system is **bionic and open-ended**. We don't know in advance which website a customer will record or how they'll phrase their intent. Hardcoded thresholds for "good behaviour" calcify around the one website we tested, and break the moment we point the system somewhere else.
+
+**Choice (1) — `goals.md` Hard rule #6 "AI-first, not magic-numbers"**:
+Codifies the principle. Hardcoded numbers are acceptable for pure rendering parameters (px/s scroll speed, frame rate), schema-safety bounds that contain LLM output (dwell ≤ 3000ms), and test infrastructure (timeouts). They are NOT acceptable for thresholds that gate "is this good", "is this OK", "is this a blocker" — those are LLM judgments at recording time. Tests follow the same rule: pass/fail must not depend on counts that drift with model versions.
+
+**Choice (2) — Regression case library**:
+Replaces the single Recordly integration test with `tests/regression/cases.ts`:
+- `github-multistep` — extends Recordly: 简中 → back to project home → click `build` folder → view `package.json` source. Four discrete user verbs in one recording, exercising the agent's ability to chain actions.
+- `youtube-creator` — open YouTube homepage (logged-out, search-only state), search for a creator, open their channel, scroll recent videos. Tests open-ended navigation through a visually-empty starting state.
+- `gmaps-search-stay` — search "New York" on Google Maps, do not pan/zoom the canvas. Negative test: the agent must stay focused on search → results, not waste budget on irrelevant map controls.
+
+Each case has 2 prompt variants:
+- `natural` — straightforward conversational phrasing.
+- `distracting` — same intent embedded in extra unrelated chatter ("听说 X 是个好工具", "今天有点无聊…"). Tests planner's ability to isolate intent from social filler.
+
+`tests/regression/regression.test.ts` iterates the (case × prompt) matrix as separate `it()` blocks, all running in the existing `vitest.regression.config.ts` (sequential, 600s suite timeout, per-case timeout = `durationMs × 2 + 30s`).
+
+**Choice (3) — Categorical assertions only**:
+The regression test asserts ONLY:
+- `result.videoPath` is truthy (recording produced)
+- `result.metrics.trimmedVideoMs > 0`
+- `result.metrics.intentSatisfaction.level` matches the enum (the level itself can be ANY of the four values)
+- `result.metrics.blockerPrelude.endReason` matches the enum
+- `result.directorReport.endReason` matches the enum
+
+There is NO assertion on `implicitDwellCount`, `expectAfterMismatchCount`, `decisionCount`, `clicksExecuted`, or any other count. Per Hard rule #6, these will drift; their values are LOGGED for human review, not gated.
+
+**Naturalness verification is human-only.** The test prints the path of every produced `recording.webm`. The operator opens the videos and judges whether the playback feels like a real person used the page.
+
+**Rationale**:
+- Single-site tests give a false sense of robustness. Three sites with very different behaviours (turbo-frame SPA / video player / canvas-heavy map) is a much better proxy for "the system handles real-world variety".
+- Two prompt variants per case (natural + distracting) verify the planner's intent extraction is robust to how a real human phrases things — not just the one phrasing the test was tuned to.
+- Categorical assertions stay green across model upgrades. When the test goes red, the failure is meaningful (pipeline broken) instead of "we hit a new latency profile, bump the cap".
+- The ratcheting that produced `≤14` and `≤3` thresholds is itself the bug being fixed here: every bump was telling us our test was the wrong shape, not that the code was wrong.
+
+**Consequences**:
+- Empirical run (all 6 passing, ~4.9 min wall clock total):
+  - `github-multistep · natural`: `level=complete`, 7 clicks executed, 8 scrolls, 9 decisions. Multi-step navigation works end-to-end.
+  - `github-multistep · distracting`: passing. Planner isolates intent from "听说 Recordly 是个录屏工具…" chatter.
+  - `youtube-creator · {natural, distracting}`: passing. Agent searches from logged-out empty homepage and reaches creator content.
+  - `gmaps-search-stay · {natural, distracting}`: `level=complete`, agent does not pan the map, focuses on search → result panel.
+- The Recordly run's previous `intentSatisfaction.level=unmet` symptom is GONE in the new structure — the architectural wins of §0023 (Sonnet planner + briefing-hint surfacing + pre-fire) are now visible because the test surfaces categorical truth instead of fighting threshold drift.
+- Test wall clock: ~5 min for 6 runs. Acceptable for an integration-tier suite. CI can opt to run a single case for fast feedback (`npx vitest -t youtube-creator-natural`).
+- Opens space for adding cases incrementally — the library should grow with project capability, not by re-tuning numbers.
+
+**Preserves**: goals.md non-negotiables (especially #6, just added). §0019-§0023 architecture. The mechanical metrics (dwell counts, etc.) are still LOGGED via §0020's introspection entries, just no longer asserted-on.
+
+**Open**: case-specific negative-behaviour assertions (e.g. "gmaps-search-stay must NOT have a `drag` action in the log"). Today our action vocabulary has no `drag`, so the negative is trivially true. When/if drag is added, this case becomes load-bearing for "agent stays focused" verification.
+
+---
+
 ## Template for new entries
 
 ```
