@@ -24,6 +24,33 @@ const Schema = z.object({
   openrouterBaseUrl: z.string().url().default('https://openrouter.ai/api/v1'),
   llmModel: z.string().min(1).default('anthropic/claude-sonnet-4.5'),
 
+  /**
+   * FastDecider model — used by the Director's per-action decision calls.
+   * Optimized for low latency + cost. Default: `google/gemini-2.5-flash-lite`.
+   * Override with LLM_DECIDER_MODEL.
+   */
+  llmDeciderModel: z.string().min(1).default('google/gemini-2.5-flash-lite'),
+
+  /**
+   * Maximum actions per FastDecider response (lookahead depth).
+   * Higher = more buffer against LLM tail latency, but more chance of
+   * stale lookahead. Default 2.
+   */
+  directorLookaheadMax: z.number().int().min(1).max(5).default(2),
+
+  /**
+   * Implicit dwell duration when LLM is slower than animation, ms.
+   * Per-iteration; the Director will keep dwelling in 200ms chunks until
+   * the FastDecider response arrives.
+   */
+  directorDwellFallbackMs: z.number().int().min(50).max(800).default(200),
+
+  /**
+   * Recording window hard cap as multiple of `durationMs`. The Director
+   * forcibly injects `done` if the recording exceeds this.
+   */
+  directorHardBudgetMult: z.number().min(1.0).max(2.0).default(1.2),
+
   // Browser / recording defaults. These are baseline values; specific jobs
   // may override per-session in the future (e.g. mobile viewports).
   viewport: z.object({
@@ -49,6 +76,16 @@ const raw = {
   openrouterApiKey: process.env.OPENROUTER_API_KEY,
   openrouterBaseUrl: process.env.OPENROUTER_BASE_URL,
   llmModel: process.env.LLM_MODEL,
+  llmDeciderModel: process.env.LLM_DECIDER_MODEL,
+  directorLookaheadMax: process.env.DIRECTOR_LOOKAHEAD_MAX
+    ? Number(process.env.DIRECTOR_LOOKAHEAD_MAX)
+    : undefined,
+  directorDwellFallbackMs: process.env.DIRECTOR_DWELL_FALLBACK_MS
+    ? Number(process.env.DIRECTOR_DWELL_FALLBACK_MS)
+    : undefined,
+  directorHardBudgetMult: process.env.DIRECTOR_HARD_BUDGET_MULT
+    ? Number(process.env.DIRECTOR_HARD_BUDGET_MULT)
+    : undefined,
   viewport: {
     width: process.env.VIEWPORT_WIDTH ? Number(process.env.VIEWPORT_WIDTH) : undefined,
     height: process.env.VIEWPORT_HEIGHT ? Number(process.env.VIEWPORT_HEIGHT) : undefined,
