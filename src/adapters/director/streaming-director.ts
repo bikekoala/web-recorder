@@ -4,9 +4,10 @@ import type { DirectorAction } from '../../domain/director-action.js';
 import { SCROLL_SPEED_PROFILES } from '../../domain/director-action.js';
 import type { ClickHint, DirectorBriefing } from '../../domain/plan.js';
 import { config } from '../../infra/config.js';
+import { track } from '../../infra/pending.js';
 import { logger as rootLogger } from '../../infra/logger.js';
 import type { DirectorReport, IDirector } from '../../ports/director.js';
-import type { IFastDecider } from '../../ports/fast-decider.js';
+import type { DecisionResponse, IFastDecider } from '../../ports/fast-decider.js';
 import type { IPageSession } from '../../ports/page-session.js';
 import type { DirectorState } from '../../domain/director-state.js';
 
@@ -42,38 +43,92 @@ export class StreamingDirector implements IDirector {
     const startedAt = Date.now();
     const hardDeadlineAt = startedAt + briefing.durationMs * config.directorHardBudgetMult;
     const recentActions: ActionSummary[] = [];
-    const report = {
-      decisionCount: 0,
-      implicitDwellCount: 0,
-      expectAfterMismatchCount: 0,
-    };
+    let decisionCount = 0;
+    let implicitDwellCount = 0;
+    let expectAfterMismatchCount = 0;
 
     await session.beginRecording();
 
+    let actionQueue: DirectorAction[] = [];
+    let pending: ReturnType<typeof track<DecisionResponse>> | null = null;
+
+    // Cold start: fire first decision call.
+    {
+      const state = await this.observeState(briefing, session, recentActions, briefing.durationMs);
+      pending = track(this.decider.decide(state));
+      decisionCount += 1;
+    }
+
     while (true) {
       const remainingMs = Math.max(0, hardDeadlineAt - Date.now());
-      const state = await this.observeState(briefing, session, recentActions, remainingMs);
-      const decision = await this.decider.decide(state);
-      report.decisionCount += 1;
 
-      let endReason: 'done' | 'budget' | null = null;
-      for (const action of decision.actions) {
-        const summary = await this.executeAction(action, session);
-        recentActions.push(summary);
-        if (recentActions.length > 3) recentActions.shift();
-        if (action.kind === 'done') { endReason = 'done'; break; }
-        if (Date.now() >= hardDeadlineAt) { endReason = 'budget'; break; }
+      // Top up the queue if empty: block on pending decision.
+      if (actionQueue.length === 0) {
+        if (!pending) {
+          const state = await this.observeState(briefing, session, recentActions, remainingMs);
+          pending = track(this.decider.decide(state));
+          decisionCount += 1;
+        }
+        try {
+          const decision = await pending.promise;
+          actionQueue = [...decision.actions];
+          pending = null;
+        } catch (err) {
+          this.logger.warn({ err }, 'decider failed at queue top-up');
+          return this.endReport('error', startedAt, decisionCount, implicitDwellCount, expectAfterMismatchCount);
+        }
       }
-      if (endReason !== null) {
-        return {
-          totalMs: Date.now() - startedAt,
-          decisionCount: report.decisionCount,
-          implicitDwellCount: report.implicitDwellCount,
-          expectAfterMismatchCount: report.expectAfterMismatchCount,
-          endReason,
-        };
+
+      const action = actionQueue.shift()!;
+
+      // Pre-fire the next decision call BEFORE awaiting the animation.
+      // EXCEPTION: skip pre-fire if the action is `done` (we're about to exit).
+      if (action.kind !== 'done' && pending === null) {
+        const state = await this.observeState(briefing, session, recentActions, remainingMs);
+        pending = track(this.decider.decide(state));
+        decisionCount += 1;
+      }
+
+      // Execute the animation.
+      const summary = await this.executeAction(action, session);
+      recentActions.push(summary);
+      if (recentActions.length > 3) recentActions.shift();
+
+      // If the pending decision resolved during animation, REPLACE the queue.
+      if (pending && pending.isResolved) {
+        if (pending.error) {
+          this.logger.warn({ err: pending.error }, 'decider failed in-flight');
+          // Fall through; next loop iteration will try a fresh call.
+          pending = null;
+        } else if (pending.value) {
+          actionQueue = [...pending.value.actions];
+          pending = null;
+        }
+      }
+
+      if (action.kind === 'done') {
+        return this.endReport('done', startedAt, decisionCount, implicitDwellCount, expectAfterMismatchCount);
+      }
+      if (Date.now() >= hardDeadlineAt) {
+        return this.endReport('budget', startedAt, decisionCount, implicitDwellCount, expectAfterMismatchCount);
       }
     }
+  }
+
+  private endReport(
+    endReason: 'done' | 'budget' | 'error',
+    startedAt: number,
+    decisionCount: number,
+    implicitDwellCount: number,
+    expectAfterMismatchCount: number,
+  ): DirectorReport {
+    return {
+      totalMs: Date.now() - startedAt,
+      decisionCount,
+      implicitDwellCount,
+      expectAfterMismatchCount,
+      endReason,
+    };
   }
 
   // ---------------------------------------------------------------- internals

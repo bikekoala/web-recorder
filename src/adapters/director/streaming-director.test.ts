@@ -82,3 +82,46 @@ describe('StreamingDirector — basic loop', () => {
     expect(session.events.filter((e) => e.kind === 'beginRecording')).toHaveLength(1);
   });
 });
+
+describe('StreamingDirector — streaming overlap', () => {
+  it('fires next decider call DURING current animation', async () => {
+    const decider = new FakeFastDecider([
+      {
+        response: {
+          actions: [{ kind: 'scroll', deltaPx: 600, speed: 'slow', reasoning: 'first' }],
+        },
+        delayMs: 50,  // very fast LLM
+      },
+      {
+        response: { actions: [{ kind: 'done', reasoning: 'finished' }] },
+        delayMs: 50,
+      },
+    ]);
+    const session = new FakePageSession();
+    const director = new StreamingDirector({ decider });
+
+    await director.run(briefing(), session);
+
+    // The scroll animation duration: 600 / 250 * 1000 = 2400ms (clamped to 2400)
+    // First decision should arrive at t≈50ms (defaultDelayMs).
+    // Scroll starts at t≈50, ends at t≈50+2400=2450.
+    // Second decision call should fire DURING the scroll, i.e. at t<2450.
+    expect(decider.decisions).toHaveLength(2);
+    const secondDecisionT = decider.decisions[1]!.t;
+    // The second call must have STARTED before the scroll animation ended.
+    // Streaming director fires it right after the action begins, so t≈50ms.
+    // (If sequential, t would be ≈2450ms.)
+    expect(secondDecisionT).toBeLessThan(500); // generous bound
+  });
+
+  it('does not fire a second call if the first action is "done"', async () => {
+    const decider = new FakeFastDecider([
+      { response: { actions: [{ kind: 'done', reasoning: 'finished' }] } },
+    ]);
+    const session = new FakePageSession();
+    const director = new StreamingDirector({ decider });
+
+    await director.run(briefing(), session);
+    expect(decider.decisions).toHaveLength(1); // not 2
+  });
+});
