@@ -37,6 +37,7 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Action vocabulary: 7 primitives (click / scroll / dwell / type / key / back / done) | ✅ |
 | ActionEvidence per-action — LLM verifies last action via URL/title/focused-value (§0026) | ✅ |
 | `DirectorBriefing.draftSequence` — planner pre-plans, Director seeds queue (§0026) | ✅ |
+| `IClickVerifier` — AI screenshot check after each click; failed click clears queue (§0027) | ✅ |
 | Regression suite — 3 sites × 2 human-prompt variants, categorical asserts only | ✅ |
 | Operation log: `decision` / `decision_failure` / `page_diagnostic` entries | ✅ |
 | Visual-blocker prompt rules (auto-clicks paused-video play overlays etc.) | ✅ |

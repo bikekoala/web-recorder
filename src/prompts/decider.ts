@@ -156,7 +156,15 @@ function formatRecentAction(a: import('../domain/director-state.js').ActionSumma
       const title = ev.titleChanged ? `title: changed` : 'title: unchanged';
       // Title-changed-but-URL-stable is the SPA / turbo-frame fingerprint.
       const spa = !ev.urlChanged && ev.titleChanged ? ' (SPA-style content swap)' : '';
-      return `${a.kind}: ${a.brief}${failTag} — ${url}; ${title}${spa}`;
+      // AI verifier verdict (§0027). Loud false-tag tells the LLM "the
+      // click hit the wrong thing — reconsider your target".
+      const ai =
+        ev.aiVerified === false
+          ? ` [AI VERIFIER: ✗ wrong target — ${ev.aiReason ?? 'no reason'}]`
+          : ev.aiVerified === true
+          ? ` [AI: ✓ ${ev.aiReason ?? 'matched'}]`
+          : '';
+      return `${a.kind}: ${a.brief}${failTag} — ${url}; ${title}${spa}${ai}`;
     }
     case 'type': {
       const post =

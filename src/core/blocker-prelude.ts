@@ -191,6 +191,7 @@ export class BlockerPrelude {
               kind: 'click',
               urlBefore: '', urlAfter: '', urlChanged: false,
               titleBefore: '', titleAfter: '', titleChanged: false,
+              aiVerified: null, aiReason: null,
             },
           });
           if (recentActions.length > 3) recentActions.shift();

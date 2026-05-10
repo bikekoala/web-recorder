@@ -249,3 +249,103 @@ describe('StreamingDirector — error + budget paths', () => {
     expect(report.endReason).toBe('budget');
   });
 });
+
+describe('StreamingDirector — click verifier (§0027)', () => {
+  it('flags click as failed when verifier returns matched=false, then re-decides with failure context', async () => {
+    // Decision 1 from a draftSequence-like queue: click + type + key Enter
+    // (typed-twice / wrong-target failure mode if the click missed).
+    // Decision 2 (after click failure) must be a different click.
+    const decider = new FakeFastDecider([
+      {
+        response: {
+          actions: [
+            { kind: 'click', target: 'the search bar', reasoning: 'focus' },
+            { kind: 'type', text: 'hello', reasoning: 'enter query' },
+            { kind: 'key', key: 'Enter', reasoning: 'submit' },
+          ],
+        },
+      },
+      // Recovery decision after queue clear:
+      { response: { actions: [{ kind: 'click', target: 'the actual search input', reasoning: 'try again' }] } },
+      { response: { actions: [{ kind: 'done', reasoning: 'ok' }] } },
+    ]);
+    const session = new FakePageSession();
+    // Verifier rejects the first click target only (the suspicious one).
+    let verifierCalls = 0;
+    const verifier = {
+      modelId: 'fake/verifier',
+      verify: async () => {
+        verifierCalls += 1;
+        if (verifierCalls === 1) {
+          return { matched: false, reason: 'sidebar opened, search untouched', latencyMs: 10 };
+        }
+        return { matched: true, reason: 'looks focused', latencyMs: 10 };
+      },
+    };
+    const director = new StreamingDirector({ decider, clickVerifier: verifier });
+
+    await director.run(briefing(20_000), session);
+
+    // The first click was made (Playwright-side); but type + key Enter
+    // from the same queue must NOT have fired (queue cleared).
+    const clicks = session.events.filter((e) => e.kind === 'clickByDescription');
+    const types = session.events.filter((e) => e.kind === 'type');
+    const keys = session.events.filter((e) => e.kind === 'key');
+    expect(clicks.length).toBeGreaterThanOrEqual(2); // first click + recovery click
+    expect(types).toHaveLength(0); // type never fired thanks to queue clear
+    expect(keys).toHaveLength(0);
+
+    // First click's evidence carries the AI verdict (false + reason).
+    const failureEntries = session.appendedEntries.filter(
+      (e) => e.type === 'decision_failure' && e.reason === 'click_failed',
+    );
+    expect(failureEntries.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('passes click through cleanly when verifier returns matched=true', async () => {
+    const decider = new FakeFastDecider([
+      { response: { actions: [{ kind: 'click', target: 'the right thing', reasoning: 'go' }] } },
+      { response: { actions: [{ kind: 'done', reasoning: 'ok' }] } },
+    ]);
+    const session = new FakePageSession();
+    const verifier = {
+      modelId: 'fake/verifier',
+      verify: async () => ({ matched: true, reason: 'looks correct', latencyMs: 10 }),
+    };
+    const director = new StreamingDirector({ decider, clickVerifier: verifier });
+
+    const report = await director.run(briefing(), session);
+    expect(report.endReason).toBe('done');
+
+    // No click_failed entries when verifier approves.
+    const failureEntries = session.appendedEntries.filter(
+      (e) => e.type === 'decision_failure' && e.reason === 'click_failed',
+    );
+    expect(failureEntries).toHaveLength(0);
+  });
+
+  it('treats verifier errors as optimistic match (does not fail the click)', async () => {
+    const decider = new FakeFastDecider([
+      { response: { actions: [{ kind: 'click', target: 'somewhere', reasoning: 'go' }] } },
+      { response: { actions: [{ kind: 'done', reasoning: 'ok' }] } },
+    ]);
+    const session = new FakePageSession();
+    const verifier = {
+      modelId: 'fake/verifier',
+      verify: async () => {
+        throw new Error('network down');
+      },
+    };
+    const director = new StreamingDirector({ decider, clickVerifier: verifier });
+
+    const report = await director.run(briefing(), session);
+
+    // Verifier errored, but the click is treated as succeeded — the recording
+    // continues to the second decision (`done`).
+    expect(report.endReason).toBe('done');
+    const failureEntries = session.appendedEntries.filter(
+      (e) => e.type === 'decision_failure' && e.reason === 'click_failed',
+    );
+    expect(failureEntries).toHaveLength(0);
+  });
+});

@@ -16,6 +16,7 @@
  *   PROTOTYPE_DURATION_MS  the target recording duration in ms
  */
 
+import { LlmClickVerifier } from '../src/adapters/decider/llm-click-verifier.js';
 import { LlmFastDecider } from '../src/adapters/decider/llm-fast-decider.js';
 import { StreamingDirector } from '../src/adapters/director/streaming-director.js';
 import { StagehandPageSession } from '../src/adapters/agent/stagehand-session.js';
@@ -52,7 +53,10 @@ async function main(): Promise<void> {
   // The Director and BlockerPrelude share an LlmFastDecider implementation
   // (same model, same OpenRouter endpoint). Each constructs its own instance
   // so latency stats from the prelude don't pollute the Director's report.
-  const director = new StreamingDirector({ decider: new LlmFastDecider() });
+  const director = new StreamingDirector({
+    decider: new LlmFastDecider(),
+    clickVerifier: new LlmClickVerifier(),
+  });
   const blockerPrelude = new BlockerPrelude({ decider: new LlmFastDecider() });
   // Pre-fire decider — separate instance again, but the LLM call it makes
   // becomes Decision 1 inside the Director, replacing the cold-start.

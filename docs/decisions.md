@@ -843,6 +843,66 @@ The user's "real human" benchmark is substantially closer.
 
 ---
 
+## 0027 · AI click verification (Tier A self-check)
+
+**Date**: 2026-05-10
+
+**Context**: Watching the §0026 regressions, a class of failure remained invisible to the architecture: **clicks that Playwright reported as succeeded but actually hit the wrong element**. The clearest example: the agent says "click YouTube search bar", `clickByDescription` resolves to the hamburger menu (similarly placed at top), Playwright clicks something, returns success. The post-click `ActionEvidence` shows URL unchanged + title unchanged — visually indistinguishable from a SPA-style "search box gained focus" click. Two actions later (`type` into nothing, `key Enter` doing nothing), the failure surfaces — but by then we've burned 5+ seconds of the budget.
+
+The user's diagnosis was that the agent has no way to verify "did I click the *right* thing?" — only "did the click execute?". Code-checkable evidence (URL/title) can't disambiguate "right click on SPA page" from "wrong click that happened to not navigate". The semantic question — *what visibly changed and does it match my intent?* — needs a vision LLM.
+
+**Choice — `IClickVerifier` port + `LlmClickVerifier` adapter**:
+
+After every `click` action whose underlying Playwright call did NOT throw, the Director:
+1. Snaps a fresh post-click screenshot.
+2. Asks the verifier: *"You just clicked '<target description>'. The screenshot shows the page after the click. Did the click hit the right element?"*
+3. Receives `{ matched: boolean, reason: string }`.
+4. If `matched=false`: marks the action as failed (carrying the reason in `ActionEvidence['click'].aiReason`), clears the action queue, and triggers a fresh decider call with `lastActionFailure` set to the verifier's reason. The same recovery path used for Playwright-thrown click errors.
+
+The verifier is its own port (not a method on `IFastDecider`) because the prompt scope is much narrower (one image + one boolean out) and the configurability axis is independent (one might want a smaller verifier model than the decider model).
+
+`LlmClickVerifier` reuses the decider's model by default (`config.llmDeciderModel` — typically `gpt-4o-mini`) so no new env knob is needed for now. The prompt explicitly tells the verifier:
+- Default to `matched: true` on uncertainty (false negatives waste budget on retries)
+- Recognise SPA-style clicks (URL stable + content/title shift = success)
+- Look for focus / navigation / modal-opened / content-shifted as success signals
+- Look for unrelated UI (sidebar opened when search was target) as failure signals
+
+**Director main-loop integration**:
+
+Before §0027, on `summary.succeeded === false` for a click, the Director only logged a `decision_failure` and continued the queue — letting any draftSequence type/Enter that followed fire into a wrong-state page. After §0027, a failed click also: clears `actionQueue`, nulls `pending`/`pendingMeta`, and immediately calls `decider.decide` with `lastActionFailure` populated. The recovery path is unified — Playwright-thrown clicks and verifier-rejected clicks now both stop the cascade.
+
+**Rationale**:
+- The user explicitly proposed this in plain language: "每一步操作你要评估（代码或者 AI）是否符合预期". The verifier IS the AI step of that evaluation. We already had the code step (§0026 evidence).
+- AI verification is selectively applied to clicks because:
+  - `type` evidence (focusedValue match) is already self-verifying via code
+  - `scroll` evidence (deltaAchieved) is self-verifying
+  - `key`/`back` evidence (URL change) is mostly self-verifying
+  - `click` is the only action where code evidence is ambiguous between "right click on SPA" and "wrong click did nothing" — exactly the gap a vision LLM can close
+- Per goals.md non-negotiable #3 ("user intent satisfied OR transparently not"): silent wrong-clicks that succeeded-via-Playwright but failed-in-reality were the worst offender — neither satisfied NOR transparently not. The verifier closes that loop.
+
+**Consequences** — empirical regression run (3 rounds × 6 cases = 18 runs):
+
+- **10 verifier-flagged wrong-clicks across 18 runs** (~0.5/run). Targets flagged: "the simplified Chinese language link" (3 different runs, validated via frame extraction — page stayed in English; verifier was correct), "the build folder link" (turbo-frame click that actually didn't reach), "MrBeast channel link" (search results layout where the agent's target description didn't match a clickable element), "the Search Google Maps input box" (one occurrence — search input visually unchanged after click).
+- **No confirmed false positives**: spot-checked frames before/after one flagged github click — page state truly unchanged. Verifier reasons are coherent and trace what a human would describe.
+- These are clicks that, before §0027, would have logged as `succeeded: true` and let the recording proceed into broken downstream actions. Now they short-circuit.
+- All 18 runs categorically pass (recording produced, intent satisfaction computed).
+- New unit tests: 3 covering verifier matched=false → queue clear + recovery, matched=true → pass-through, verifier error → optimistic match. Total unit 59 → 62.
+
+**Costs (honest)**:
+- Verifier latency on OpenRouter / gpt-4o-mini ran ~2.5s p95 (higher than the ~500ms I designed for; PNG screenshot base64 + per-request overhead). With 2-4 clicks per case, this adds 5-10s to total wall-clock per run.
+- Token cost: roughly +$0.0005 per click. Negligible.
+- Recording-window budget impact: minor — the verifier call typically lands during the post-click natural settle window.
+
+**Open issue (deferred to §0028)**:
+
+When the verifier flags a click and the Director re-decides, the LLM **often picks the same target description** (and fails again). On one github run, "the Chinese language link" was attempted 3 times in a row before the agent finally tried a different approach. The retry waste is significant.
+
+Fix candidate: track verifier-rejected click targets per run; after 2 rejections of the same (or near-same) target description, EXCLUDE it from `briefingHints` and inject a strong "this target seems unreachable, try a different element" hint into the next decider state. Mirror of §0025's `fulfilledHints` filter, but for the failure direction.
+
+**Preserves**: §0019-§0026. Goals.md non-negotiables #1 (looks human: silent wrong-clicks no longer cascade), #3 (intent satisfied or transparently not: verifier verdict is the missing transparency).
+
+---
+
 ## Template for new entries
 
 ```

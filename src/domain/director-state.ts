@@ -90,6 +90,15 @@ export type ActionEvidence =
       titleBefore: string;
       titleAfter: string;
       titleChanged: boolean;
+      /**
+       * AI verifier verdict (§0027). null when no verifier is configured
+       * OR the verification call itself failed (treated as optimistic
+       * "matched"). Non-null + false means the verifier saw the screenshot
+       * AFTER the click and judged the click landed on the wrong element.
+       */
+      aiVerified: boolean | null;
+      /** Verifier's brief explanation. null when aiVerified is null. */
+      aiReason: string | null;
     }
   | {
       kind: 'type';

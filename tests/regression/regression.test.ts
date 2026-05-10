@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { LlmClickVerifier } from '../../src/adapters/decider/llm-click-verifier.js';
 import { LlmFastDecider } from '../../src/adapters/decider/llm-fast-decider.js';
 import { StreamingDirector } from '../../src/adapters/director/streaming-director.js';
 import { LlmPlanner } from '../../src/adapters/planner/llm-planner.js';
@@ -57,7 +58,10 @@ describe('regression suite', () => {
         const runner = new RecordJobRunner(
           session,
           new LlmPlanner(),
-          new StreamingDirector({ decider: new LlmFastDecider() }),
+          new StreamingDirector({
+            decider: new LlmFastDecider(),
+            clickVerifier: new LlmClickVerifier(),
+          }),
           new BlockerPrelude({ decider: new LlmFastDecider() }),
           new LlmFastDecider(), // pre-fire decider
         );

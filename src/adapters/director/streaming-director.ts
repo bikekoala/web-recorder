@@ -7,6 +7,7 @@ import type { ClickHint, DirectorBriefing } from '../../domain/plan.js';
 import { config } from '../../infra/config.js';
 import { track } from '../../infra/pending.js';
 import { logger as rootLogger } from '../../infra/logger.js';
+import type { IClickVerifier } from '../../ports/click-verifier.js';
 import type { DirectorReport, DirectorRunOpts, IDirector } from '../../ports/director.js';
 import type { DecisionResponse, ExpectAfter, IFastDecider } from '../../ports/fast-decider.js';
 import type { IPageSession } from '../../ports/page-session.js';
@@ -20,6 +21,17 @@ export class DirectorError extends DomainError {
 
 interface StreamingDirectorOpts {
   decider: IFastDecider;
+  /**
+   * Optional AI click verifier (§0027). When provided, every successful
+   * click is followed by a verification call: "did the click hit the
+   * intended target?". A negative verdict marks the click as failed,
+   * which clears the action queue and triggers a fresh decider call
+   * with the failure reason — preventing wrong-target clicks from
+   * cascading into wasted downstream actions (e.g. typing into the
+   * wrong element after clicking the hamburger menu instead of the
+   * search bar).
+   */
+  clickVerifier?: IClickVerifier;
 }
 
 /**
@@ -31,10 +43,12 @@ interface StreamingDirectorOpts {
  */
 export class StreamingDirector implements IDirector {
   private readonly decider: IFastDecider;
+  private readonly clickVerifier: IClickVerifier | null;
   private readonly logger = rootLogger.child({ component: 'StreamingDirector' });
 
   constructor(opts: StreamingDirectorOpts) {
     this.decider = opts.decider;
+    this.clickVerifier = opts.clickVerifier ?? null;
   }
 
   async run(
@@ -194,12 +208,34 @@ export class StreamingDirector implements IDirector {
         }
       }
 
-      // Audit: a click that came back !succeeded is worth a separate
-      // failure entry — the regular `click` log entry doesn't carry a
-      // success flag yet, and "click_failed" is a recoverable mismatch
-      // worth seeing in the timeline.
+      // Audit + recovery on a failed click. Two paths into here:
+      //   - Playwright threw (target not found, page closed, etc.)
+      //   - AI verifier judged the click hit the wrong element (§0027)
+      // Either way, downstream actions in the queue (especially `type`
+      // and `key Enter` from a draftSequence) would now fire into the
+      // wrong page state. Clear the queue, log, and force a fresh
+      // decision with the failure reason in `lastActionFailure` so the
+      // LLM can recover with full context.
       if (action.kind === 'click' && !summary.succeeded) {
-        this.logFailure(session, pendingMeta, 'click_failed', summary.brief);
+        const failureDetail = (summary.evidence.kind === 'click' && summary.evidence.aiReason)
+          ? `wrong target — ${summary.evidence.aiReason}`
+          : summary.brief;
+        this.logFailure(session, pendingMeta, 'click_failed', failureDetail);
+        actionQueue = [];
+        pending = null;
+        pendingMeta = null;
+        const remainingAfter = Math.max(0, hardDeadlineAt - Date.now());
+        const state = await this.observeState(briefing, session, recentActions, remainingAfter, fulfilledHints);
+        const stateWithFailure: DirectorState = {
+          ...state,
+          lastActionFailure: `click on '${action.target}' did not land: ${failureDetail}`,
+        };
+        pending = track(this.decider.decide(stateWithFailure));
+        decisionCount += 1;
+        pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
+        // Skip the rest of this iteration's checks — the queue is empty,
+        // the next iteration will pull from `pending`.
+        continue;
       }
 
       // expectAfter check — cheap text-based validation.
@@ -307,10 +343,44 @@ export class StreamingDirector implements IDirector {
         }
         const urlAfter = await safeUrl(session);
         const titleAfter = await safeTitle(session);
+
+        // §0027: AI verification. Only fires when the underlying click
+        // didn't already throw — a Playwright-thrown click is unambiguously
+        // failed; no need to ask the LLM. Verifier errors are swallowed:
+        // we'd rather miss a wrong-click than block the recording on a
+        // network blip in the verifier path.
+        let aiVerified: boolean | null = null;
+        let aiReason: string | null = null;
+        if (succeeded && this.clickVerifier) {
+          try {
+            const screenshot = await session.screenshot();
+            const verdict = await this.clickVerifier.verify({
+              targetDescription: action.target,
+              screenshot,
+              urlChanged: urlBefore !== urlAfter,
+              titleChanged: titleBefore !== titleAfter,
+            });
+            aiVerified = verdict.matched;
+            aiReason = verdict.reason;
+            if (!verdict.matched) {
+              succeeded = false;
+              this.logger.info(
+                { target: action.target, reason: verdict.reason, latencyMs: verdict.latencyMs },
+                'click verifier flagged wrong target',
+              );
+            }
+          } catch (err) {
+            this.logger.debug({ err }, 'click verifier errored — treating as optimistic match');
+            // aiVerified stays null = "unknown". succeeded stays whatever
+            // the underlying click reported.
+          }
+        }
+
         const evidence: ActionEvidence = {
           kind: 'click',
           urlBefore, urlAfter, urlChanged: urlBefore !== urlAfter,
           titleBefore, titleAfter, titleChanged: titleBefore !== titleAfter,
+          aiVerified, aiReason,
         };
         const brief = `click ${truncate(action.target, 40)}${succeeded ? '' : ' [err]'}`;
         return { kind: 'click', brief, succeeded, evidence };
@@ -572,7 +642,7 @@ function buildBudgetCutSummary(action: DirectorAction): ActionSummary {
   const evidence: ActionEvidence = (() => {
     switch (kind) {
       case 'click':
-        return { kind: 'click', urlBefore: '', urlAfter: '', urlChanged: false, titleBefore: '', titleAfter: '', titleChanged: false };
+        return { kind: 'click', urlBefore: '', urlAfter: '', urlChanged: false, titleBefore: '', titleAfter: '', titleChanged: false, aiVerified: null, aiReason: null };
       case 'scroll':
         return { kind: 'scroll', scrollYBefore: 0, scrollYAfter: 0, deltaRequested: action.deltaPx, deltaAchieved: 0 };
       case 'dwell':
