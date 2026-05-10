@@ -77,6 +77,20 @@ const Schema = z.object({
   browserChannel: z
     .enum(['chromium', 'chrome', 'chrome-beta', 'msedge', 'msedge-beta', 'msedge-dev'])
     .optional(),
+
+  /**
+   * Optional path to a Playwright `storageState.json` file. When set, the
+   * browser launches with the cookies + localStorage + sessionStorage from
+   * that file pre-loaded — letting recordings start from a "logged-in"
+   * state without us managing credentials.
+   *
+   * Generate one offline with: `npx playwright codegen --save-storage=auth.json <site>`
+   *
+   * Per `docs/goals.md` non-goals, we never collect or handle the user's
+   * credentials directly; this is the user's escape hatch for sites that
+   * require authentication.
+   */
+  storageStatePath: z.string().min(1).optional(),
 });
 
 const raw = {
@@ -101,6 +115,7 @@ const raw = {
     height: process.env.VIEWPORT_HEIGHT ? Number(process.env.VIEWPORT_HEIGHT) : undefined,
   },
   browserChannel: process.env.BROWSER_CHANNEL,
+  storageStatePath: process.env.STORAGE_STATE_PATH,
 };
 
 const parsed = Schema.safeParse(raw);
