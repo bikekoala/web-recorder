@@ -30,11 +30,13 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `IFastDecider` + LlmFastDecider (gpt-4o-mini default; Gemini Flash Lite preview too slow) | ✅ |
 | `RecordJobRunner` (orchestrates plan → prelude → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (68 passing) | ✅ |
+| Vitest unit tests (77 passing) | ✅ |
 | Integration test on Recordly scenario | ✅ |
 | Operation log: `decision` / `decision_failure` / `page_diagnostic` entries | ✅ |
 | Visual-blocker prompt rules (auto-clicks paused-video play overlays etc.) | ✅ |
 | Pre-recording `BlockerPrelude` (probe → dismiss loop, NOT in deliverable) | ✅ |
+| `intentSatisfaction` metric (transparent "did we do what user asked?") | ✅ |
+| Bot-detection mitigations (chrome flags + UA + optional storageState) | ✅ |
 | Cursor trajectory synth (`ICursorSynthesizer`) | ⏳ |
 | HTTP API | ⏳ |
 

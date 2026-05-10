@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 
+import type { ActionLogEntry, RecordingWindow } from '../domain/action-log.js';
 import { trimVideo, videoDurationMs } from '../infra/ffmpeg.js';
 import { logger as rootLogger } from '../infra/logger.js';
 import type { IPageSession } from '../ports/page-session.js';
@@ -75,6 +76,34 @@ export interface RunMetrics {
   stableTimeouts: number;
   /** BlockerPrelude summary, or null if the runner was constructed without one. */
   blockerPrelude: BlockerPreludeReport | null;
+  /**
+   * Best-effort categorical answer to "did we do what the user asked?".
+   *
+   * The contract this project promises (see docs/goals.md hard
+   * non-negotiable #3): user intent is satisfied OR transparently not.
+   * This field is the "transparently" half — operators reviewing a run
+   * can see at a glance whether every click hint extracted by the planner
+   * actually got executed inside the recording window, and whether any
+   * scroll happened.
+   *
+   * Heuristic only: when the planner can't extract specific click hints
+   * from a vague prompt (`hintsResolvedPreRecording === 0`), we return
+   * `level: 'unknown'` rather than guessing. The action log is still the
+   * source of truth — this is a digest.
+   */
+  intentSatisfaction: IntentSatisfaction;
+}
+
+export interface IntentSatisfaction {
+  /** == briefing.hints.length. Click targets the planner identified. */
+  hintsResolvedPreRecording: number;
+  /** Count of `click` ActionLogEntry inside the recording window. */
+  clicksExecuted: number;
+  /** Count of `scroll` ActionLogEntry inside the recording window. */
+  scrollsExecuted: number;
+  level: 'complete' | 'partial' | 'unmet' | 'unknown';
+  /** One-sentence human-readable summary. */
+  note: string;
 }
 
 export class RecordJobRunner {
@@ -170,6 +199,12 @@ export class RecordJobRunner {
     const rawVideoMs = await videoDurationMs(artifacts.videoPath).catch(() => null);
     const trimmedVideoMs = await videoDurationMs(videoPath).catch(() => null);
 
+    const intentSatisfaction = computeIntentSatisfaction(
+      briefing.hints.length,
+      artifacts.actionLog.entries,
+      artifacts.recording,
+    );
+
     const metrics: RunMetrics = {
       totalWallClockMs: Date.now() - wallClockT0,
       setupMs,
@@ -183,7 +218,17 @@ export class RecordJobRunner {
       fallbackClicks: 0,
       stableTimeouts: 0,                       // tracked by Director if needed
       blockerPrelude: blockerPreludeReport,
+      intentSatisfaction,
     };
+
+    if (intentSatisfaction.level === 'unmet' || intentSatisfaction.level === 'partial') {
+      this.logger.warn(
+        { intentSatisfaction },
+        'recording finished but user intent not fully satisfied — review action log',
+      );
+    } else {
+      this.logger.info({ intentSatisfaction }, 'intent satisfaction summary');
+    }
 
     return {
       videoPath,
@@ -205,4 +250,59 @@ export class RecordJobRunner {
     }).cfg?.viewport;
     return viewport ?? { width: 1280, height: 720 };
   }
+}
+
+/**
+ * Categorize "did the agent do what the user asked?" using only the action
+ * log + the planner's pre-resolved click hint count. Heuristic — when the
+ * planner couldn't extract specific click targets we return `'unknown'`
+ * rather than guess.
+ *
+ * Only entries inside the recording window count. Setup-phase clicks
+ * (BlockerPrelude dismissals) are excluded — those are not user intent.
+ */
+export function computeIntentSatisfaction(
+  hintsResolvedPreRecording: number,
+  entries: ActionLogEntry[],
+  window: RecordingWindow | null,
+): IntentSatisfaction {
+  const inWindow = (e: ActionLogEntry): boolean =>
+    !window ? true : e.t >= window.startedAtMs && e.t <= window.endedAtMs;
+
+  const clicksExecuted = entries.filter((e) => e.type === 'click' && inWindow(e)).length;
+  const scrollsExecuted = entries.filter((e) => e.type === 'scroll' && inWindow(e)).length;
+
+  let level: IntentSatisfaction['level'];
+  let note: string;
+
+  if (hintsResolvedPreRecording === 0) {
+    // Vague prompt or no specific click targets — we can't know.
+    if (clicksExecuted === 0 && scrollsExecuted === 0) {
+      level = 'unmet';
+      note = 'no hints, no actions executed in recording window';
+    } else {
+      level = 'unknown';
+      note = `no specific click hints; ${clicksExecuted} click(s), ${scrollsExecuted} scroll(s) executed`;
+    }
+  } else if (clicksExecuted >= hintsResolvedPreRecording && scrollsExecuted >= 1) {
+    level = 'complete';
+    note = `all ${hintsResolvedPreRecording} click hint(s) executed plus scrolling`;
+  } else if (clicksExecuted >= hintsResolvedPreRecording) {
+    level = 'partial';
+    note = `all ${hintsResolvedPreRecording} click hint(s) executed but no scrolling — user may have asked for both`;
+  } else if (clicksExecuted > 0) {
+    level = 'partial';
+    note = `${clicksExecuted}/${hintsResolvedPreRecording} click hint(s) executed`;
+  } else {
+    level = 'unmet';
+    note = `0/${hintsResolvedPreRecording} click hint(s) executed`;
+  }
+
+  return {
+    hintsResolvedPreRecording,
+    clicksExecuted,
+    scrollsExecuted,
+    level,
+    note,
+  };
 }

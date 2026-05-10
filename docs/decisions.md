@@ -533,6 +533,46 @@ The BlockerPrelude:
 
 ---
 
+## 0022 · Duration contract: best-effort + transparent intentSatisfaction
+
+**Date**: 2026-05-10
+
+**Context**: Users give natural-language input including a `durationMs` ("record 10s") that we cannot strictly honor under all page conditions:
+
+- Lazy-loaded targets: an element the user wants to click may take 20s+ to appear. If we strict-honor "10s", we record an unfinished task. If we extend to "20s+", we lie to the user about timing.
+- Slow networks, A/B tests, region/geo gates, dynamic content — none of these are visible from the prompt.
+- The user's "10s" is a rough expectation, not a hard contract. They want the recording to feel about that long, with their intent fulfilled.
+
+These are not bugs to fix; they're tensions to resolve through a clear product contract.
+
+**Choice**: Make the contract explicit in `docs/goals.md` hard non-negotiables and `RunMetrics`. The system promises:
+
+1. **Recording window targets `durationMs ± 10%`**, with a hard cap of `durationMs × 1.05` enforced by `DIRECTOR_HARD_BUDGET_MULT`. We never silently extend the window to "fit" actions.
+2. **Pre-recording (untimed)** handles browser readiness, blocker dismissal (§0021), and target-resolution. Lazy-loaded elements that the user mentioned can be waited for here without affecting `durationMs`.
+3. **Within the recording window, best-effort**: we attempt every clickable hint the planner extracted, scroll if asked, dwell to fill — but we do not guarantee completion. If a target doesn't appear in time, the action log records a `click_failed` decision_failure and the recording continues with whatever else fits.
+4. **Transparency over ambiguity**: a new `IntentSatisfaction` digest in `RunMetrics` answers "did we do what was asked?" categorically (`complete` / `partial` / `unmet` / `unknown`) plus raw counts (`clicksExecuted`, `scrollsExecuted`, `hintsResolvedPreRecording`). When the planner couldn't extract specific click hints we return `unknown` rather than guess.
+
+`computeIntentSatisfaction` is exported from `record-job-runner.ts` and runs at job end. It filters action log entries to the recording window so setup-phase clicks (BlockerPrelude dismissals) are excluded — those aren't user intent.
+
+**Rationale**:
+- We cannot promise strict timing on adversarial pages; promising it would lead to silent failures or lies. Best-effort + transparency lets operators triage runs without re-running them.
+- `unknown` is a deliberate non-decision when the planner gave us nothing to score against. Pretending to know is worse than admitting we don't.
+- Putting this in `RunMetrics` (not just logs) means downstream HTTP API consumers will get the same signal. Future analytics can graph "intent satisfaction rate" across runs.
+- Conservative heuristic: `complete` requires hints clicked AND ≥1 scroll. Most user prompts include browse/scroll language; a click-only run usually missed the broader exploration intent. Tunable later.
+
+**Consequences**:
+- New `RunMetrics.intentSatisfaction: IntentSatisfaction` field. Existing consumers that don't read it are unaffected.
+- `RecordJobRunner.run()` logs a warning when `level` is `unmet` or `partial`, info when `complete` or `unknown`. Operators reviewing logs get the signal without parsing the action log themselves.
+- 9 new unit tests for the heuristic edge cases (vague prompts, partial executions, setup-phase exclusion, no recording window).
+- Total unit tests: 68 → 77.
+- This codifies what the project will and won't promise. Future code that tries to "force completion" by extending the recording window past `durationMs × 1.05` should be rejected — see goals.md hard non-negotiable #2.
+
+**Preserves**: goals.md hard non-negotiables #2 (no visible stalls — we don't pad the recording with dwells to "satisfy" intent), #3 (intent satisfied or transparently not — this digest IS the transparency).
+
+**Open**: the heuristic doesn't understand verb-level intent ("watch", "browse", "compare" — different from clicks/scrolls). A future enhancement could ask the planner to output an `intentVerbs: string[]` field alongside hints, then check whether each verb has been "satisfied" by some action sequence. YAGNI for now.
+
+---
+
 ## Template for new entries
 
 ```
