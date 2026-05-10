@@ -10,6 +10,7 @@ import type {
   SessionArtifacts,
 } from '../ports/page-session.js';
 import type { IPlanner } from '../ports/planner.js';
+import type { DirectorReport, IDirector } from '../ports/director.js';
 
 /**
  * Orchestrates a single recording job end-to-end.
@@ -54,8 +55,10 @@ export interface RunResult {
   /** Raw video before trim. Useful for debugging / cursor synth later. */
   rawVideoPath: string;
   actionLogPath: string;
+  /** @deprecated Populated as a stub; will be removed in cleanup task. */
   plan: TimelinePlan;
   metrics: RunMetrics;
+  directorReport: DirectorReport;
 }
 
 export interface RunMetrics {
@@ -81,85 +84,48 @@ export class RecordJobRunner {
   constructor(
     private readonly session: IPageSession,
     private readonly planner: IPlanner,
+    private readonly director: IDirector,
   ) {}
 
   async run(req: RunRequest): Promise<RunResult> {
     const wallClockT0 = Date.now();
 
-    // -------------------------------- 1. Setup + plan in PARALLEL
-    // Optimization: take an early screenshot (right after domcontentloaded)
-    // and kick off the planner LLM call. The visual-stability wait runs in
-    // parallel — by the time both are done we're ready for pre-resolve.
-    //
-    // Trade-off: the early screenshot may miss content that loads after
-    // domcontentloaded. For typical content sites (README, articles, video
-    // pages with server-side rendering) the relevant elements are present
-    // at domcontentloaded and this is a clean win. Sites with heavy late
-    // hydration may need to be planned post-stability instead — revisit if
-    // we see plan quality regress.
-    //
-    // We also skip the broad `observeAll()` — each Stagehand observe call
-    // sends ~20K tokens of accessibility tree to the LLM, taking 5-10s.
-    // The multimodal planner sees the page through the screenshot.
+    // ----------------------------------- 1. Setup
     const tSetup = Date.now();
     await this.session.start();
     await this.session.goto(req.url);
 
-    // Take an early screenshot (post-domcontentloaded, pre-stability).
+    // Take an early screenshot for the Planner. Stability wait runs in
+    // parallel via Promise.all below.
     const tScreenshot = Date.now();
     const screenshot = await this.session.screenshot().catch(() => null);
     const screenshotMs = Date.now() - tScreenshot;
 
-    // Kick off planner and stability wait in parallel.
-    const tPlanLlm = Date.now();
-    const planTask = this.planner.plan(
+    // Planner brief() runs in parallel with visual stability.
+    const tBrief = Date.now();
+    const briefingTask = this.planner.brief(
       {
         url: req.url,
         prompt: req.prompt,
         durationMs: req.durationMs,
         viewport: this.viewportFromSession(),
-        candidates: [],
+        screenshot,
       },
-      screenshot,
+      this.session,
     );
     const stabilityTask = this.session.waitForVisualStability({
       quietMs: 400,
       maxMs: 3000,
     });
-
-    const [planRaw] = await Promise.all([planTask, stabilityTask]);
-    const planMs = Date.now() - tPlanLlm;
-    let plan = planRaw;
-
+    const [briefing] = await Promise.all([briefingTask, stabilityTask]);
+    const briefMs = Date.now() - tBrief;
     const setupMs = Date.now() - tSetup;
-    this.logger.info(
-      { setupMs, screenshotMs, planMs },
-      'setup + plan complete (parallel)',
-    );
+    this.logger.info({ setupMs, screenshotMs, briefMs, hintCount: briefing.hints.length }, 'setup + brief complete');
 
-    // Pre-resolve click targets in parallel. Doing this BEFORE the duration
-    // adjustment lets us replace each click's `durationMs` with a realistic
-    // estimate (approach scroll + anticipation + click) computed from the
-    // cached bbox. This pulls plan ↔ execution into agreement, so
-    // `adjustPlanDuration` can then accurately balance the rest.
-    const tResolve = Date.now();
-    const resolved = await this.preResolveClicks(plan.steps);
-    const preResolveMs = Date.now() - tResolve;
+    // ------------------------------------ 2. Director (owns recording window)
+    const directorReport = await this.director.run(briefing, this.session);
 
-    plan = recomputeClickDurations(plan, resolved, this.viewportFromSession());
-
-    // Adjust the plan to hit the target duration. The planner often
-    // under-budgets; this guarantees the recording is close to what the
-    // user asked for, regardless of LLM behavior.
-    plan = adjustPlanDuration(plan, req.durationMs);
-
-    // ------------------------------------------------------- 3. Record window
-    await this.session.beginRecording();
-    const tRecord = Date.now();
-    const stableTimeouts = await this.executePlan(plan, resolved, req.durationMs);
-    const recordingMs = Date.now() - tRecord;
-
-    // ----------------------------------------------------------- 4. Stop+trim
+    // ------------------------------------ 3. Stop + trim
     const artifacts = await this.session.stop();
 
     const tTrim = Date.now();
@@ -179,28 +145,33 @@ export class RecordJobRunner {
     const rawVideoMs = await videoDurationMs(artifacts.videoPath).catch(() => null);
     const trimmedVideoMs = await videoDurationMs(videoPath).catch(() => null);
 
-    const fallbackClicks = countSteps(plan, 'click') - resolved.size;
-
     const metrics: RunMetrics = {
       totalWallClockMs: Date.now() - wallClockT0,
       setupMs,
-      planMs,
-      preResolveMs,
-      recordingMs,
+      planMs: briefMs,
+      preResolveMs: 0,                         // hints are pre-resolved inside brief()
+      recordingMs: directorReport.totalMs,
       trimMs,
       rawVideoMs,
       trimmedVideoMs,
-      resolvedClicks: resolved.size,
-      fallbackClicks,
-      stableTimeouts,
+      resolvedClicks: briefing.hints.length,
+      fallbackClicks: 0,
+      stableTimeouts: 0,                       // tracked by Director if needed
     };
 
     return {
       videoPath,
       rawVideoPath: artifacts.videoPath,
       actionLogPath: artifacts.actionLogPath,
-      plan,
+      // Plan field deprecated; populate with a stub for backward compat
+      // until cleanup task removes it.
+      plan: {
+        version: 1 as const,
+        targetDurationMs: req.durationMs,
+        steps: [],
+      } as unknown as TimelinePlan,
       metrics,
+      directorReport,
     };
   }
 

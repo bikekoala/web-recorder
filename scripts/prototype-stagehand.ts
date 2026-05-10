@@ -18,6 +18,8 @@
 
 import { resolve } from 'node:path';
 
+import { LlmFastDecider } from '../src/adapters/decider/llm-fast-decider.js';
+import { StreamingDirector } from '../src/adapters/director/streaming-director.js';
 import { StagehandPageSession } from '../src/adapters/agent/stagehand-session.js';
 import { LlmPlanner } from '../src/adapters/planner/llm-planner.js';
 import { RecordJobRunner } from '../src/core/record-job-runner.js';
@@ -47,8 +49,9 @@ async function main(): Promise<void> {
     verbose: 1,
   });
   const planner = new LlmPlanner();
+  const director = new StreamingDirector({ decider: new LlmFastDecider() });
 
-  const runner = new RecordJobRunner(session, planner);
+  const runner = new RecordJobRunner(session, planner, director);
 
   try {
     const result = await runner.run({
