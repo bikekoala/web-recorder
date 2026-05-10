@@ -14,7 +14,6 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "smoke:recording": "tsx scripts/smoke-recording.ts",
     "prototype:stagehand": "tsx scripts/prototype-stagehand.ts",
-    "test:planner": "tsx scripts/test-planner.ts",
     "playwright:install": "playwright install chromium"
   },
   "dependencies": {

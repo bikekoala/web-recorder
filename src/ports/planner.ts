@@ -1,12 +1,9 @@
-import type { DirectorBriefing, PlanRequest, TimelinePlan } from '../domain/plan.js';
+import type { DirectorBriefing } from '../domain/plan.js';
 import type { IPageSession } from './page-session.js';
 
 /**
- * IPlanner — turns a natural-language `(url, prompt, durationMs)` request
- * into a deterministic `TimelinePlan` that the runner can execute.
- *
- * Implementations:
- * - `LlmPlanner` (Phase 3): one LLM call with a screenshot and DOM candidates.
+ * IPlanner — given a `(url, prompt, durationMs)` request, produces a
+ * `DirectorBriefing` that the streaming Director uses to drive the browser.
  *
  * Design choices encoded here:
  *
@@ -19,14 +16,11 @@ import type { IPageSession } from './page-session.js';
  *    receives a screenshot via the `screenshot` parameter. Implementations
  *    decide whether to use it.
  *
- * 3. **Schema-validated output**. The returned plan is parsed through
- *    `TimelinePlan` Zod schema; malformed LLM output is rejected at the
+ * 3. **Schema-validated output**. The returned briefing is parsed through
+ *    `DirectorBriefing` Zod schema; malformed LLM output is rejected at the
  *    boundary, not allowed to propagate.
  */
 export interface IPlanner {
-  /** @deprecated Use brief() instead. Kept until cleanup-task migration. */
-  plan(request: PlanRequest, screenshot: Buffer | null): Promise<TimelinePlan>;
-
   /**
    * Produce a DirectorBriefing for the streaming Director.
    *

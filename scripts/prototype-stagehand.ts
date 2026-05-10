@@ -2,7 +2,7 @@
  * Natural-language driven recording prototype.
  *
  * Input:  { url, prompt, durationMs }
- * Output: { trimmed video, raw video, action log, plan, metrics }
+ * Output: { trimmed video, raw video, action log, metrics }
  *
  * The whole pipeline is now LLM-planned — no hand-coded scenario. See
  * `src/core/record-job-runner.ts` for the orchestration.
@@ -63,7 +63,6 @@ async function main(): Promise<void> {
 
     log.info({ metrics: result.metrics }, '📊 RUN METRICS');
     log.info({ directorReport: result.directorReport }, '🎬 DIRECTOR REPORT');
-    log.info({ plan: result.plan }, '📋 PLAN');
     log.info(
       `\n  Trimmed video: open "${result.videoPath}"`
         + `\n  Raw video:     open "${result.rawVideoPath}"`
