@@ -108,8 +108,18 @@ export class StreamingDirector implements IDirector {
         decisionCount += 1;
       }
 
-      // Execute the animation.
-      const summary = await this.executeAction(action, session);
+      // Execute the animation with an upper-bound watchdog.
+      const watchdog = new Promise<'budget'>((resolve) => {
+        setTimeout(() => resolve('budget'), Math.max(50, hardDeadlineAt - Date.now()));
+      });
+      const summary = await Promise.race([
+        this.executeAction(action, session),
+        watchdog.then(() => ({
+          kind: action.kind,
+          brief: 'budget cut',
+          succeeded: false,
+        }) satisfies ActionSummary),
+      ]);
       recentActions.push(summary);
       if (recentActions.length > 3) recentActions.shift();
 

@@ -223,3 +223,29 @@ describe('StreamingDirector — expectAfter validation', () => {
     expect(secondCallState.lastActionFailure).toContain('expectAfter');
   });
 });
+
+describe('StreamingDirector — error + budget paths', () => {
+  it('returns error endReason when FastDecider rejects on first call', async () => {
+    const decider = new FakeFastDecider();
+    decider.decide = async () => { throw new Error('network down'); };
+    const session = new FakePageSession();
+    const director = new StreamingDirector({ decider });
+    const report = await director.run(briefing(), session);
+
+    expect(report.endReason).toBe('error');
+  });
+
+  it('exits with budget endReason when hard deadline hit', async () => {
+    // FastDecider keeps returning slow scrolls, never `done`.
+    const decider = new FakeFastDecider();
+    decider.decide = async () => ({
+      actions: [{ kind: 'scroll' as const, deltaPx: 600, speed: 'slow' as const, reasoning: 'forever' }],
+    });
+    const session = new FakePageSession();
+    const director = new StreamingDirector({ decider });
+
+    // Set a tiny duration so the hard cap (1.2x) is reached fast.
+    const report = await director.run({ ...briefing(), durationMs: 200 }, session);
+    expect(report.endReason).toBe('budget');
+  });
+});
