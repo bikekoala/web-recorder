@@ -34,7 +34,7 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `RecordJobRunner` (orchestrates plan → prelude → pre-fire → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
 | Vitest unit tests (77 passing) | ✅ |
-| Integration test on Recordly scenario | ✅ |
+| Regression suite (4-case library, replaces single integration test) | ✅ |
 | Operation log: `decision` / `decision_failure` / `page_diagnostic` entries | ✅ |
 | Visual-blocker prompt rules (auto-clicks paused-video play overlays etc.) | ✅ |
 | Pre-recording `BlockerPrelude` (probe → dismiss loop, NOT in deliverable) | ✅ |

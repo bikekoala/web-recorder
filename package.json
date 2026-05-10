@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "regression": "vitest run --config vitest.regression.config.ts",
     "smoke:recording": "tsx scripts/smoke-recording.ts",
     "prototype:stagehand": "tsx scripts/prototype-stagehand.ts",
     "playwright:install": "playwright install chromium"
