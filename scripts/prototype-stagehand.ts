@@ -62,6 +62,7 @@ async function main(): Promise<void> {
     });
 
     log.info({ metrics: result.metrics }, '📊 RUN METRICS');
+    log.info({ directorReport: result.directorReport }, '🎬 DIRECTOR REPORT');
     log.info({ plan: result.plan }, '📋 PLAN');
     log.info(
       `\n  Trimmed video: open "${result.videoPath}"`
