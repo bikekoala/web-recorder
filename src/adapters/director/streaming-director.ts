@@ -7,7 +7,7 @@ import { config } from '../../infra/config.js';
 import { track } from '../../infra/pending.js';
 import { logger as rootLogger } from '../../infra/logger.js';
 import type { DirectorReport, IDirector } from '../../ports/director.js';
-import type { DecisionResponse, IFastDecider } from '../../ports/fast-decider.js';
+import type { DecisionResponse, ExpectAfter, IFastDecider } from '../../ports/fast-decider.js';
 import type { IPageSession } from '../../ports/page-session.js';
 import type { DirectorState } from '../../domain/director-state.js';
 
@@ -51,6 +51,7 @@ export class StreamingDirector implements IDirector {
 
     let actionQueue: DirectorAction[] = [];
     let pending: ReturnType<typeof track<DecisionResponse>> | null = null;
+    let expectAfter: ExpectAfter | null = null;
 
     // Cold start: fire first decision call.
     {
@@ -87,6 +88,7 @@ export class StreamingDirector implements IDirector {
         try {
           const decision = await pending.promise;
           actionQueue = [...decision.actions];
+          expectAfter = decision.expectAfter ?? null;
           pending = null;
         } catch (err) {
           this.logger.warn({ err }, 'decider failed at queue top-up');
@@ -97,8 +99,10 @@ export class StreamingDirector implements IDirector {
       const action = actionQueue.shift()!;
 
       // Pre-fire the next decision call BEFORE awaiting the animation.
-      // EXCEPTION: skip pre-fire if the action is `done` (we're about to exit).
-      if (action.kind !== 'done' && pending === null) {
+      // EXCEPTIONS: skip pre-fire if the action is `done` (we're about to exit)
+      // or if expectAfter is set (we validate first; mismatch clears and re-fires,
+      // match continues with the already-queued actions).
+      if (action.kind !== 'done' && pending === null && expectAfter === null) {
         const state = await this.observeState(briefing, session, recentActions, remainingMs);
         pending = track(this.decider.decide(state));
         decisionCount += 1;
@@ -109,6 +113,21 @@ export class StreamingDirector implements IDirector {
       recentActions.push(summary);
       if (recentActions.length > 3) recentActions.shift();
 
+      // expectAfter check — cheap text-based validation.
+      if (expectAfter && !(await this.validateExpectAfter(expectAfter, session))) {
+        expectAfterMismatchCount += 1;
+        actionQueue = [];
+        // Cancel any in-flight pre-fire (its premise is stale) and
+        // force a fresh call with the failure context.
+        pending = null;
+        const state = await this.observeState(briefing, session, recentActions, Math.max(0, hardDeadlineAt - Date.now()));
+        const stateWithFailure: DirectorState = { ...state, lastActionFailure: 'expectAfter mismatch' };
+        pending = track(this.decider.decide(stateWithFailure));
+        decisionCount += 1;
+        expectAfter = null;
+        continue;
+      }
+
       // If the pending decision resolved during animation, REPLACE the queue.
       if (pending && pending.isResolved) {
         if (pending.error) {
@@ -117,6 +136,7 @@ export class StreamingDirector implements IDirector {
           pending = null;
         } else if (pending.value) {
           actionQueue = [...pending.value.actions];
+          expectAfter = pending.value.expectAfter ?? null;
           pending = null;
         }
       }
@@ -200,6 +220,28 @@ export class StreamingDirector implements IDirector {
       case 'done':
         return { kind: 'done', brief: 'done', succeeded: true };
     }
+  }
+
+  private async validateExpectAfter(
+    expect: ExpectAfter,
+    session: IPageSession,
+  ): Promise<boolean> {
+    if (expect.urlContains) {
+      const url = await session.currentUrl();
+      if (!url.includes(expect.urlContains)) return false;
+    }
+    if (expect.visibleText && expect.visibleText.length > 0) {
+      // Cheap path: try quickFindInViewport for each text. We don't need
+      // ALL to match — at least one signals the page is roughly where the
+      // LLM expected. Tunable if it proves too lenient/strict.
+      let anyFound = false;
+      for (const t of expect.visibleText) {
+        const r = await session.quickFindInViewport(t);
+        if (r) { anyFound = true; break; }
+      }
+      if (!anyFound) return false;
+    }
+    return true;
   }
 
   private async readScrollY(session: IPageSession): Promise<number> {

@@ -172,3 +172,54 @@ describe('StreamingDirector — implicit dwell on LLM lag', () => {
     expect(report.implicitDwellCount).toBeLessThanOrEqual(4);
   });
 });
+
+describe('StreamingDirector — expectAfter validation', () => {
+  it('continues normally when expectAfter matches', async () => {
+    const decider = new FakeFastDecider([
+      {
+        response: {
+          actions: [
+            { kind: 'scroll', deltaPx: 200, speed: 'normal', reasoning: 'go' },
+            { kind: 'done', reasoning: 'fin' },
+          ],
+          expectAfter: { urlContains: 'test.example' }, // matches the fake's url
+        },
+      },
+    ]);
+    const session = new FakePageSession();
+    const director = new StreamingDirector({ decider });
+    const report = await director.run(briefing(), session);
+
+    expect(report.expectAfterMismatchCount).toBe(0);
+    expect(decider.decisions).toHaveLength(1);
+  });
+
+  it('clears the queue and re-decides on expectAfter mismatch', async () => {
+    const decider = new FakeFastDecider([
+      {
+        response: {
+          actions: [
+            { kind: 'scroll', deltaPx: 200, speed: 'normal', reasoning: 'go' },
+            { kind: 'scroll', deltaPx: 200, speed: 'normal', reasoning: 'more' },
+          ],
+          expectAfter: { urlContains: 'NEVER_MATCHES_THIS_STRING' },
+        },
+      },
+      {
+        response: { actions: [{ kind: 'done', reasoning: 'recovered' }] },
+      },
+    ]);
+    const session = new FakePageSession();
+    const director = new StreamingDirector({ decider });
+    const report = await director.run(briefing(), session);
+
+    expect(report.expectAfterMismatchCount).toBeGreaterThanOrEqual(1);
+    // Only ONE scroll executed — the second was discarded due to mismatch.
+    const scrolls = session.events.filter((e) => e.kind === 'scroll');
+    expect(scrolls).toHaveLength(1);
+    // The next decider call should have received lastActionFailure context.
+    expect(decider.decisions.length).toBeGreaterThanOrEqual(2);
+    const secondCallState = decider.decisions[1]!.state;
+    expect(secondCallState.lastActionFailure).toContain('expectAfter');
+  });
+});
