@@ -62,12 +62,27 @@ export class StreamingDirector implements IDirector {
     while (true) {
       const remainingMs = Math.max(0, hardDeadlineAt - Date.now());
 
-      // Top up the queue if empty: block on pending decision.
+      // Top up the queue if empty.
       if (actionQueue.length === 0) {
         if (!pending) {
           const state = await this.observeState(briefing, session, recentActions, remainingMs);
           pending = track(this.decider.decide(state));
           decisionCount += 1;
+        }
+        // Wait for pending, but if it takes longer than the implicit-dwell
+        // duration, insert a dwell action and re-check. Caps at 4 dwells.
+        let consecutiveDwells = 0;
+        while (!pending.isResolved && consecutiveDwells < 4) {
+          if (Date.now() >= hardDeadlineAt) break;
+          await session.wait(config.directorDwellFallbackMs);
+          implicitDwellCount += 1;
+          consecutiveDwells += 1;
+        }
+        if (consecutiveDwells >= 4) {
+          this.logger.warn(
+            { consecutiveDwells },
+            'consecutive implicit dwells hit cap — LLM tail latency or stuck',
+          );
         }
         try {
           const decision = await pending.promise;

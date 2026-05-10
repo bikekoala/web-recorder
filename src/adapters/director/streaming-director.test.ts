@@ -53,8 +53,9 @@ describe('StreamingDirector — basic loop', () => {
     await director.run(briefing(), session);
 
     const waits = session.events.filter((e) => e.kind === 'wait');
-    expect(waits).toHaveLength(1);
-    expect(waits[0]!.payload).toBe(300);
+    // At least one wait should be the explicit 300ms dwell action.
+    // Additional waits may be implicit dwells inserted while waiting for LLM.
+    expect(waits.some((w) => w.payload === 300)).toBe(true);
   });
 
   it('calls clickByDescription for a click action', async () => {
@@ -123,5 +124,51 @@ describe('StreamingDirector — streaming overlap', () => {
 
     await director.run(briefing(), session);
     expect(decider.decisions).toHaveLength(1); // not 2
+  });
+});
+
+describe('StreamingDirector — implicit dwell on LLM lag', () => {
+  it('inserts an implicit dwell when queue empty AND pending not yet resolved', async () => {
+    // First call: SLOW, takes 600ms. Returns scroll.
+    // Second call: queued; the test ends after the scroll.
+    const decider = new FakeFastDecider([
+      {
+        response: {
+          actions: [{ kind: 'scroll', deltaPx: 200, speed: 'normal', reasoning: 'tiny' }],
+        },
+        delayMs: 600,
+      },
+      {
+        response: { actions: [{ kind: 'done', reasoning: 'fin' }] },
+        delayMs: 50,
+      },
+    ]);
+    const session = new FakePageSession();
+    const director = new StreamingDirector({ decider });
+    const report = await director.run(briefing(), session);
+
+    // The first call takes 600ms. Action queue is empty initially.
+    // Director should insert at least one implicit dwell (200ms each)
+    // before the first call resolves.
+    expect(report.implicitDwellCount).toBeGreaterThanOrEqual(1);
+    // wait events on the fake session reflect both implicit and explicit dwells
+    const waits = session.events.filter((e) => e.kind === 'wait');
+    expect(waits.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('caps consecutive implicit dwells at 4 and continues', async () => {
+    // Pending call never resolves until 1000ms.
+    const decider = new FakeFastDecider([
+      {
+        response: { actions: [{ kind: 'done', reasoning: 'late' }] },
+        delayMs: 1000,
+      },
+    ]);
+    const session = new FakePageSession();
+    const director = new StreamingDirector({ decider });
+    const report = await director.run(briefing(), session);
+
+    // 1000ms / 200ms = 5 implicit dwells but cap is 4.
+    expect(report.implicitDwellCount).toBeLessThanOrEqual(4);
   });
 });
