@@ -2,6 +2,7 @@ import { DomainError } from '../../domain/errors.js';
 import type { ActionSummary, BriefingHintForState } from '../../domain/director-state.js';
 import type { DirectorAction } from '../../domain/director-action.js';
 import { SCROLL_SPEED_PROFILES } from '../../domain/director-action.js';
+import { descriptionsMatch } from '../../domain/intent-matching.js';
 import type { ClickHint, DirectorBriefing } from '../../domain/plan.js';
 import { config } from '../../infra/config.js';
 import { track } from '../../infra/pending.js';
@@ -44,6 +45,13 @@ export class StreamingDirector implements IDirector {
     const startedAt = Date.now();
     const hardDeadlineAt = startedAt + briefing.durationMs * config.directorHardBudgetMult;
     const recentActions: ActionSummary[] = [];
+    /**
+     * Hint descriptions that have been satisfied by a successful click
+     * during this recording. Filtered out of `briefingHints` shown to the
+     * LLM in subsequent decisions, so the LLM sees only REMAINING intent
+     * — preventing the "click the same hint 3 times" loop.
+     */
+    const fulfilledHints = new Set<string>();
     let decisionCount = 0;
     let implicitDwellCount = 0;
     let expectAfterMismatchCount = 0;
@@ -70,7 +78,7 @@ export class StreamingDirector implements IDirector {
       };
     } else {
       // No pre-fire: fall back to the original cold start.
-      const state = await this.observeState(briefing, session, recentActions, briefing.durationMs);
+      const state = await this.observeState(briefing, session, recentActions, briefing.durationMs, fulfilledHints);
       pending = track(this.decider.decide(state));
       decisionCount += 1;
       pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
@@ -82,7 +90,7 @@ export class StreamingDirector implements IDirector {
       // Top up the queue if empty.
       if (actionQueue.length === 0) {
         if (!pending) {
-          const state = await this.observeState(briefing, session, recentActions, remainingMs);
+          const state = await this.observeState(briefing, session, recentActions, remainingMs, fulfilledHints);
           pending = track(this.decider.decide(state));
           decisionCount += 1;
           pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
@@ -141,7 +149,7 @@ export class StreamingDirector implements IDirector {
       // or if expectAfter is set (we validate first; mismatch clears and re-fires,
       // match continues with the already-queued actions).
       if (action.kind !== 'done' && pending === null && expectAfter === null) {
-        const state = await this.observeState(briefing, session, recentActions, remainingMs);
+        const state = await this.observeState(briefing, session, recentActions, remainingMs, fulfilledHints);
         pending = track(this.decider.decide(state));
         decisionCount += 1;
         pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
@@ -161,6 +169,18 @@ export class StreamingDirector implements IDirector {
       ]);
       recentActions.push(summary);
       if (recentActions.length > 3) recentActions.shift();
+
+      // After a successful click, mark any matching briefing-hints as
+      // fulfilled so they're filtered out of subsequent observeState calls.
+      // This is the load-bearing fix for "LLM keeps re-clicking 简体中文 even
+      // after the click already worked" (see §0025).
+      if (action.kind === 'click' && summary.succeeded) {
+        for (const hint of briefing.hints) {
+          if (descriptionsMatch(hint.description, action.target)) {
+            fulfilledHints.add(hint.description);
+          }
+        }
+      }
 
       // Audit: a click that came back !succeeded is worth a separate
       // failure entry — the regular `click` log entry doesn't carry a
@@ -184,7 +204,7 @@ export class StreamingDirector implements IDirector {
         // force a fresh call with the failure context.
         pending = null;
         pendingMeta = null;
-        const state = await this.observeState(briefing, session, recentActions, Math.max(0, hardDeadlineAt - Date.now()));
+        const state = await this.observeState(briefing, session, recentActions, Math.max(0, hardDeadlineAt - Date.now()), fulfilledHints);
         const stateWithFailure: DirectorState = { ...state, lastActionFailure: 'expectAfter mismatch' };
         pending = track(this.decider.decide(stateWithFailure));
         decisionCount += 1;
@@ -241,17 +261,22 @@ export class StreamingDirector implements IDirector {
     session: IPageSession,
     recentActions: ActionSummary[],
     remainingMs: number,
+    fulfilledHints: ReadonlySet<string> = new Set(),
   ): Promise<DirectorState> {
     const screenshot = await session.screenshot();
     const scrollY = await this.readScrollY(session);
     const viewport = viewportFrom(session);
+    // Filter out hints whose description matches a successful click in
+    // recentActions — the LLM should not be re-shown intent it has already
+    // achieved. See §0025 for why this matters in practice.
+    const remainingHints = briefing.hints.filter((h) => !fulfilledHints.has(h.description));
     return {
       prompt: briefing.prompt,
       remainingMs,
       currentScrollY: scrollY,
       viewport,
       screenshot,
-      briefingHints: enrichHints(briefing.hints, scrollY, viewport),
+      briefingHints: enrichHints(remainingHints, scrollY, viewport),
       recentActions: [...recentActions],
     };
   }
@@ -284,6 +309,33 @@ export class StreamingDirector implements IDirector {
       case 'dwell': {
         await session.wait(action.durationMs);
         return { kind: 'dwell', brief: `dwell ${action.durationMs}ms`, succeeded: true };
+      }
+      case 'type': {
+        try {
+          await session.type(action.text);
+          return { kind: 'type', brief: `type "${truncate(action.text, 30)}"`, succeeded: true };
+        } catch (err) {
+          this.logger.warn({ err, text: action.text }, 'type failed');
+          return { kind: 'type', brief: `type "${truncate(action.text, 30)}" [err]`, succeeded: false };
+        }
+      }
+      case 'key': {
+        try {
+          await session.pressKey(action.key);
+          return { kind: 'key', brief: `key ${action.key}`, succeeded: true };
+        } catch (err) {
+          this.logger.warn({ err, key: action.key }, 'key failed');
+          return { kind: 'key', brief: `key ${action.key} [err]`, succeeded: false };
+        }
+      }
+      case 'back': {
+        try {
+          await session.goBack();
+          return { kind: 'back', brief: 'back', succeeded: true };
+        } catch (err) {
+          this.logger.warn({ err }, 'back failed');
+          return { kind: 'back', brief: 'back [err]', succeeded: false };
+        }
       }
       case 'done':
         return { kind: 'done', brief: 'done', succeeded: true };
@@ -389,6 +441,12 @@ function briefAction(a: DirectorAction): string {
       return `scroll ${a.deltaPx > 0 ? '+' : ''}${a.deltaPx} ${a.speed}`;
     case 'dwell':
       return `dwell ${a.durationMs}ms`;
+    case 'type':
+      return `type "${truncate(a.text, 30)}"`;
+    case 'key':
+      return `key ${a.key}`;
+    case 'back':
+      return 'back';
     case 'done':
       return 'done';
   }

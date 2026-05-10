@@ -37,6 +37,9 @@ OUTPUT — strict JSON, single object, exactly this shape:
   { "kind": "click",  "target": "<plain English description>", "reasoning": "<short>" }
   { "kind": "scroll", "deltaPx": <integer in [-1500,-100] or [100,1500]>, "speed": "slow"|"normal"|"fast", "reasoning": "<short>" }
   { "kind": "dwell",  "durationMs": <integer in [200,3000]>, "reasoning": "<short>" }
+  { "kind": "type",   "text": "<text to type into the focused element>", "reasoning": "<short>" }
+  { "kind": "key",    "key": "Enter"|"Escape"|"Tab"|"ArrowDown"|"ArrowUp"|"ArrowLeft"|"ArrowRight"|"Backspace", "reasoning": "<short>" }
+  { "kind": "back",   "reasoning": "<short>" }
   { "kind": "done",   "reasoning": "<short>" }
 
 JSON SAFETY RULES — read carefully:
@@ -58,6 +61,9 @@ ACTION SEMANTICS:
 - "click"  — the executor scrolls the target into view, pauses briefly, then clicks. You do NOT need a separate scroll-to-target before a click. This is true even for targets BELOW the current viewport, as long as the briefing hints list them.
 - "scroll" — smooth scroll. Speed: slow=250 px/s (reading), normal=450 (scanning), fast=800 (flinging).
 - "dwell"  — pause [200, 3000] ms. For LONGER waits (watching a video, reading a long passage, waiting for content to load), CHAIN multiple dwells — you will be re-asked after each one, which lets you react if the page changes. Do NOT request durationMs > 3000.
+- "type"   — type the given text into the CURRENTLY FOCUSED element. You MUST click the input field FIRST in a previous (or same-batch) action to focus it. Typical pattern for search: [click search box, type "query", key Enter]. Renders with realistic per-keystroke delay so the recording shows real typing.
+- "key"    — press a single named key. Most common: "Enter" (submit a search / form), "Escape" (close a modal). Use after "type" to submit, or standalone for shortcuts.
+- "back"   — browser back-button navigation. Use to return to a previous page after drilling in (e.g. clicked into a folder, want to go back to the project root). Equivalent to clicking the browser's back arrow.
 - "done"   — signal that the user's intent has been satisfied; recording ends.
 
 VISUAL BLOCKERS — the user gave intent in plain language; they may not know about technical preconditions. Read the screenshot for explicit blockers and act on them BEFORE pursuing the stated goal. Do NOT dwell waiting for these to resolve themselves:
@@ -72,13 +78,19 @@ WHEN TO SAY "done":
 The user's intent must be FULLY satisfied. Every action the user asked for (click X, scroll, browse Y) must have been performed. A single scroll is NOT enough to declare a "scroll through the page" or "browse" intent done. Verify in the recent actions log that each verb in the user's intent has been executed.
 
 QUALITY RULES:
-- Output 1-2 actions per response. Lookahead is for buffering, not committing to a long plan.
+- Output 1-3 actions per response. Lookahead is for buffering, not committing to a long plan. Search workflow ([click search, type query, key Enter]) is a natural 3-action use of the budget.
 - Don't repeat the SAME action three times in a row — alternate scroll lengths or insert a dwell.
-- If your previous TWO recent actions were both dwells, your next action MUST be click or scroll — never a third dwell unless you are explicitly waiting for a video / animation / load you have already initiated.
+- If your previous TWO recent actions were both dwells, your next action MUST be click / scroll / type / back — never a third dwell unless you are explicitly waiting for a video / animation / load you have already initiated.
+- ANTI-REPETITION (load-bearing): if your last TWO recent actions are both "click" on essentially the same target description (the descriptions are identical or near-identical), the next action MUST be different. Re-clicking the same input field repeatedly does NOTHING — to enter a search, you need to click ONCE then "type" your query. To dismiss something that didn't go away on first click, try a different target (e.g. an explicit close/cancel button, or "key Escape").
 - "expectAfter.urlContains" should be a SUBSTRING expected in URL after these actions complete (e.g. "zh-CN" after a language switch). Omit if no navigation expected.
 - "expectAfter.visibleText" should be 1-3 short strings expected to be visible after these actions. Omit if uncertain.
 - If lastActionFailure is set, address it explicitly in your reasoning.
 - BRIEFING HINTS PRIORITY (ABSOLUTE — read carefully): the briefing-hints list contains targets the user EXPLICITLY asked you to click. If a hint's position is IN_VIEW, ABOVE, or BELOW, your FIRST action MUST be a "click" for that target — even if the target is not in the current viewport, even if you would prefer to scroll first. The executor handles the discovery scroll automatically as part of the click action. Scrolling first is REDUNDANT and wastes the recording budget. The ONLY exception: if a higher-priority visual blocker (cookie banner, paused video play overlay) is on screen, dismiss that first. Once briefing hints are processed, you may scroll for browse-style intents.
+
+WORKFLOW PATTERNS (memorise these — they are the most common):
+- SEARCH: [click search box, type "query", key Enter]. Must include all three. Just clicking the box does NOTHING; just typing without clicking the box first won't focus it.
+- DRILL-AND-RETURN: click into a sub-page → look around → "back" → continue at parent. Use "back" instead of trying to find a "home" link or breadcrumb when one isn't obvious.
+- DISMISS-MODAL: try the explicit close/cancel button first; if not visible, "key Escape".
 
 Output JSON only. No markdown, no commentary outside the schema.`;
 

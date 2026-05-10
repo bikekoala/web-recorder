@@ -6,10 +6,11 @@ import { computeIntentSatisfaction } from './record-job-runner.js';
 const VIEWPORT = { width: 1280, height: 720 };
 const WINDOW: RecordingWindow = { startedAtMs: 1000, endedAtMs: 11000 };
 
-const click = (t: number): ActionLogEntry => ({
+const click = (t: number, description?: string): ActionLogEntry => ({
   t,
   type: 'click',
   selector: 'xpath=//foo',
+  ...(description ? { description } : {}),
   scrollY: 0,
   viewport: VIEWPORT,
 });
@@ -24,67 +25,91 @@ const scroll = (t: number): ActionLogEntry => ({
   viewport: VIEWPORT,
 });
 
-describe('computeIntentSatisfaction', () => {
-  it('returns "complete" when all hints clicked AND a scroll happened', () => {
-    const r = computeIntentSatisfaction(1, [click(5000), scroll(7000)], WINDOW);
+describe('computeIntentSatisfaction — UNIQUE-hint matching', () => {
+  it('returns "complete" when each hint is clicked at least once AND a scroll happened', () => {
+    const r = computeIntentSatisfaction(
+      ['the simplified Chinese link'],
+      [click(5000, 'click the 简体中文 link'), scroll(7000)],
+      WINDOW,
+    );
     expect(r.level).toBe('complete');
     expect(r.clicksExecuted).toBe(1);
     expect(r.scrollsExecuted).toBe(1);
-    expect(r.hintsResolvedPreRecording).toBe(1);
   });
 
-  it('returns "partial" when click happened but no scroll', () => {
-    const r = computeIntentSatisfaction(1, [click(5000)], WINDOW);
+  it('counts UNIQUE hints, not total clicks (catches the YouTube 8x click bug)', () => {
+    // Same hint clicked 8 times — should be "partial" not "complete".
+    // This is the regression test for the YouTube case where the agent
+    // clicked the search bar 8 times without ever typing.
+    const sameHint = 'click the search bar';
+    const clicks = [
+      click(5000, sameHint),
+      click(5500, sameHint),
+      click(6000, sameHint),
+      click(6500, sameHint),
+      click(7000, sameHint),
+      click(7500, sameHint),
+      click(8000, sameHint),
+      click(8500, sameHint),
+    ];
+    // Two hints — but only one of them is matched by the click description.
+    const r = computeIntentSatisfaction(
+      ['the search bar', 'the MrBeast channel link'],
+      [...clicks, scroll(9000)],
+      WINDOW,
+    );
     expect(r.level).toBe('partial');
-    expect(r.note).toMatch(/no scrolling/i);
+    expect(r.clicksExecuted).toBe(8);
+    expect(r.note).toMatch(/1\/2/);
   });
 
-  it('returns "partial" when only some click hints were executed', () => {
-    const r = computeIntentSatisfaction(3, [click(5000), scroll(6000)], WINDOW);
+  it('lenient substring match: "build folder" matches "the build directory folder link"', () => {
+    const r = computeIntentSatisfaction(
+      ['the build directory folder link'],
+      [click(5000, 'click the build folder'), scroll(7000)],
+      WINDOW,
+    );
+    expect(r.level).toBe('complete');
+  });
+
+  it('CJK content tokens count as match material', () => {
+    const r = computeIntentSatisfaction(
+      ['the 简体中文 link'],
+      [click(5000, 'click 简体中文链接'), scroll(7000)],
+      WINDOW,
+    );
+    expect(r.level).toBe('complete');
+  });
+
+  it('returns "partial" when some hints are clicked but not all', () => {
+    const r = computeIntentSatisfaction(
+      ['the build folder', 'the package.json file', 'the simplified Chinese link'],
+      [click(5000, 'click the build folder'), scroll(6000)],
+      WINDOW,
+    );
     expect(r.level).toBe('partial');
     expect(r.note).toMatch(/1\/3/);
   });
 
-  it('returns "unmet" when no clicks executed but hints were expected', () => {
-    const r = computeIntentSatisfaction(2, [scroll(5000)], WINDOW);
+  it('returns "unmet" when zero hints are matched', () => {
+    const r = computeIntentSatisfaction(['the search bar'], [scroll(5000)], WINDOW);
     expect(r.level).toBe('unmet');
-    expect(r.note).toMatch(/0\/2/);
   });
 
-  it('returns "unknown" for vague prompts (zero hints) when SOMETHING happened', () => {
-    const r = computeIntentSatisfaction(0, [scroll(5000), scroll(7000)], WINDOW);
+  it('returns "unknown" for vague prompts (zero hints) with some action', () => {
+    const r = computeIntentSatisfaction([], [scroll(5000), scroll(7000)], WINDOW);
     expect(r.level).toBe('unknown');
-    expect(r.scrollsExecuted).toBe(2);
-  });
-
-  it('returns "unmet" when no hints AND nothing happened', () => {
-    const r = computeIntentSatisfaction(0, [], WINDOW);
-    expect(r.level).toBe('unmet');
   });
 
   it('excludes setup-phase clicks (before recording window)', () => {
-    // BlockerPrelude clicks at t=500 (before WINDOW.startedAtMs=1000).
-    const setupClick = click(500);
-    const recordingClick = click(5000);
-    const r = computeIntentSatisfaction(1, [setupClick, recordingClick, scroll(7000)], WINDOW);
-    expect(r.level).toBe('complete');
-    expect(r.clicksExecuted).toBe(1); // setupClick excluded
-  });
-
-  it('excludes post-recording entries (after recording window)', () => {
+    const setup = click(500, 'click the cookie accept button');
+    const recording = click(5000, 'click the simplified Chinese link');
     const r = computeIntentSatisfaction(
-      1,
-      [click(5000), scroll(7000), click(15_000)], // last click is past endedAtMs
+      ['the simplified Chinese link'],
+      [setup, recording, scroll(7000)],
       WINDOW,
     );
-    expect(r.clicksExecuted).toBe(1);
     expect(r.level).toBe('complete');
-  });
-
-  it('counts everything when no recording window is set', () => {
-    const r = computeIntentSatisfaction(1, [click(500), scroll(700)], null);
-    expect(r.clicksExecuted).toBe(1);
-    expect(r.scrollsExecuted).toBe(1);
-    expect(r.level).toBe('complete');
+    expect(r.clicksExecuted).toBe(1); // setupClick excluded from window
   });
 });

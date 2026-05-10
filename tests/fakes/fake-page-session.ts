@@ -89,6 +89,20 @@ export class FakePageSession implements IPageSession {
     this.record('wait', ms);
     await new Promise((r) => setTimeout(r, ms));
   }
+  async type(text: string): Promise<void> {
+    this.record('type', text);
+    // Simulate human-paced typing duration so streaming-overlap tests still
+    // see a meaningful elapsed window for the action.
+    await new Promise((r) => setTimeout(r, Math.max(50, text.length * 50)));
+  }
+  async pressKey(key: string): Promise<void> {
+    this.record('key', key);
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  async goBack(): Promise<void> {
+    this.record('back', null);
+    await new Promise((r) => setTimeout(r, 50));
+  }
   async waitForVisualStability(opts?: { quietMs?: number; maxMs?: number }) {
     this.record('stable', opts);
   }

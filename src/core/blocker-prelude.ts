@@ -381,6 +381,12 @@ function briefAction(a: DirectorAction): string {
       return `scroll ${a.deltaPx > 0 ? '+' : ''}${a.deltaPx} ${a.speed}`;
     case 'dwell':
       return `dwell ${a.durationMs}ms`;
+    case 'type':
+      return `type "${truncate(a.text, 30)}"`;
+    case 'key':
+      return `key ${a.key}`;
+    case 'back':
+      return 'back';
     case 'done':
       return 'done';
   }

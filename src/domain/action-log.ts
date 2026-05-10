@@ -155,6 +155,34 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
     scrollY: z.number(),
     viewport: Viewport,
   }),
+  z.object({
+    t: z.number().nonnegative(),
+    type: z.literal('type'),
+    /** Truncated to 200 chars per the schema in director-action.ts. */
+    text: z.string(),
+    /** Wall-clock duration of the typing animation (per-keystroke delay × len). */
+    durationMs: z.number().nonnegative(),
+    scrollY: z.number(),
+    viewport: Viewport,
+  }),
+  z.object({
+    t: z.number().nonnegative(),
+    type: z.literal('key'),
+    /** Named key that was pressed (Enter, Escape, etc.). */
+    key: z.string(),
+    scrollY: z.number(),
+    viewport: Viewport,
+  }),
+  z.object({
+    t: z.number().nonnegative(),
+    type: z.literal('back'),
+    /** URL right before navigation. */
+    urlBefore: z.string().optional(),
+    /** URL after the back navigation completes. */
+    urlAfter: z.string().optional(),
+    scrollY: z.number(),
+    viewport: Viewport,
+  }),
   /**
    * `decision` — written every time the FastDecider returns a response.
    * Captures the inputs the LLM saw (page state) and what it chose, so a
@@ -180,7 +208,7 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
     /** Actions the LLM chose to enqueue, in order. */
     actions: z.array(
       z.object({
-        kind: z.enum(['click', 'scroll', 'dwell', 'done']),
+        kind: z.enum(['click', 'scroll', 'dwell', 'done', 'type', 'key', 'back']),
         /** First action's reasoning is the most useful, but we keep all. */
         reasoning: z.string(),
         /** A short human-readable summary so the log is grep-able. */

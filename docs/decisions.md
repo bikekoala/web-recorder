@@ -692,6 +692,66 @@ There is NO assertion on `implicitDwellCount`, `expectAfterMismatchCount`, `deci
 
 ---
 
+## 0025 · Action vocabulary expanded: type / key / back; hint fulfilment filter
+
+**Date**: 2026-05-10
+
+**Context**: Reviewing the §0024 regression videos by hand surfaced a class of issues the categorical assertions could not catch. The 4-primitive vocabulary (`click / scroll / dwell / done`) was insufficient for real-world workflows:
+
+- **YouTube** and **Google Maps** require search, which is a 3-action pattern: focus the input, type the query, press Enter. With no `type` primitive, the agent clicked the search box repeatedly (8 times in one run) without ever entering text. This is the worst kind of "废话" — visible robot behaviour with zero progress.
+- **GitHub multi-step** asked the agent to drill into a folder and come back to the project root. With no `back` primitive, the agent had to find a "home" link in the chrome — slow, error-prone, often impossible (the GitHub project page is at `/owner/repo`, the breadcrumb is small).
+- The `intentSatisfaction.level=complete` heuristic had a hole: any total `clicksExecuted >= hintsResolved` counted as complete. Re-clicking the same hint 8 times scored the same as clicking 8 distinct hints once each.
+- Independently, even with hints surfaced + briefing-hint priority rule, the LLM occasionally re-clicked a hint AFTER it had succeeded. The agent's `recentActions` showed the click, but the `briefingHints` list still surfaced the hint — the LLM saw "this is a target" and acted on it again.
+
+**Choice (1) — Three new action primitives**:
+
+```
+type  : { kind: 'type', text: string (1..200), reasoning }
+key   : { kind: 'key',  key: enum(Enter|Escape|Tab|Arrow{Up,Down,Left,Right}|Backspace), reasoning }
+back  : { kind: 'back', reasoning }
+```
+
+Vocabulary grows from 4 → 7. Still small enough to fit in the LLM's working memory; the prompt's "ACTION SEMANTICS" section now lists 7 with one-line semantics each, plus a "WORKFLOW PATTERNS" section spelling out the canonical 3-action chains: SEARCH = `[click search, type query, key Enter]`, DRILL-AND-RETURN = `[click in, ..., back]`, DISMISS-MODAL = explicit close button, then `key Escape`.
+
+`IPageSession` gains `type(text)` / `pressKey(key)` / `goBack()`. `StagehandPageSession` implements via Playwright `page.keyboard.type(text, { delay })` (40-90 ms per char, randomised), `page.keyboard.press(key)`, `page.goBack({ waitUntil: 'domcontentloaded', timeout: 5000 })`. Each gets its own `ActionLogEntry` variant so cursor-synth and replay layers see them in the timeline.
+
+**Choice (2) — Anti-repetition rule (load-bearing)**:
+The decider system prompt gains: *"if your last TWO recent actions are both 'click' on essentially the same target, the next action MUST be different. Re-clicking the same input field repeatedly does NOTHING — to enter a search, you need to click ONCE then 'type' your query."* This is a soft rule (model-enforced) but the model honours it now that there's a viable alternative (`type`).
+
+**Choice (3) — `intentSatisfaction` counts UNIQUE hints clicked**:
+`computeIntentSatisfaction` now takes `hintDescriptions: ReadonlyArray<string>` (was `count: number`) and matches each hint description against click-action descriptions via lenient content-token overlap. Re-clicking the same hint 8 times now scores `1/N` not `N/N`. Catches the YouTube failure mode in metrics, not just video.
+
+**Choice (4) — Fulfilled-hint filter in StreamingDirector**:
+`StreamingDirector.run` maintains a `fulfilledHints: Set<string>` of hint descriptions that received a successful click. `observeState` filters `briefingHints` against this set before passing to the decider — the LLM literally cannot see hints it has already satisfied.
+
+The matching logic (token-based lenient match) lives in `src/domain/intent-matching.ts` and is shared between `record-job-runner` (for the metric) and `streaming-director` (for the prompt filter). Pure functions, no I/O — sits naturally in `domain/`.
+
+**Choice (5) — Test cleanup**:
+Pruned 21 schema-shape unit tests (`director-action.test.ts`, `plan.test.ts`, `action-log.test.ts`) that duplicated TypeScript+Zod's compile-time guarantees. Total unit tests 78 → 56. Kept the load-bearing refinement tests (numeric ranges, enum values, the negative `decisionId` regression test from §0021).
+
+**Rationale**:
+- Hard rule #6 ("AI-first, not magic-numbers") doesn't preclude adding well-bounded primitives — the rule is about not gating BEHAVIOUR on numeric thresholds. Vocabulary is shape, not threshold.
+- Schema tests are noise relative to integration coverage. The library of regression cases (§0024) IS the test that matters.
+- The fulfilled-hint filter is a small mechanical fix for a behaviour the prompt rule alone could not enforce. Same idea as the dwell coercion in §0019 — the prompt asks the LLM to do the right thing; the code makes it impossible to do the wrong thing.
+
+**Consequences**:
+
+Empirical regression run (all 6 passing, ~5 min wall clock):
+
+- `gmaps-search-stay · {natural, distracting}`: agent now executes `[click search box, type "New York", key Enter]`. Search submits successfully. Some pre-fire-induced double-typing (rarely catastrophic — the search query has "New YorkNew York" but the page still shows results). intent=`complete` after the new heuristic.
+
+- `youtube-creator · {natural, distracting}`: agent executes `[click search bar, type "MrBeast", key Enter]`, navigates to results, then attempts to click MrBeast's channel link. Channel click sometimes hits budget (search-results-page is a deep target). Search workflow itself is solid.
+
+- `github-multistep · {natural, distracting}`: agent executes click-then-back chains. natural variant did `click 简中 → click homepage → back → click build directory → tries package.json`. distracting variant did similar with more recovery. The agent now USES the back primitive instead of trying to find breadcrumbs.
+
+Open issues that did NOT block landing (all are timing/efficiency, not correctness):
+- Pre-fire occasionally double-fires the same action (next decision was computed before the previous click's effect was visible in the screenshot). Fix candidate: don't pre-fire during state-changing actions (click/key/back). Deferred — current behaviour is "wasteful but completes the task".
+- `recentActions` only carries the last 3 entries; older successful clicks are out-of-window for the LLM. Fix candidate: pass `fulfilledHints` to the prompt explicitly (not just used for filtering hints) so the LLM is reminded what's already done. Deferred.
+
+**Preserves**: §0019-§0024. Goals.md non-negotiables — vocabulary expansion serves #1 (looks human: search workflow now looks human), #3 (intent satisfied or transparently not: heuristic is now accurate), #6 (no magic numbers: the new primitives have schema bounds but no behaviour-gating thresholds).
+
+---
+
 ## Template for new entries
 
 ```

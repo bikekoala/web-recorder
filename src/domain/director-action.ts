@@ -44,11 +44,61 @@ const DoneAction = z.object({
   reasoning: z.string().min(1),
 });
 
+/**
+ * Type primitive — typed into the currently focused element. Must come
+ * AFTER a click on the input field that focuses it. The executor renders
+ * with human-paced per-keystroke delay (40-90 ms randomised) so the
+ * recording shows realistic typing.
+ *
+ * Length capped to 200 chars so the LLM cannot accidentally request a
+ * runaway essay; for longer text, chain multiple `type` actions.
+ */
+const TypeAction = z.object({
+  kind: z.literal('type'),
+  text: z.string().min(1).max(200),
+  reasoning: z.string().min(1),
+});
+
+/**
+ * Key press primitive — fires a single named key. Common keys only
+ * (allowlist) so the LLM can't request weird modifier combos that
+ * surprise users. Most useful: Enter (submit), Escape (close dialog),
+ * Tab (next field).
+ */
+const KeyAction = z.object({
+  kind: z.literal('key'),
+  key: z.enum([
+    'Enter',
+    'Escape',
+    'Tab',
+    'ArrowDown',
+    'ArrowUp',
+    'ArrowLeft',
+    'ArrowRight',
+    'Backspace',
+  ]),
+  reasoning: z.string().min(1),
+});
+
+/**
+ * Browser-back primitive — navigates the browser history one step back.
+ * Equivalent to clicking the browser's back button. Required for
+ * multi-step workflows that drill into a sub-page and need to return
+ * (e.g., "click X, look at it, go back, click Y").
+ */
+const BackAction = z.object({
+  kind: z.literal('back'),
+  reasoning: z.string().min(1),
+});
+
 export const DirectorAction = z.discriminatedUnion('kind', [
   ClickAction,
   ScrollAction,
   DwellAction,
   DoneAction,
+  TypeAction,
+  KeyAction,
+  BackAction,
 ]);
 export type DirectorAction = z.infer<typeof DirectorAction>;
 

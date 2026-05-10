@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 
 import type { ActionLogEntry, RecordingWindow } from '../domain/action-log.js';
 import type { BriefingHintForState } from '../domain/director-state.js';
+import { descriptionsMatch } from '../domain/intent-matching.js';
 import { trimVideo, videoDurationMs } from '../infra/ffmpeg.js';
 import { logger as rootLogger } from '../infra/logger.js';
 import { track } from '../infra/pending.js';
@@ -228,7 +229,7 @@ export class RecordJobRunner {
     const trimmedVideoMs = await videoDurationMs(videoPath).catch(() => null);
 
     const intentSatisfaction = computeIntentSatisfaction(
-      briefing.hints.length,
+      briefing.hints.map((h) => h.description),
       artifacts.actionLog.entries,
       artifacts.recording,
     );
@@ -363,55 +364,83 @@ function enrichHintsForState(
 
 /**
  * Categorize "did the agent do what the user asked?" using only the action
- * log + the planner's pre-resolved click hint count. Heuristic — when the
- * planner couldn't extract specific click targets we return `'unknown'`
- * rather than guess.
+ * log + the planner's pre-resolved hint descriptions. Heuristic — when the
+ * planner couldn't extract specific click targets we return `'unknown'`.
+ *
+ * Crucially: counts UNIQUE hints that received at least one click, not
+ * total clicks. Re-clicking the same input field 8 times does NOT count
+ * as 8 hints satisfied — it counts as ONE hint satisfied.
+ *
+ * Hint↔click matching uses normalized substring overlap: each hint
+ * description is reduced to its content words and we count a hint as
+ * "clicked" if some click's description shares ≥1 content word with it.
+ * This is intentionally lenient — the planner's hint and the LLM's click
+ * description rarely match verbatim ("the simplified Chinese link" vs
+ * "click 简体中文链接").
  *
  * Only entries inside the recording window count. Setup-phase clicks
  * (BlockerPrelude dismissals) are excluded — those are not user intent.
  */
 export function computeIntentSatisfaction(
-  hintsResolvedPreRecording: number,
+  hintDescriptions: ReadonlyArray<string>,
   entries: ActionLogEntry[],
   window: RecordingWindow | null,
 ): IntentSatisfaction {
   const inWindow = (e: ActionLogEntry): boolean =>
     !window ? true : e.t >= window.startedAtMs && e.t <= window.endedAtMs;
 
-  const clicksExecuted = entries.filter((e) => e.type === 'click' && inWindow(e)).length;
-  const scrollsExecuted = entries.filter((e) => e.type === 'scroll' && inWindow(e)).length;
+  const windowEntries = entries.filter(inWindow);
+  const clicks = windowEntries.filter(
+    (e): e is ActionLogEntry & { type: 'click'; description?: string } =>
+      e.type === 'click',
+  );
+  const scrolls = windowEntries.filter((e) => e.type === 'scroll');
+  const types = windowEntries.filter((e) => e.type === 'type');
 
+  const clicksExecuted = clicks.length;
+  const scrollsExecuted = scrolls.length;
+
+  // Count UNIQUE click targets by their description, lenient match.
+  const clickDescriptions = clicks.map((c) => c.description ?? '').filter(Boolean);
+  const hintsClicked = hintDescriptions.filter((hint) =>
+    clickDescriptions.some((cd) => descriptionsMatch(hint, cd)),
+  ).length;
+
+  const totalHints = hintDescriptions.length;
   let level: IntentSatisfaction['level'];
   let note: string;
 
-  if (hintsResolvedPreRecording === 0) {
-    // Vague prompt or no specific click targets — we can't know.
-    if (clicksExecuted === 0 && scrollsExecuted === 0) {
+  if (totalHints === 0) {
+    // Vague prompt — can't score against hints.
+    if (clicksExecuted === 0 && scrollsExecuted === 0 && types.length === 0) {
       level = 'unmet';
       note = 'no hints, no actions executed in recording window';
     } else {
       level = 'unknown';
-      note = `no specific click hints; ${clicksExecuted} click(s), ${scrollsExecuted} scroll(s) executed`;
+      note = `no specific click hints; ${clicksExecuted} click(s), ${scrollsExecuted} scroll(s), ${types.length} type(s)`;
     }
-  } else if (clicksExecuted >= hintsResolvedPreRecording && scrollsExecuted >= 1) {
+  } else if (hintsClicked === totalHints && scrollsExecuted >= 1) {
     level = 'complete';
-    note = `all ${hintsResolvedPreRecording} click hint(s) executed plus scrolling`;
-  } else if (clicksExecuted >= hintsResolvedPreRecording) {
+    note = `all ${totalHints} hint(s) clicked at least once + scrolling occurred`;
+  } else if (hintsClicked === totalHints) {
     level = 'partial';
-    note = `all ${hintsResolvedPreRecording} click hint(s) executed but no scrolling — user may have asked for both`;
-  } else if (clicksExecuted > 0) {
+    note = `all ${totalHints} hint(s) clicked but no scrolling — user may have asked for both`;
+  } else if (hintsClicked > 0) {
     level = 'partial';
-    note = `${clicksExecuted}/${hintsResolvedPreRecording} click hint(s) executed`;
+    note = `${hintsClicked}/${totalHints} unique hint(s) actually clicked`;
   } else {
     level = 'unmet';
-    note = `0/${hintsResolvedPreRecording} click hint(s) executed`;
+    note = `0/${totalHints} hint(s) actually clicked (clicksExecuted=${clicksExecuted} but none matched hint descriptions)`;
   }
 
   return {
-    hintsResolvedPreRecording,
+    hintsResolvedPreRecording: totalHints,
     clicksExecuted,
     scrollsExecuted,
     level,
     note,
   };
 }
+
+// (Helpers `descriptionsMatch` / `contentTokens` moved to
+//  src/domain/intent-matching.ts — shared with StreamingDirector.)

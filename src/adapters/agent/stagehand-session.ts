@@ -1021,6 +1021,76 @@ export class StagehandPageSession implements IPageSession {
     });
   }
 
+  /**
+   * Type into the focused element with human-paced per-keystroke delay
+   * (40-90 ms randomised per char). Caller must focus the field first
+   * via clickSelector / clickByDescription on the input.
+   */
+  async type(text: string): Promise<void> {
+    const page = this.requirePage();
+    const scrollY = await this.readScrollY();
+    const t0 = this.elapsed();
+    const startedAtWall = Date.now();
+
+    // Use Playwright's keyboard.type with `delay`. The delay is a CONSTANT
+    // per call; randomising per-keystroke would require splitting into single
+    // .press() calls and we don't need that level of realism — most humans
+    // are fairly steady once they start typing.
+    const delay = 40 + Math.floor(Math.random() * 50); // 40-90ms
+    await page.keyboard.type(text, { delay });
+
+    this.recordEntry({
+      t: t0,
+      type: 'type',
+      text,
+      durationMs: Date.now() - startedAtWall,
+      scrollY,
+      viewport: this.cfg.viewport,
+    });
+  }
+
+  /**
+   * Press a single named key. Wraps Playwright `keyboard.press`.
+   */
+  async pressKey(key: string): Promise<void> {
+    const page = this.requirePage();
+    const scrollY = await this.readScrollY();
+    await page.keyboard.press(key);
+    this.recordEntry({
+      t: this.elapsed(),
+      type: 'key',
+      key,
+      scrollY,
+      viewport: this.cfg.viewport,
+    });
+  }
+
+  /**
+   * Browser-back navigation. Resolves when the back navigation completes
+   * (DOM ready) or after a 5s timeout. Logged with urlBefore/urlAfter.
+   */
+  async goBack(): Promise<void> {
+    const page = this.requirePage();
+    const scrollY = await this.readScrollY();
+    const urlBefore = page.url();
+    try {
+      await page.goBack({ waitUntil: 'domcontentloaded', timeout: 5000 });
+    } catch {
+      // The page may have no history (we navigated only once). That's not
+      // fatal — log the no-op and let the Director re-decide. Same idea as
+      // a click that lands on a noop element.
+    }
+    const urlAfter = page.url();
+    this.recordEntry({
+      t: this.elapsed(),
+      type: 'back',
+      ...(urlBefore ? { urlBefore } : {}),
+      ...(urlAfter ? { urlAfter } : {}),
+      scrollY,
+      viewport: this.cfg.viewport,
+    });
+  }
+
   // ---------------------------------------------------------------------- internals
 
   /**

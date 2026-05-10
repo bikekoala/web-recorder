@@ -76,6 +76,26 @@ export interface IPageSession {
   wait(durationMs: number): Promise<void>;
 
   /**
+   * Type into the currently focused element with human-paced per-keystroke
+   * delay (40-90 ms randomised). Caller must focus the field FIRST (usually
+   * via clickSelector / clickByDescription on the input). Logged as `type`.
+   */
+  type(text: string): Promise<void>;
+
+  /**
+   * Press a single named key (Enter / Escape / Tab / arrow / Backspace).
+   * Wraps Playwright `keyboard.press`. Logged as `key`.
+   */
+  pressKey(key: string): Promise<void>;
+
+  /**
+   * Browser-back navigation (equivalent to clicking the back button).
+   * Wraps Playwright `page.goBack`. Logged as `back` with urlBefore/urlAfter.
+   * Resolves when the navigation completes or times out.
+   */
+  goBack(): Promise<void>;
+
+  /**
    * Block until the DOM has been quiet (no mutations) for `quietMs`, or
    * until the hard deadline `maxMs` is hit, whichever comes first. Use this
    * after a `goto` or after an action that triggers re-render to know that
