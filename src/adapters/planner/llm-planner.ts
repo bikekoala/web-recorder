@@ -1,10 +1,11 @@
 import OpenAI from 'openai';
 
 import { DomainError } from '../../domain/errors.js';
-import { TimelinePlan, type PlanRequest } from '../../domain/plan.js';
+import { ClickHint, TimelinePlan, type DirectorBriefing, type PlanRequest } from '../../domain/plan.js';
 import { config } from '../../infra/config.js';
 import { logger as rootLogger } from '../../infra/logger.js';
-import type { IPlanner } from '../../ports/planner.js';
+import type { IPageSession } from '../../ports/page-session.js';
+import type { BriefRequest, IPlanner } from '../../ports/planner.js';
 
 /**
  * LlmPlanner — IPlanner backed by an OpenRouter-routed LLM with vision.
@@ -151,6 +152,86 @@ export class LlmPlanner implements IPlanner {
     );
 
     return result.data;
+  }
+
+  async brief(
+    input: BriefRequest,
+    session: IPageSession,
+  ): Promise<DirectorBriefing> {
+    const userText = [
+      `URL: ${input.url}`,
+      `Prompt: ${input.prompt}`,
+      `Target duration ms: ${input.durationMs}`,
+      `Viewport: ${input.viewport.width}x${input.viewport.height}`,
+      '',
+      'Identify the click targets the user implicitly or explicitly mentioned.',
+      'Output JSON: { "targets": ["<natural-language description, in the user\'s language>", ...], "rationale": "<one sentence>" }',
+      'Up to 3 targets. If the prompt has no click intent, return an empty list.',
+    ].join('\n');
+
+    const userContent: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
+      { type: 'text', text: userText },
+    ];
+    if (input.screenshot) {
+      const b64 = input.screenshot.toString('base64');
+      userContent.push({
+        type: 'image_url',
+        image_url: { url: `data:image/png;base64,${b64}` },
+      });
+    }
+
+    let raw: string;
+    try {
+      const completion = await this.client.chat.completions.create({
+        model: this.model,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You extract click targets from a user prompt + screenshot. Output JSON only.',
+          },
+          { role: 'user', content: userContent },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.2,
+      });
+      raw = completion.choices[0]?.message?.content ?? '';
+    } catch (err) {
+      throw new PlannerError('LLM brief() call failed', err);
+    }
+    if (!raw) throw new PlannerError('LLM returned empty brief content');
+
+    let parsed: { targets?: unknown; rationale?: unknown };
+    try {
+      parsed = JSON.parse(stripCodeFence(raw));
+    } catch (err) {
+      throw new PlannerError(`brief returned invalid JSON: ${raw.slice(0, 300)}`, err);
+    }
+    const targets = Array.isArray(parsed.targets)
+      ? (parsed.targets as unknown[]).filter((t): t is string => typeof t === 'string')
+      : [];
+    const rationale = typeof parsed.rationale === 'string' ? parsed.rationale : '';
+
+    // Pre-resolve each target. Misses are dropped silently — Director's
+    // search loop will rediscover them if they exist.
+    const hints: ClickHint[] = [];
+    for (const description of targets) {
+      const resolved = await session.resolveTarget(description);
+      if (resolved && resolved.selector && resolved.bbox) {
+        hints.push({
+          description,
+          selector: resolved.selector,
+          bboxAtRest: resolved.bbox,
+        });
+      }
+    }
+
+    return {
+      prompt: input.prompt,
+      durationMs: input.durationMs,
+      hints,
+      rationale,
+    };
   }
 }
 

@@ -1,4 +1,5 @@
-import type { PlanRequest, TimelinePlan } from '../domain/plan.js';
+import type { DirectorBriefing, PlanRequest, TimelinePlan } from '../domain/plan.js';
+import type { IPageSession } from './page-session.js';
 
 /**
  * IPlanner — turns a natural-language `(url, prompt, durationMs)` request
@@ -23,5 +24,24 @@ import type { PlanRequest, TimelinePlan } from '../domain/plan.js';
  *    boundary, not allowed to propagate.
  */
 export interface IPlanner {
+  /** @deprecated Use brief() instead. Kept until cleanup-task migration. */
   plan(request: PlanRequest, screenshot: Buffer | null): Promise<TimelinePlan>;
+
+  /**
+   * Produce a DirectorBriefing for the streaming Director.
+   *
+   * Implementations:
+   * 1. Make ONE LLM call with the screenshot, asking for likely click targets.
+   * 2. For each named target, call `session.resolveTarget(name)` to get a selector + bbox.
+   * 3. Return briefing with hints + verbatim prompt + duration.
+   */
+  brief(input: BriefRequest, session: IPageSession): Promise<DirectorBriefing>;
+}
+
+export interface BriefRequest {
+  url: string;
+  prompt: string;
+  durationMs: number;
+  viewport: { width: number; height: number };
+  screenshot: Buffer | null;
 }
