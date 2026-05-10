@@ -42,6 +42,10 @@ import { logger as rootLogger } from '../../infra/logger.js';
  * the error propagates.
  */
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export interface StagehandPageSessionConfig extends PageSessionConfig {
   /** Stagehand verbose level (0|1|2). 1 prints high-level steps. */
   verbose?: 0 | 1 | 2;
@@ -460,6 +464,108 @@ export class StagehandPageSession implements IPageSession {
         : { selector: first.selector, description: first.description };
     } catch (err) {
       this.logger.warn({ err, target }, 'resolveTarget failed');
+      return null;
+    }
+  }
+
+  async quickFindInViewport(description: string): Promise<ObservedElement | null> {
+    const candidates = this.candidateLocators(description);
+
+    for (const locator of candidates) {
+      try {
+        const handle = locator.first();
+        if ((await handle.count()) === 0) continue;
+        const bbox = await handle.boundingBox({ timeout: 500 });
+        if (!bbox) continue;
+        // Viewport check — bbox.y/x are viewport-relative.
+        const inViewport =
+          bbox.y >= 0 &&
+          bbox.y < this.cfg.viewport.height &&
+          bbox.x >= 0 &&
+          bbox.x < this.cfg.viewport.width;
+        if (!inViewport) continue;
+        const sel = await this.locatorSelectorFallback(handle);
+        return {
+          selector: sel ?? '',
+          description,
+          bbox: { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height },
+        };
+      } catch {
+        // ignore — try next candidate
+      }
+    }
+    return null;
+  }
+
+  async quickFindOnPage(description: string): Promise<ObservedElement | null> {
+    const candidates = this.candidateLocators(description);
+
+    for (const locator of candidates) {
+      try {
+        const handle = locator.first();
+        if ((await handle.count()) === 0) continue;
+        const bbox = await handle.boundingBox({ timeout: 500 });
+        if (!bbox) continue;
+        const sel = await this.locatorSelectorFallback(handle);
+        return {
+          selector: sel ?? '',
+          description,
+          bbox: { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height },
+        };
+      } catch {
+        // ignore
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Generate a small ordered list of Playwright Locators that might match
+   * a natural-language description. Cheapest matchers first.
+   */
+  private candidateLocators(description: string) {
+    const page = this.requirePage();
+    const trimmed = description.trim();
+    return [
+      page.getByText(trimmed, { exact: false }),
+      page.getByRole('link', { name: new RegExp(escapeRegex(trimmed), 'i') }),
+      page.getByRole('button', { name: new RegExp(escapeRegex(trimmed), 'i') }),
+      page.locator(`text=${trimmed}`),
+    ];
+  }
+
+  /**
+   * Best-effort: get a stable selector string for a Playwright locator
+   * we just resolved by description. Falls back to an empty string when
+   * Playwright can't serialize the locator (in which case the caller can
+   * still re-query by description).
+   */
+  private async locatorSelectorFallback(
+    locator: ReturnType<Page['locator']>,
+  ): Promise<string | null> {
+    // Playwright doesn't expose a stable serializer; we just round-trip via
+    // an XPath snapshot computed in the page. If that fails, return null
+    // and the caller will re-query by description.
+    try {
+      const handle = await locator.elementHandle({ timeout: 500 });
+      if (!handle) return null;
+      const xpath = await handle.evaluate((el: Element) => {
+        function getXPath(node: Element): string {
+          const segs: string[] = [];
+          for (let n: Element | null = node; n && n.nodeType === 1; n = n.parentElement) {
+            let i = 1;
+            for (let s = n.previousElementSibling; s; s = s.previousElementSibling) {
+              if (s.tagName === n.tagName) i += 1;
+            }
+            segs.unshift(`${n.tagName.toLowerCase()}[${i}]`);
+          }
+          return '/' + segs.join('/');
+        }
+        return getXPath(el);
+      });
+      await handle.dispose();
+      return `xpath=${xpath}`;
+    } catch {
       return null;
     }
   }

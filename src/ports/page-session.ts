@@ -110,6 +110,32 @@ export interface IPageSession {
   resolveTarget(target: string): Promise<ObservedElement | null>;
 
   /**
+   * Fast non-LLM element finder by natural-language description.
+   *
+   * Tries cheap Playwright matchers in order:
+   *   1. text= match (visible text equality / substring)
+   *   2. role+name match (e.g. button "Subscribe")
+   *   3. partial text match (case-insensitive contains)
+   *
+   * Returns the first match's selector + bbox if found, else null.
+   * Crucially: returns null FAST (no LLM, no full DOM walk) so the
+   * Director can do an in-viewport check in milliseconds.
+   *
+   * Used by the Director's `click` executor:
+   * - present in viewport → run discovery click
+   * - not in viewport, but on page → run search loop
+   * - not on page at all → bubble back to LLM as failure
+   */
+  quickFindInViewport(description: string): Promise<ObservedElement | null>;
+
+  /**
+   * Same as `quickFindInViewport` but searches the entire page (not just
+   * the visible viewport). Used by the search loop to know whether
+   * scrolling will eventually reveal the target.
+   */
+  quickFindOnPage(description: string): Promise<ObservedElement | null>;
+
+  /**
    * Click an already-resolved selector. This is a Playwright-native click
    * (real OS-level events), so it triggers actual navigation, hover state,
    * etc. — unlike Stagehand's CDP-synthesized act.
