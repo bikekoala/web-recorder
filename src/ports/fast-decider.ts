@@ -15,6 +15,12 @@ import type { DirectorState } from '../domain/director-state.js';
  */
 export interface IFastDecider {
   decide(state: DirectorState): Promise<DecisionResponse>;
+  /**
+   * Stable identifier for the underlying model — used in operation logs
+   * so a run can be reviewed against the exact model that produced it.
+   * Format is provider-prefixed where applicable (e.g. `openai/gpt-4o-mini`).
+   */
+  readonly modelId: string;
 }
 
 export const ExpectAfter = z.object({

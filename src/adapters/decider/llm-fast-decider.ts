@@ -91,6 +91,10 @@ export class LlmFastDecider implements IFastDecider {
       });
   }
 
+  get modelId(): string {
+    return this.model;
+  }
+
   async decide(state: DirectorState): Promise<DecisionResponse> {
     const userText = buildUserPrompt(state);
     const userContent: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [

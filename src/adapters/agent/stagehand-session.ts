@@ -827,6 +827,25 @@ export class StagehandPageSession implements IPageSession {
     });
 
     this.logger.info({ tMs: t }, 'recording window opened');
+
+    // Capture page-health diagnostic right at recording_start. Best-effort —
+    // never let this block the recording itself.
+    try {
+      const diag = await this.gatherPageDiagnostic();
+      this.recordEntry({
+        t: this.elapsed(),
+        type: 'page_diagnostic',
+        url: diag.url,
+        title: diag.title,
+        interactiveElementCount: diag.interactiveElementCount,
+        visibleHeadings: diag.visibleHeadings,
+        blockerSignals: diag.blockerSignals,
+        scrollY,
+        viewport: this.cfg.viewport,
+      });
+    } catch (err) {
+      this.logger.debug({ err }, 'page_diagnostic gathering failed; continuing');
+    }
   }
 
   async act(instruction: string): Promise<void> {
@@ -1003,6 +1022,188 @@ export class StagehandPageSession implements IPageSession {
 
   private elapsed(): number {
     return Date.now() - this.startedAtMs;
+  }
+
+  // -------------------------- IPageSession introspection extensions
+
+  /** Public session-relative timestamp; matches ActionLogEntry.t. */
+  nowMs(): number {
+    return this.startedAtMs > 0 ? this.elapsed() : 0;
+  }
+
+  /** Public action-log append, used by Director / RecordJobRunner. */
+  appendEntry(entry: ActionLogEntry): void {
+    this.recordEntry(entry);
+  }
+
+  /**
+   * Read coarse page-health signals: title, interactive element count,
+   * top visible headings, and a list of detected blocker signals
+   * (consent_dialog | auth_modal | play_overlay | search_only).
+   *
+   * Best-effort: every step is wrapped in try/catch and degrades to
+   * defaults so a partial failure here never breaks the recording.
+   * Heuristic-only — false positives/negatives are expected.
+   */
+  private async gatherPageDiagnostic(): Promise<{
+    url: string;
+    title: string;
+    interactiveElementCount: number;
+    visibleHeadings: string[];
+    blockerSignals: string[];
+  }> {
+    const page = this.requirePage();
+    const url = page.url();
+    let title = '';
+    try {
+      title = await page.title();
+    } catch {
+      /* leave blank */
+    }
+
+    const probe = await page
+      .evaluate(() => {
+        const safe = <T>(fn: () => T, fallback: T): T => {
+          try {
+            return fn();
+          } catch {
+            return fallback;
+          }
+        };
+
+        // Count clickable / focusable elements. Cheap broad selector pass.
+        const interactiveCount = safe(
+          () =>
+            document.querySelectorAll(
+              'button, a[href], input, select, textarea, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])',
+            ).length,
+          0,
+        );
+
+        // Visible h1/h2/h3 texts in document order, top 5.
+        const headings: string[] = safe(() => {
+          const out: string[] = [];
+          const list = document.querySelectorAll('h1, h2, h3');
+          for (const el of Array.from(list)) {
+            if (out.length >= 5) break;
+            const rect = (el as HTMLElement).getBoundingClientRect();
+            const text = (el as HTMLElement).innerText?.trim();
+            if (text && rect.width > 0 && rect.height > 0) {
+              out.push(text.slice(0, 100));
+            }
+          }
+          return out;
+        }, []);
+
+        // Blocker heuristics. Each returns a string tag if present.
+        const signals: string[] = [];
+
+        // play_overlay: look for known platform big-play buttons OR a
+        // visible button/svg with aria-label matching "play" that's
+        // sized like a video overlay (>40x40, near center of viewport).
+        const playOverlay = safe(() => {
+          const wellKnown = document.querySelector(
+            '.ytp-large-play-button, .vjs-big-play-button, [class*="play-button"][class*="overlay"]',
+          );
+          if (wellKnown) {
+            const r = (wellKnown as HTMLElement).getBoundingClientRect();
+            if (r.width >= 40 && r.height >= 40) return true;
+          }
+          // Generic: large aria-label="Play" near center.
+          const candidates = document.querySelectorAll(
+            'button[aria-label*="Play" i], button[aria-label*="play" i]',
+          );
+          const cx = window.innerWidth / 2;
+          const cy = window.innerHeight / 2;
+          for (const c of Array.from(candidates)) {
+            const r = (c as HTMLElement).getBoundingClientRect();
+            if (
+              r.width >= 40
+              && r.height >= 40
+              && Math.abs(r.left + r.width / 2 - cx) < window.innerWidth / 4
+              && Math.abs(r.top + r.height / 2 - cy) < window.innerHeight / 3
+            ) {
+              return true;
+            }
+          }
+          return false;
+        }, false);
+        if (playOverlay) signals.push('play_overlay');
+
+        // consent_dialog: presence of cookie/privacy dialog. Common
+        // platforms use known classes; fallback to text match.
+        const consent = safe(() => {
+          if (
+            document.querySelector(
+              '#cookiebot, #onetrust-banner-sdk, [class*="cookie-consent" i], [class*="cookieBanner" i], [aria-label*="cookie" i]',
+            )
+          ) {
+            return true;
+          }
+          // Visible "accept all" or "I agree" button often sits in a banner.
+          const buttons = document.querySelectorAll('button');
+          for (const b of Array.from(buttons)) {
+            const text = (b as HTMLElement).innerText?.trim().toLowerCase() ?? '';
+            if (
+              (text === 'accept all'
+                || text === 'i agree'
+                || text === '同意'
+                || text === '接受所有 cookie'
+                || text === 'accept all cookies')
+              && (b as HTMLElement).getBoundingClientRect().width > 0
+            ) {
+              return true;
+            }
+          }
+          return false;
+        }, false);
+        if (consent) signals.push('consent_dialog');
+
+        // auth_modal: dialog requiring sign-in.
+        const authModal = safe(() => {
+          const dialogs = document.querySelectorAll(
+            '[role="dialog"], [aria-modal="true"]',
+          );
+          for (const d of Array.from(dialogs)) {
+            const r = (d as HTMLElement).getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            const text = ((d as HTMLElement).innerText || '').toLowerCase();
+            if (
+              text.includes('sign in')
+              || text.includes('log in')
+              || text.includes('登录')
+              || text.includes('登入')
+            ) {
+              return true;
+            }
+          }
+          return false;
+        }, false);
+        if (authModal) signals.push('auth_modal');
+
+        // search_only: page is essentially just a search box (logged-out
+        // YouTube etc.). Heuristic: very few interactive elements AND
+        // a search input is present.
+        const searchOnly = safe(() => {
+          const hasSearch =
+            !!document.querySelector(
+              'input[type="search"], input[role="combobox"], input[aria-label*="search" i]',
+            );
+          return hasSearch && interactiveCount < 15;
+        }, false);
+        if (searchOnly) signals.push('search_only');
+
+        return { interactiveCount, headings, signals };
+      })
+      .catch(() => ({ interactiveCount: 0, headings: [] as string[], signals: [] as string[] }));
+
+    return {
+      url,
+      title,
+      interactiveElementCount: probe.interactiveCount,
+      visibleHeadings: probe.headings,
+      blockerSignals: probe.signals,
+    };
   }
 
   private async readScrollY(): Promise<number> {

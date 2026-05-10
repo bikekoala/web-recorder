@@ -449,6 +449,42 @@ Setup is unchanged from §0016: planner fires once with screenshot, extracts lik
 
 ---
 
+## 0020 · Visual-blocker prompt + introspection log entries
+
+**Date**: 2026-05-10
+
+**Context**: Two distinct issues surfaced from real-world testing:
+1. Tested the agent on `youtube.com/watch?v=...`. Browsers block autoplay, so the page sat with a paused-video play overlay. The user said "watch the video for a while"; the LLM dwelled 26s waiting for autoplay that would never come. The user does not know about technical preconditions like autoplay restrictions; the agent has to figure them out from the screenshot.
+2. After a run failed or behaved oddly, the only timeline available was the action log. We could see *what* happened (scroll, click, wait) but not *why* the LLM chose what it chose, what it expected, or what page state it saw at decision time. Reviewing a run required re-running with debug logging — slow and not always reproducible.
+
+**Choice (1) — Visual-blocker awareness in the SYSTEM_PROMPT** (`src/adapters/decider/llm-fast-decider.ts`):
+- Explicit list of "blockers" the LLM must act on FIRST regardless of the user's stated goal: paused-video play overlay, cookie/consent dialog, login modal, age gate, full-viewport spinner.
+- Tighter "done" semantics: a single scroll is NOT enough to satisfy a "browse" intent. Don't say done unless every verb in the user's prompt has been performed.
+- "If your previous TWO actions were both dwells, the next must be click or scroll" — prevents LLM passivity loops.
+
+**Choice (2) — Three new ActionLogEntry variants** (`src/domain/action-log.ts`):
+- `decision` — written every time `IFastDecider.decide()` returns. Captures `decisionId`, `modelId`, `latencyMs`, the chosen actions with their `reasoning`, and any `expectAfter` hint. The screenshot the LLM saw is implicitly captured in the recorded video at `t`.
+- `decision_failure` — captures recoverable problems with a categorical `reason`: `schema_validation` | `expect_after_mismatch` | `llm_call_failed` | `click_failed` | `budget_exceeded`. The reason itself tells the operator whether the cause is a system bug or a page-vs-LLM mismatch (recoverable).
+- `page_diagnostic` — written at `recording_start`. Captures `url`, `title`, `interactiveElementCount`, top `visibleHeadings`, and detected `blockerSignals`. A "blank-ish" anomaly (e.g. logged-out YouTube homepage with `interactiveElementCount: 6` and `blockerSignals: ["search_only"]`) is now visible at a glance.
+
+`IPageSession` gains `nowMs()` and `appendEntry()` so upstream layers can write directly without going through the dedicated action methods. `IFastDecider` gains `readonly modelId: string` for log entries.
+
+**Rationale**:
+- Models, even strong ones, will not always read between the lines of natural-language intent. Listing common technical preconditions in the prompt costs ~50 prompt tokens and turns "passive 26s of dwell" into "click play, watch, scroll to comments" (verified on the YouTube watch URL after this change).
+- A run's LLM rationale is the missing piece for retrospective analysis. With it, "did the system or the page misbehave?" becomes answerable from the action log alone, no re-run needed.
+- Categorizing failures by `reason` lets the operator triage: `llm_call_failed` (system bug, fix code) vs `expect_after_mismatch` (LLM expected SPA-style nav, page used hash routing — probably recoverable) vs `click_failed: budget cut` (over-aggressive budget, raise it).
+- `page_diagnostic` has heuristic blocker detection (CSS selectors + visible-text matching), kept simple. False positives/negatives are expected; the field is informational, not load-bearing.
+
+**Consequences**:
+- ActionLogEntry schema gains 3 variants — backwards-compatible since it's a discriminated union (consumers ignore unknown types or fail-fast on unknown, both fine).
+- StreamingDirector now writes log entries; `IPageSession.appendEntry` and `nowMs` are part of the port contract.
+- Default models: planner promoted to `google/gemini-3.1-pro-preview` for stronger vision; decider stays on `openai/gpt-4o-mini` (`google/gemini-3.1-flash-lite` preview's tail latency is too high on OpenRouter today; revisit at GA).
+- Empirical YouTube watch-URL run: 2 click hints pre-resolved, agent clicked the central play button at t≈11s, watched for ~12s, scrolled to comments at t≈24s. Before this change: 0 clicks, 26s of passive dwell.
+
+**Preserves**: §0019 (streaming Director architecture, 4-primitive vocabulary, expectAfter), §0017/§0018 (click + scroll choreography unchanged).
+
+---
+
 ## Template for new entries
 
 ```

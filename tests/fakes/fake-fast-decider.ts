@@ -18,6 +18,8 @@ export class FakeFastDecider implements IFastDecider {
   startedAt = Date.now();
   queue: FakeDeciderResponse[] = [];
   defaultDelayMs = 50;
+  /** Identifier surfaced via the IFastDecider port for log entries. */
+  modelId = 'fake/decider';
 
   constructor(initial: FakeDeciderResponse[] = []) {
     this.queue = [...initial];

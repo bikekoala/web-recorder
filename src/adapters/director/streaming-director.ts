@@ -51,6 +51,7 @@ export class StreamingDirector implements IDirector {
 
     let actionQueue: DirectorAction[] = [];
     let pending: ReturnType<typeof track<DecisionResponse>> | null = null;
+    let pendingMeta: { id: number; firedAtMs: number; scrollY: number } | null = null;
     let expectAfter: ExpectAfter | null = null;
 
     // Cold start: fire first decision call.
@@ -58,6 +59,7 @@ export class StreamingDirector implements IDirector {
       const state = await this.observeState(briefing, session, recentActions, briefing.durationMs);
       pending = track(this.decider.decide(state));
       decisionCount += 1;
+      pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
     }
 
     while (true) {
@@ -69,6 +71,7 @@ export class StreamingDirector implements IDirector {
           const state = await this.observeState(briefing, session, recentActions, remainingMs);
           pending = track(this.decider.decide(state));
           decisionCount += 1;
+          pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
         }
         // Wait for pending, but if it takes longer than the implicit-dwell
         // duration, insert a dwell action and re-check. Caps at 4 dwells.
@@ -89,6 +92,7 @@ export class StreamingDirector implements IDirector {
         // exit immediately, even if the LLM call hasn't returned. Without
         // this, a slow LLM blocks here unboundedly, blowing the budget.
         if (Date.now() >= hardDeadlineAt) {
+          this.logFailure(session, pendingMeta, 'budget_exceeded', 'deadline reached while awaiting decider');
           return this.endReport('budget', startedAt, decisionCount, implicitDwellCount, expectAfterMismatchCount);
         }
         // Race the LLM call against remaining budget so a tail-latency
@@ -101,13 +105,17 @@ export class StreamingDirector implements IDirector {
           ]);
           if (decision === null) {
             // Budget exhausted while waiting on LLM — exit cleanly.
+            this.logFailure(session, pendingMeta, 'budget_exceeded', 'budget exhausted while awaiting decider');
             return this.endReport('budget', startedAt, decisionCount, implicitDwellCount, expectAfterMismatchCount);
           }
+          if (pendingMeta) this.logDecision(session, pendingMeta, decision);
           actionQueue = [...decision.actions];
           expectAfter = decision.expectAfter ?? null;
           pending = null;
+          pendingMeta = null;
         } catch (err) {
           this.logger.warn({ err }, 'decider failed at queue top-up');
+          this.logFailure(session, pendingMeta, 'llm_call_failed', errorMessage(err));
           return this.endReport('error', startedAt, decisionCount, implicitDwellCount, expectAfterMismatchCount);
         }
       }
@@ -122,6 +130,7 @@ export class StreamingDirector implements IDirector {
         const state = await this.observeState(briefing, session, recentActions, remainingMs);
         pending = track(this.decider.decide(state));
         decisionCount += 1;
+        pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
       }
 
       // Execute the animation with an upper-bound watchdog.
@@ -139,17 +148,33 @@ export class StreamingDirector implements IDirector {
       recentActions.push(summary);
       if (recentActions.length > 3) recentActions.shift();
 
+      // Audit: a click that came back !succeeded is worth a separate
+      // failure entry — the regular `click` log entry doesn't carry a
+      // success flag yet, and "click_failed" is a recoverable mismatch
+      // worth seeing in the timeline.
+      if (action.kind === 'click' && !summary.succeeded) {
+        this.logFailure(session, pendingMeta, 'click_failed', summary.brief);
+      }
+
       // expectAfter check — cheap text-based validation.
       if (expectAfter && !(await this.validateExpectAfter(expectAfter, session))) {
         expectAfterMismatchCount += 1;
+        this.logFailure(
+          session,
+          pendingMeta,
+          'expect_after_mismatch',
+          `expected ${JSON.stringify(expectAfter)}`,
+        );
         actionQueue = [];
         // Cancel any in-flight pre-fire (its premise is stale) and
         // force a fresh call with the failure context.
         pending = null;
+        pendingMeta = null;
         const state = await this.observeState(briefing, session, recentActions, Math.max(0, hardDeadlineAt - Date.now()));
         const stateWithFailure: DirectorState = { ...state, lastActionFailure: 'expectAfter mismatch' };
         pending = track(this.decider.decide(stateWithFailure));
         decisionCount += 1;
+        pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
         expectAfter = null;
         continue;
       }
@@ -158,12 +183,15 @@ export class StreamingDirector implements IDirector {
       if (pending && pending.isResolved) {
         if (pending.error) {
           this.logger.warn({ err: pending.error }, 'decider failed in-flight');
-          // Fall through; next loop iteration will try a fresh call.
+          this.logFailure(session, pendingMeta, 'llm_call_failed', errorMessage(pending.error));
           pending = null;
+          pendingMeta = null;
         } else if (pending.value) {
+          if (pendingMeta) this.logDecision(session, pendingMeta, pending.value);
           actionQueue = [...pending.value.actions];
           expectAfter = pending.value.expectAfter ?? null;
           pending = null;
+          pendingMeta = null;
         }
       }
 
@@ -274,6 +302,81 @@ export class StreamingDirector implements IDirector {
     // FakePageSession exposes scrollY as a field; the real adapter exposes
     // it via screenshot/observe but we can derive it from a tiny evaluate.
     return (session as unknown as { scrollY?: number }).scrollY ?? 0;
+  }
+
+  /**
+   * Append a `decision` entry to the action log capturing what the LLM
+   * returned. Best-effort — never lets a logging failure break recording.
+   */
+  private logDecision(
+    session: IPageSession,
+    meta: { id: number; firedAtMs: number; scrollY: number },
+    decision: DecisionResponse,
+  ): void {
+    try {
+      session.appendEntry({
+        t: session.nowMs(),
+        type: 'decision',
+        decisionId: meta.id,
+        modelId: this.decider.modelId,
+        latencyMs: Date.now() - meta.firedAtMs,
+        actions: decision.actions.map((a) => ({
+          kind: a.kind,
+          reasoning: a.reasoning,
+          brief: briefAction(a),
+        })),
+        ...(decision.expectAfter ? { expectAfter: decision.expectAfter } : {}),
+        scrollY: meta.scrollY,
+        viewport: viewportFrom(session),
+      });
+    } catch (err) {
+      this.logger.debug({ err }, 'logDecision append failed');
+    }
+  }
+
+  private logFailure(
+    session: IPageSession,
+    meta: { id: number; scrollY: number } | null,
+    reason:
+      | 'schema_validation'
+      | 'expect_after_mismatch'
+      | 'llm_call_failed'
+      | 'click_failed'
+      | 'budget_exceeded',
+    details: string,
+  ): void {
+    try {
+      session.appendEntry({
+        t: session.nowMs(),
+        type: 'decision_failure',
+        ...(meta ? { decisionId: meta.id } : {}),
+        reason,
+        details: details.slice(0, 500),
+        scrollY: meta?.scrollY ?? 0,
+        viewport: viewportFrom(session),
+      });
+    } catch (err) {
+      this.logger.debug({ err }, 'logFailure append failed');
+    }
+  }
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  return JSON.stringify(err).slice(0, 500);
+}
+
+function briefAction(a: DirectorAction): string {
+  switch (a.kind) {
+    case 'click':
+      return `click ${truncate(a.target, 40)}`;
+    case 'scroll':
+      return `scroll ${a.deltaPx > 0 ? '+' : ''}${a.deltaPx} ${a.speed}`;
+    case 'dwell':
+      return `dwell ${a.durationMs}ms`;
+    case 'done':
+      return 'done';
   }
 }
 

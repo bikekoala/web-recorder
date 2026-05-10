@@ -1,4 +1,4 @@
-import type { ActionLog, Bbox, Viewport } from '../../src/domain/action-log.js';
+import type { ActionLog, ActionLogEntry, Bbox, Viewport } from '../../src/domain/action-log.js';
 import type {
   IPageSession,
   ObservedElement,
@@ -90,4 +90,13 @@ export class FakePageSession implements IPageSession {
     return this.quickFindOnPageResult;
   }
   async beginRecording(): Promise<void> { this.record('beginRecording', null); }
+
+  /** Captured by Director / RecordJobRunner via appendEntry(). */
+  appendedEntries: ActionLogEntry[] = [];
+
+  nowMs(): number { return Date.now() - this.startedAt; }
+  appendEntry(entry: ActionLogEntry): void {
+    this.appendedEntries.push(entry);
+    this.record('appendEntry', { type: entry.type });
+  }
 }

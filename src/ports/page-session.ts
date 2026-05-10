@@ -1,4 +1,4 @@
-import type { ActionLog, Bbox, RecordingWindow, Viewport } from '../domain/action-log.js';
+import type { ActionLog, ActionLogEntry, Bbox, RecordingWindow, Viewport } from '../domain/action-log.js';
 
 /**
  * Velocity profile for animated scrolls. See `IPageSession.scroll()` docs
@@ -180,6 +180,24 @@ export interface IPageSession {
    * Calling stop more than once is a no-op after the first call.
    */
   stop(): Promise<SessionArtifacts>;
+
+  /**
+   * Session-relative time in ms (the same clock as ActionLogEntry.t). Use
+   * this when constructing entries to append via {@link appendEntry}.
+   * Returns 0 before {@link start} has been called.
+   */
+  nowMs(): number;
+
+  /**
+   * Append an arbitrary entry to the action log. Used by upstream layers
+   * (Director, RecordJobRunner) to record introspection data —
+   * `decision`, `decision_failure`, `page_diagnostic` — without going
+   * through one of the dedicated action methods.
+   *
+   * The session itself owns the action log; this is the single mutation
+   * point for upstream callers.
+   */
+  appendEntry(entry: ActionLogEntry): void;
 }
 
 export interface ObservedElement {

@@ -27,11 +27,13 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Playwright video recording + ffmpeg trim | ✅ |
 | `IPlanner` + LlmPlanner adapter (now `brief()` only) | ✅ |
 | `IDirector` + StreamingDirector (streaming LLM-in-the-loop) | ✅ |
-| `IFastDecider` + LlmFastDecider (Gemini Flash Lite default) | ✅ |
+| `IFastDecider` + LlmFastDecider (gpt-4o-mini default; Gemini Flash Lite preview too slow) | ✅ |
 | `RecordJobRunner` (orchestrates plan → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (44 passing) | ✅ |
+| Vitest unit tests (56 passing) | ✅ |
 | Integration test on Recordly scenario | ✅ |
+| Operation log: `decision` / `decision_failure` / `page_diagnostic` entries | ✅ |
+| Visual-blocker prompt rules (auto-clicks paused-video play overlays etc.) | ✅ |
 | Cursor trajectory synth (`ICursorSynthesizer`) | ⏳ |
 | HTTP API | ⏳ |
 
