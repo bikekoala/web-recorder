@@ -602,7 +602,10 @@ export class StagehandPageSession implements IPageSession {
     // Branch 2: on page but off-screen — search loop.
     const onPage = await this.quickFindOnPage(description);
     if (onPage && onPage.selector) {
-      const targetPageY = onPage.bbox?.y ?? 0;
+      // bbox is always present in practice (quickFindOnPage skips null bboxes),
+      // but TS narrowing requires a fallback. Default to "below viewport" so
+      // direction defaults to "scroll down", the common off-screen case.
+      const targetPageY = onPage.bbox?.y ?? this.cfg.viewport.height;
       const desiredViewportY = this.cfg.viewport.height * 0.35;
       const initialDeltaY = Math.round(targetPageY - desiredViewportY);
       const direction = Math.sign(initialDeltaY) || 1;
@@ -618,6 +621,10 @@ export class StagehandPageSession implements IPageSession {
           return;
         }
         // Scroll one step in target direction.
+        // Search-loop scrolls intentionally slower than default scroll() —
+        // ~250 px/s reading pace so the viewer perceives a person scanning,
+        // not a fast scroll-jump. See SCROLL_SPEED_PROFILES.slow in
+        // src/domain/director-action.ts.
         const remaining = budgetPx - scrolled;
         const thisStep = direction * Math.min(stepPx, remaining);
         await this.scroll(thisStep, {
@@ -626,7 +633,14 @@ export class StagehandPageSession implements IPageSession {
         });
         scrolled += Math.abs(thisStep);
       }
-      // Fell off the end of the budget.
+      // One last viewport check — the element may have entered the viewport
+      // on the final scroll step. Without this, a target whose distance
+      // exactly equals the budget always fails.
+      const afterLast = await this.quickFindInViewport(description);
+      if (afterLast && afterLast.selector) {
+        await this.clickSelector(afterLast.selector, { description });
+        return;
+      }
       throw new ElementNotFoundError(
         `search budget exhausted (${budgetPx}px) without locating: ${description}`,
       );
