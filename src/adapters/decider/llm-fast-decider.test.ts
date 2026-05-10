@@ -57,9 +57,10 @@ describe('LlmFastDecider', () => {
     await expect(decider.decide(buildState())).rejects.toThrow(/invalid json/i);
   });
 
-  it('throws when response fails schema validation', async () => {
+  it('throws when response fails schema validation (missing required field)', async () => {
     const json = JSON.stringify({
-      actions: [{ kind: 'scroll', deltaPx: 10, speed: 'slow', reasoning: 'too small' }],
+      // scroll missing both deltaPx and speed — not coercible
+      actions: [{ kind: 'scroll', reasoning: 'malformed' }],
     });
     const decider = new LlmFastDecider({ client: buildClient(json) });
     await expect(decider.decide(buildState())).rejects.toThrow(/schema/i);
@@ -69,6 +70,68 @@ describe('LlmFastDecider', () => {
     const json = JSON.stringify({ actions: [] });
     const decider = new LlmFastDecider({ client: buildClient(json) });
     await expect(decider.decide(buildState())).rejects.toThrow(/schema/i);
+  });
+
+  it('clamps oversize dwell durationMs (LLM asks for 5s, we cap to 3s)', async () => {
+    // The exact failure mode that took down the YouTube run: LLM expressed
+    // "watch a video for a while" as dwell durationMs=5000.
+    const json = JSON.stringify({
+      actions: [{ kind: 'dwell', durationMs: 5000, reasoning: 'watch video' }],
+    });
+    const decider = new LlmFastDecider({ client: buildClient(json) });
+    const r = await decider.decide(buildState());
+    expect(r.actions[0]).toMatchObject({ kind: 'dwell', durationMs: 3000 });
+  });
+
+  it('clamps undersize dwell durationMs to lower bound', async () => {
+    const json = JSON.stringify({
+      actions: [{ kind: 'dwell', durationMs: 50, reasoning: 'tiny' }],
+    });
+    const decider = new LlmFastDecider({ client: buildClient(json) });
+    const r = await decider.decide(buildState());
+    expect(r.actions[0]).toMatchObject({ kind: 'dwell', durationMs: 200 });
+  });
+
+  it('clamps oversize scroll deltaPx (positive direction)', async () => {
+    const json = JSON.stringify({
+      actions: [{ kind: 'scroll', deltaPx: 5000, speed: 'fast', reasoning: 'big jump' }],
+    });
+    const decider = new LlmFastDecider({ client: buildClient(json) });
+    const r = await decider.decide(buildState());
+    expect(r.actions[0]).toMatchObject({ kind: 'scroll', deltaPx: 1500 });
+  });
+
+  it('clamps undersize scroll deltaPx and preserves sign (negative)', async () => {
+    const json = JSON.stringify({
+      actions: [{ kind: 'scroll', deltaPx: -10, speed: 'slow', reasoning: 'small up' }],
+    });
+    const decider = new LlmFastDecider({ client: buildClient(json) });
+    const r = await decider.decide(buildState());
+    expect(r.actions[0]).toMatchObject({ kind: 'scroll', deltaPx: -100 });
+  });
+
+  it('still rejects deltaPx=0 (direction unknowable)', async () => {
+    const json = JSON.stringify({
+      actions: [{ kind: 'scroll', deltaPx: 0, speed: 'slow', reasoning: 'no scroll' }],
+    });
+    const decider = new LlmFastDecider({ client: buildClient(json) });
+    await expect(decider.decide(buildState())).rejects.toThrow(/schema/i);
+  });
+
+  it('does not error when one of two actions is coercible — both get returned', async () => {
+    // The actual YouTube failure shape: actions[0] click is fine,
+    // actions[1] dwell is oversize. Whole response should succeed after coercion.
+    const json = JSON.stringify({
+      actions: [
+        { kind: 'click', target: 'first video', reasoning: 'pick a video' },
+        { kind: 'dwell', durationMs: 8000, reasoning: 'let it play' },
+      ],
+    });
+    const decider = new LlmFastDecider({ client: buildClient(json) });
+    const r = await decider.decide(buildState());
+    expect(r.actions).toHaveLength(2);
+    expect(r.actions[0]!.kind).toBe('click');
+    expect(r.actions[1]).toMatchObject({ kind: 'dwell', durationMs: 3000 });
   });
 
   it('passes lastActionFailure into the prompt', async () => {
