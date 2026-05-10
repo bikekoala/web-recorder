@@ -148,6 +148,19 @@ export interface IPageSession {
   clickSelector(selector: string, opts?: { description?: string }): Promise<void>;
 
   /**
+   * Click an element by natural-language description, using the search loop
+   * if needed. Throws `ElementNotFoundError` if the target cannot be located
+   * even after scroll-searching up to `searchBudgetPx`.
+   *
+   * Logged as a `click` ActionLogEntry plus zero-or-more `scroll` entries
+   * for the search phase.
+   */
+  clickByDescription(
+    description: string,
+    opts?: { searchBudgetPx?: number },
+  ): Promise<void>;
+
+  /**
    * Mark the moment the *useful* recording window starts. The session has
    * been recording video since `start()`, but everything before this call
    * (browser launch, page load, settling) is "setup time" the user does not

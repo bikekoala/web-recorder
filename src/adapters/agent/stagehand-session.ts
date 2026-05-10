@@ -571,6 +571,72 @@ export class StagehandPageSession implements IPageSession {
   }
 
   /**
+   * Click an element identified by a natural-language description.
+   *
+   * Pipeline:
+   *   1. quickFindInViewport(description) → if found, run discovery click.
+   *   2. quickFindOnPage(description) → if found but off-screen, run a
+   *      search loop: scroll toward target's expected direction, re-find
+   *      after each scroll, click when in viewport. Hard cap on total
+   *      scroll distance (proportional to remaining time budget if
+   *      provided).
+   *   3. Neither found → throw ElementNotFoundError.
+   *
+   * The Director uses this for `click(target)` actions. It is the path
+   * that turns "the LLM said click X" into the real human-feeling
+   * scroll-search-click sequence.
+   */
+  async clickByDescription(
+    description: string,
+    opts: { searchBudgetPx?: number } = {},
+  ): Promise<void> {
+    this.logger.debug({ description }, 'clickByDescription');
+
+    // Branch 1: already in viewport.
+    const inView = await this.quickFindInViewport(description);
+    if (inView && inView.selector) {
+      await this.clickSelector(inView.selector, { description });
+      return;
+    }
+
+    // Branch 2: on page but off-screen — search loop.
+    const onPage = await this.quickFindOnPage(description);
+    if (onPage && onPage.selector) {
+      const targetPageY = onPage.bbox?.y ?? 0;
+      const desiredViewportY = this.cfg.viewport.height * 0.35;
+      const initialDeltaY = Math.round(targetPageY - desiredViewportY);
+      const direction = Math.sign(initialDeltaY) || 1;
+      const budgetPx = opts.searchBudgetPx ?? 1500;
+      const stepPx = 600;
+      let scrolled = 0;
+
+      while (scrolled < budgetPx) {
+        // Try in-viewport find (target may have come into view via prior scroll).
+        const found = await this.quickFindInViewport(description);
+        if (found && found.selector) {
+          await this.clickSelector(found.selector, { description });
+          return;
+        }
+        // Scroll one step in target direction.
+        const remaining = budgetPx - scrolled;
+        const thisStep = direction * Math.min(stepPx, remaining);
+        await this.scroll(thisStep, {
+          durationMs: Math.max(800, Math.abs(thisStep) / 250 * 1000),
+          easing: 'outQuart',
+        });
+        scrolled += Math.abs(thisStep);
+      }
+      // Fell off the end of the budget.
+      throw new ElementNotFoundError(
+        `search budget exhausted (${budgetPx}px) without locating: ${description}`,
+      );
+    }
+
+    // Branch 3: not on page at all.
+    throw new ElementNotFoundError(`target not found on page: ${description}`);
+  }
+
+  /**
    * Click with **discovery choreography** — the recorded video should look
    * like a human reading the page, finding the target, and clicking.
    *
