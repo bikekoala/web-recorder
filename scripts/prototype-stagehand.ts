@@ -55,8 +55,17 @@ async function main(): Promise<void> {
   // so latency stats from the prelude don't pollute the Director's report.
   const director = new StreamingDirector({ decider: new LlmFastDecider() });
   const blockerPrelude = new BlockerPrelude({ decider: new LlmFastDecider() });
+  // Pre-fire decider — separate instance again, but the LLM call it makes
+  // becomes Decision 1 inside the Director, replacing the cold-start.
+  const preFireDecider = new LlmFastDecider();
 
-  const runner = new RecordJobRunner(session, planner, director, blockerPrelude);
+  const runner = new RecordJobRunner(
+    session,
+    planner,
+    director,
+    blockerPrelude,
+    preFireDecider,
+  );
 
   try {
     const result = await runner.run({

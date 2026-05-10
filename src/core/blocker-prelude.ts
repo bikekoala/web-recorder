@@ -5,6 +5,7 @@ import type { PageDiagnostic } from '../domain/action-log.js';
 import { logger as rootLogger } from '../infra/logger.js';
 import type { DecisionResponse, IFastDecider } from '../ports/fast-decider.js';
 import type { IPageSession } from '../ports/page-session.js';
+import { buildPreludeUserPrompt } from '../prompts/index.js';
 
 /**
  * BlockerPrelude — pre-recording phase that detects visual blockers
@@ -134,12 +135,12 @@ export class BlockerPrelude {
         const viewport = readViewport(session);
         const remainingMs = Math.max(0, deadlineAt - Date.now());
         const state: DirectorState = {
-          prompt: buildPreludePrompt(briefing.prompt, lastDiag.blockerSignals),
+          prompt: buildPreludeUserPrompt(briefing.prompt, lastDiag.blockerSignals),
           remainingMs,
           currentScrollY: scrollY,
           viewport,
           screenshot,
-          visibleHints: [],
+          briefingHints: [],
           recentActions: [...recentActions],
         };
 
@@ -326,25 +327,6 @@ export class BlockerPrelude {
 // =============================================================================
 // helpers — kept module-private so the BlockerPrelude class stays focused.
 // =============================================================================
-
-/**
- * Build the user-message prompt seen by the FastDecider. The
- * `[BLOCKER PRELUDE]` prefix tells the LLM unambiguously that its job is
- * dismissal, not the user's actual task. Including the original user
- * prompt keeps the LLM grounded in case "dismissal" depends on intent
- * (e.g. accept cookies on a site that needs them, reject on one that doesn't).
- */
-function buildPreludePrompt(userPrompt: string, signals: string[]): string {
-  const detected = signals.length === 0 ? '(none)' : signals.join(', ');
-  return [
-    `[BLOCKER PRELUDE] The user's recording goal is: "${userPrompt}".`,
-    `Before recording starts, dismiss anything visually blocking the page.`,
-    `Detected blocker signals: ${detected}.`,
-    `Find the dismiss / close / accept / play button and click it.`,
-    `Do NOT start the user's actual task yet — that begins after recording opens.`,
-    `If you don't see anything you can click to dismiss, output a "done" action.`,
-  ].join(' ');
-}
 
 async function safePageDiagnostic(session: IPageSession): Promise<PageDiagnostic> {
   try {

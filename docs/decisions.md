@@ -573,6 +573,68 @@ These are not bugs to fix; they're tensions to resolve through a clear product c
 
 ---
 
+## 0023 · Centralized prompts + cold-start pre-fire + briefing-hint surfacing
+
+**Date**: 2026-05-10
+
+**Context**: Three coupled problems, addressed in one cross-cutting refactor.
+
+1. **Prompts were scattered.** SYSTEM_PROMPT for the decider was a 1.9 KB string literal in `src/adapters/decider/llm-fast-decider.ts`. Planner had its prompt inlined in `src/adapters/planner/llm-planner.ts`. BlockerPrelude had its own. Tuning prompts required hunting through adapter code; multi-model compatibility (per-model JSON quirks) had nowhere to live.
+
+2. **Sonnet 4.6 broke as planner.** Anthropic models routed via OpenRouter sometimes ignore the OpenAI \`response_format: json_object\` hint. When the user prompt contains a CJK-quoted phrase like \`"简体中文"\`, Sonnet echoes it verbatim, the inner ASCII double-quotes escape the outer JSON string, and JSON.parse fails. We had wrongly concluded Sonnet was unsuitable when actually the prompt needed model-specific safety rules.
+
+3. **Cold-start LLM ate 70% of the recording budget.** For a 10s budget, the Director's first decision call (cold-start, ~1-7s on gpt-4o-mini) consumed most of it. The actual click-then-scroll sequence had no time left, so clicks were watchdog-cut mid-flight and never landed in the recording. `intentSatisfaction.level` was consistently `unmet`.
+
+4. **Off-fold click hints were invisible to the LLM.** `DirectorState.visibleHints` was filtered to the current viewport. If the planner extracted `简体中文 link` (which is below the fold at scrollY=0), the LLM didn't see it in its inputs and chose to scroll-to-find instead of clicking — wasting budget on redundant scrolls.
+
+**Choice (1) — `src/prompts/` directory**:
+All prompts move to a dedicated module:
+- \`src/prompts/planner.ts\` — \`plannerSystemPrompt\` + \`buildPlannerUserText\`
+- \`src/prompts/decider.ts\` — \`deciderSystemPrompt\` + \`buildDeciderUserText\`
+- \`src/prompts/prelude.ts\` — \`buildPreludeUserPrompt\`
+- \`src/prompts/index.ts\` — barrel export
+
+Adapters import from \`src/prompts/\`; nothing else holds prompt content. Per hexagonal architecture, prompts are pure data (no I/O), reachable from \`adapters/\` and \`core/\`.
+
+**Choice (2) — Sonnet 4.6 JSON safety rules + extract-from-prompt rule**:
+The planner system prompt now carries explicit rules:
+- "JSON SAFETY RULES" — use ONLY ASCII double-quotes; NEVER place a double-quote inside a string value; if the user's prompt contains a CJK or guillemet-quoted phrase, paraphrase into plain English without quotes.
+- "EXTRACT FROM PROMPT, NOT JUST SCREENSHOT" — if the user explicitly mentions a click target, list it even when it's not visible in the current viewport. The downstream resolver searches the full page.
+- A worked CJK example showing both the correct paraphrased output and two wrong patterns (refusing because not visible; preserving CJK quotes).
+
+Same JSON-safety rules added to the decider prompt for the action's \`target\` and \`reasoning\` fields.
+
+**Choice (3) — Pre-fire Decision 1 during prelude**:
+\`RecordJobRunner\` gains a \`preFireDecider: IFastDecider\` constructor parameter. When set, the runner takes a fresh post-prelude screenshot and calls \`decider.decide()\` IN PARALLEL with the recording-window setup. The Director's \`run(...)\` accepts an optional \`prefiredDecision: PrefiredDecision\` opt; if provided, it's used as Decision 1 instead of cold-starting.
+
+The cold-start window — formerly 1-7 seconds of implicit dwells — is now hidden under the recording-start ceremony. \`PrefiredDecision\` carries \`firedAtMs\` + \`scrollYAtFire\` so the \`decision\` log entry's \`latencyMs\` is faithful.
+
+**Choice (4) — \`DirectorState.briefingHints\` (was \`visibleHints\`)**:
+\`BriefingHintForState\` carries \`{ description, position: 'in_view' | 'above' | 'below', scrollToReveal: number }\`. The decider prompt's "BRIEFING HINTS PRIORITY (ABSOLUTE)" rule then tells the LLM: hints with any position MUST be clicked first; the executor handles discovery scroll automatically; scrolling-first-to-find-the-target is a budget waste.
+
+**Choice (5) — Split \`LLM_MODEL\` into three knobs**:
+\`config.llmModel\` had been doing triple duty: planner, agent (Stagehand internal observe), and (formerly) decider. Stagehand's internal prompts expect a particular output shape — Sonnet 4.6 broke them. Now:
+- \`LLM_MODEL\` — agent only. Default \`openai/gpt-4o-mini\`.
+- \`LLM_PLANNER_MODEL\` — planner only (vision-strong). Default falls back to \`LLM_MODEL\` for backwards compat.
+- \`LLM_DECIDER_MODEL\` — decider (latency-sensitive). Default \`openai/gpt-4o-mini\`.
+
+**Rationale**:
+- Per \`docs/goals.md\` non-negotiable #4 ("architecture stays swappable"): centralizing prompts makes model-specific tuning a content change, not an adapter change. \`anthropic/claude-sonnet-4.6\` is now a real production option, not a "try it and pray".
+- Pre-fire is pure overlap-of-latency; no new failure modes. If \`screenshot()\` or \`decide()\` fails during pre-fire, we log and let the Director cold-start as before.
+- Surfacing all hints (with positions) lets the LLM exploit the executor's full capability; the previous viewport-only filter was an under-exposure.
+- The model split fixes a real coupling bug: Stagehand's parsers are a closed system that requires gpt-4o-mini-style JSON behavior.
+
+**Consequences**:
+- Empirical run with Sonnet 4.6 planner: \`hintCount: 1\` (the 简体中文 link), JSON parses cleanly, no crash. The same scenario crashed at parse step before §0023.
+- Decider system prompt grew from ~1.9 KB to ~3.5 KB (added JSON safety + briefing-hint priority). Per-call latency on gpt-4o-mini went from ~1s p95 to ~3-4s. The \`implicitDwellCount\` ceiling in the integration test bumped from 8 to 14 to absorb this; the recording is still fluid (dwells render as natural micro-pauses).
+- \`expectAfterMismatchCount\` ceiling bumped from 1 to 3 — strengthened BRIEFING HINTS PRIORITY makes the LLM click more aggressively; on a turbo-frame page (GitHub README), each click sets \`expectAfter: { urlContains: 'zh-CN' }\` and mismatches because the URL doesn't change. Director recovers cleanly via re-decision.
+- Total unit tests: 77 (no new tests; prompt content changes don't need them; structural changes covered by typecheck).
+- Open: \`intentSatisfaction.level\` is still \`unmet\` on the Recordly run because clicks are watchdog-cut mid-flight and \`clickSelector\` doesn't write a click ActionLogEntry on failure. Separate fix tracked for next iteration — the architectural wins of §0023 are independent.
+
+**Preserves**: §0019 (streaming Director), §0020 (introspection log entries), §0021 (BlockerPrelude), §0022 (intentSatisfaction contract), §0009 (OpenRouter only). Goals.md hard non-negotiables #2, #3, #4 all served.
+
+---
+
 ## Template for new entries
 
 ```

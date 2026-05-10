@@ -6,6 +6,7 @@ import { config } from '../../infra/config.js';
 import { logger as rootLogger } from '../../infra/logger.js';
 import type { IPageSession } from '../../ports/page-session.js';
 import type { BriefRequest, IPlanner } from '../../ports/planner.js';
+import { plannerSystemPrompt, buildPlannerUserText } from '../../prompts/index.js';
 
 /**
  * LlmPlanner — IPlanner backed by an OpenRouter-routed LLM with vision.
@@ -33,7 +34,7 @@ export class LlmPlanner implements IPlanner {
   private readonly logger = rootLogger.child({ component: 'LlmPlanner' });
 
   constructor(opts?: { model?: string; client?: OpenAI }) {
-    this.model = opts?.model ?? config.llmModel;
+    this.model = opts?.model ?? config.llmPlannerModelResolved;
     this.client =
       opts?.client ??
       new OpenAI({
@@ -46,16 +47,12 @@ export class LlmPlanner implements IPlanner {
     input: BriefRequest,
     session: IPageSession,
   ): Promise<DirectorBriefing> {
-    const userText = [
-      `URL: ${input.url}`,
-      `Prompt: ${input.prompt}`,
-      `Target duration ms: ${input.durationMs}`,
-      `Viewport: ${input.viewport.width}x${input.viewport.height}`,
-      '',
-      'Identify the click targets the user implicitly or explicitly mentioned.',
-      'Output JSON: { "targets": ["<natural-language description, in the user\'s language>", ...], "rationale": "<one sentence>" }',
-      'Up to 3 targets. If the prompt has no click intent, return an empty list.',
-    ].join('\n');
+    const userText = buildPlannerUserText({
+      url: input.url,
+      prompt: input.prompt,
+      durationMs: input.durationMs,
+      viewport: input.viewport,
+    });
 
     const userContent: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
       { type: 'text', text: userText },
@@ -73,11 +70,7 @@ export class LlmPlanner implements IPlanner {
       const completion = await this.client.chat.completions.create({
         model: this.model,
         messages: [
-          {
-            role: 'system',
-            content:
-              'You extract click targets from a user prompt + screenshot. Output JSON only.',
-          },
+          { role: 'system', content: plannerSystemPrompt },
           { role: 'user', content: userContent },
         ],
         response_format: { type: 'json_object' },
@@ -95,6 +88,9 @@ export class LlmPlanner implements IPlanner {
     } catch (err) {
       throw new PlannerError(`brief returned invalid JSON: ${raw.slice(0, 300)}`, err);
     }
+    // Surface raw model output at debug — invaluable for tuning prompts
+    // when planners under-extract or hallucinate targets.
+    this.logger.debug({ raw: raw.slice(0, 500), model: this.model }, 'planner raw output');
     const targets = Array.isArray(parsed.targets)
       ? (parsed.targets as unknown[]).filter((t): t is string => typeof t === 'string')
       : [];

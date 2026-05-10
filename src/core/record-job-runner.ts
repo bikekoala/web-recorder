@@ -1,11 +1,14 @@
 import { resolve } from 'node:path';
 
 import type { ActionLogEntry, RecordingWindow } from '../domain/action-log.js';
+import type { BriefingHintForState } from '../domain/director-state.js';
 import { trimVideo, videoDurationMs } from '../infra/ffmpeg.js';
 import { logger as rootLogger } from '../infra/logger.js';
+import { track } from '../infra/pending.js';
+import type { DirectorReport, IDirector, PrefiredDecision } from '../ports/director.js';
+import type { IFastDecider } from '../ports/fast-decider.js';
 import type { IPageSession } from '../ports/page-session.js';
 import type { IPlanner } from '../ports/planner.js';
-import type { DirectorReport, IDirector } from '../ports/director.js';
 import type { BlockerPrelude, BlockerPreludeReport } from './blocker-prelude.js';
 
 /**
@@ -118,6 +121,18 @@ export class RecordJobRunner {
      * skips it and goes straight from brief() → director.run.
      */
     private readonly blockerPrelude: BlockerPrelude | null = null,
+    /**
+     * Optional FastDecider used for COLD-START PRE-FIRE. When provided, the
+     * runner fires Decision 1 IN PARALLEL with the BlockerPrelude (using a
+     * fresh post-prelude screenshot), so by the time `recording_start`
+     * happens, the LLM call is already in flight or complete. The Director
+     * then uses the pre-fired decision instead of cold-starting.
+     *
+     * This hides the 1-7s LLM cold-start latency that previously consumed
+     * up to 70% of a 10s recording budget. Architectural improvement, not a
+     * tunable — leave null only for tests that don't want streaming.
+     */
+    private readonly preFireDecider: IFastDecider | null = null,
   ) {}
 
   async run(req: RunRequest): Promise<RunResult> {
@@ -176,8 +191,21 @@ export class RecordJobRunner {
       );
     }
 
+    // ------------------------------------ 2b. Cold-start pre-fire (NOT recorded)
+    // Fire the Director's first decision NOW, before recording_start, using
+    // a fresh post-prelude screenshot. The LLM call runs in parallel with
+    // the recording-window animation, hiding its 1-7s cold-start latency.
+    // See ports/director.ts PrefiredDecision for the contract.
+    const prefiredDecision = this.preFireDecider
+      ? await this.prefireFirstDecision(briefing, this.preFireDecider)
+      : null;
+
     // ------------------------------------ 3. Director (owns recording window)
-    const directorReport = await this.director.run(briefing, this.session);
+    const directorReport = await this.director.run(
+      briefing,
+      this.session,
+      prefiredDecision ? { prefiredDecision } : {},
+    );
 
     // ------------------------------------ 3. Stop + trim
     const artifacts = await this.session.stop();
@@ -241,6 +269,56 @@ export class RecordJobRunner {
 
   // ----------------------------------------------------------- internals
 
+  /**
+   * Fire the Director's first FastDecider call now (before recording_start)
+   * using a fresh screenshot. Returns a `PrefiredDecision` the Director will
+   * use as its Decision 1 instead of cold-starting.
+   *
+   * Best-effort: if anything in here throws (screenshot fail, session not
+   * ready), we log and return null — the Director will cold-start as a
+   * fallback. We never let pre-fire break a recording.
+   */
+  private async prefireFirstDecision(
+    briefing: import('../domain/plan.js').DirectorBriefing,
+    decider: IFastDecider,
+  ): Promise<PrefiredDecision | null> {
+    try {
+      const screenshot = await this.session.screenshot();
+      const scrollY = (this.session as unknown as { scrollY?: number }).scrollY ?? 0;
+      const viewport = this.viewportFromSession();
+      // Approximate "remainingMs" — actual recording window starts moments
+      // after this fires. Pass durationMs as a lower bound; the LLM treats
+      // this as a hint, not a hard constraint.
+      const state = {
+        prompt: briefing.prompt,
+        remainingMs: briefing.durationMs,
+        currentScrollY: scrollY,
+        viewport,
+        screenshot,
+        briefingHints: enrichHintsForState(briefing.hints, scrollY, viewport),
+        recentActions: [],
+      };
+      const firedAtMs = Date.now();
+      const tracked = track(decider.decide(state));
+      this.logger.info(
+        { firedAtMs, scrollYAtFire: scrollY, hintCount: state.briefingHints.length },
+        'pre-fired Decision 1 (cold-start hidden)',
+      );
+      // Build the PrefiredDecision shape required by the Director.
+      return {
+        promise: tracked.promise,
+        get isResolved() { return tracked.isResolved; },
+        get value() { return tracked.value; },
+        get error() { return tracked.error; },
+        firedAtMs,
+        scrollYAtFire: scrollY,
+      };
+    } catch (err) {
+      this.logger.warn({ err }, 'pre-fire failed; Director will cold-start');
+      return null;
+    }
+  }
+
   private viewportFromSession(): { width: number; height: number } {
     // The session config currently isn't exposed via IPageSession; we read it
     // via a fallback to the global config. Acceptable for now — see "future
@@ -250,6 +328,37 @@ export class RecordJobRunner {
     }).cfg?.viewport;
     return viewport ?? { width: 1280, height: 720 };
   }
+}
+
+/**
+ * Surface ALL planner hints with viewport-relative position. Same algorithm
+ * as the StreamingDirector's `enrichHints` — kept here so the runner's
+ * pre-fire path doesn't need to import an internal of an adapter. Both
+ * sides agree on shape via `BriefingHintForState`.
+ */
+function enrichHintsForState(
+  hints: import('../domain/plan.js').ClickHint[],
+  scrollY: number,
+  viewport: { width: number; height: number },
+): BriefingHintForState[] {
+  return hints.map((h) => {
+    const yInView = h.bboxAtRest.y - scrollY;
+    if (yInView >= 0 && yInView < viewport.height) {
+      return { description: h.description, position: 'in_view' as const, scrollToReveal: 0 };
+    }
+    if (yInView < 0) {
+      return {
+        description: h.description,
+        position: 'above' as const,
+        scrollToReveal: Math.round(yInView - viewport.height * 0.35),
+      };
+    }
+    return {
+      description: h.description,
+      position: 'below' as const,
+      scrollToReveal: Math.round(yInView - viewport.height * 0.35),
+    };
+  });
 }
 
 /**

@@ -1,4 +1,6 @@
 import type { DirectorBriefing } from '../domain/plan.js';
+import type { Pending } from '../infra/pending.js';
+import type { DecisionResponse } from './fast-decider.js';
 import type { IPageSession } from './page-session.js';
 
 /**
@@ -18,7 +20,38 @@ import type { IPageSession } from './page-session.js';
  *     for offline-deterministic test reruns.
  */
 export interface IDirector {
-  run(briefing: DirectorBriefing, session: IPageSession): Promise<DirectorReport>;
+  run(
+    briefing: DirectorBriefing,
+    session: IPageSession,
+    opts?: DirectorRunOpts,
+  ): Promise<DirectorReport>;
+}
+
+/**
+ * Optional knobs passed by the runner.
+ */
+export interface DirectorRunOpts {
+  /**
+   * A FastDecider call that the runner has ALREADY fired BEFORE the
+   * recording window opened (typically during the planner brief() call or
+   * the BlockerPrelude). When set, the Director uses this as Decision 1
+   * instead of cold-starting.
+   *
+   * This hides the 1-7s cold-start LLM latency that previously ate up to
+   * 70% of a 10s recording budget — the user gets to use their budget for
+   * actual actions, not for waiting on the first LLM response.
+   *
+   * `firedAtMs` and `scrollYAtFire` are required so the Director can log a
+   * faithful `decision` ActionLogEntry (latency + state at fire time).
+   */
+  prefiredDecision?: PrefiredDecision;
+}
+
+export interface PrefiredDecision extends Pending<DecisionResponse> {
+  /** Date.now() when the LLM call was fired (for accurate latencyMs logging). */
+  firedAtMs: number;
+  /** scrollY at the moment the screenshot used for this call was taken. */
+  scrollYAtFire: number;
 }
 
 export interface DirectorReport {

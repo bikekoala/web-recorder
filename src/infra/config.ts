@@ -23,11 +23,26 @@ const Schema = z.object({
   openrouterApiKey: z.string().min(1),
   openrouterBaseUrl: z.string().url().default('https://openrouter.ai/api/v1'),
   /**
+   * Agent model — used by the underlying Stagehand SDK for its INTERNAL
+   * observe/act calls (it has its own prompts that expect specific output
+   * shapes). Must be a model whose JSON-mode output matches Stagehand's
+   * parsers — empirically `openai/gpt-4o-mini` is the most reliable here.
+   *
+   * Despite the name, this is NOT the planner's model. See `llmPlannerModel`.
+   * (Historical note: these were one variable; we split when Anthropic
+   * planners broke Stagehand's internal expectations — see §0023.)
+   */
+  llmModel: z.string().min(1).default('openai/gpt-4o-mini'),
+
+  /**
    * Planner model — used once per job for the brief() vision call. Needs
    * strong visual reasoning to extract click hints from a screenshot.
-   * Default: `google/gemini-3.1-pro-preview` (most capable Google model).
+   * Defaults to `LLM_MODEL` for backwards compatibility, but you SHOULD
+   * set `LLM_PLANNER_MODEL` explicitly for production. Suggested: a
+   * stronger vision model like `google/gemini-3.1-pro-preview` or
+   * `anthropic/claude-sonnet-4.6`.
    */
-  llmModel: z.string().min(1).default('google/gemini-3.1-pro-preview'),
+  llmPlannerModel: z.string().min(1).optional(),
 
   /**
    * FastDecider model — used by the Director's per-action decision calls.
@@ -100,6 +115,7 @@ const raw = {
   openrouterApiKey: process.env.OPENROUTER_API_KEY,
   openrouterBaseUrl: process.env.OPENROUTER_BASE_URL,
   llmModel: process.env.LLM_MODEL,
+  llmPlannerModel: process.env.LLM_PLANNER_MODEL,
   llmDeciderModel: process.env.LLM_DECIDER_MODEL,
   directorLookaheadMax: process.env.DIRECTOR_LOOKAHEAD_MAX
     ? Number(process.env.DIRECTOR_LOOKAHEAD_MAX)
@@ -131,6 +147,10 @@ const data = parsed.data;
 
 export const config = {
   ...data,
+  // Resolved planner model: explicit `LLM_PLANNER_MODEL` if set, else fall
+  // back to `LLM_MODEL` for backwards compat. Adapters should read
+  // `config.llmPlannerModelResolved`, never `data.llmPlannerModel` directly.
+  llmPlannerModelResolved: data.llmPlannerModel ?? data.llmModel,
   isDev: data.nodeEnv === 'development',
   isProd: data.nodeEnv === 'production',
 } as const;

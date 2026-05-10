@@ -28,7 +28,10 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `IPlanner` + LlmPlanner adapter (now `brief()` only) | ✅ |
 | `IDirector` + StreamingDirector (streaming LLM-in-the-loop) | ✅ |
 | `IFastDecider` + LlmFastDecider (gpt-4o-mini default; Gemini Flash Lite preview too slow) | ✅ |
-| `RecordJobRunner` (orchestrates plan → prelude → director → trim) | ✅ |
+| Centralized prompts in `src/prompts/` — Sonnet 4.6 + Gemini Pro both viable as planner | ✅ |
+| Cold-start hidden via pre-fired Decision 1 during prelude | ✅ |
+| Three independent model knobs (`LLM_MODEL` / `LLM_PLANNER_MODEL` / `LLM_DECIDER_MODEL`) | ✅ |
+| `RecordJobRunner` (orchestrates plan → prelude → pre-fire → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
 | Vitest unit tests (77 passing) | ✅ |
 | Integration test on Recordly scenario | ✅ |

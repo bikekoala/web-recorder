@@ -11,7 +11,9 @@ function buildState(overrides: Partial<DirectorState> = {}): DirectorState {
     currentScrollY: 0,
     viewport: { width: 1280, height: 720 },
     screenshot: Buffer.alloc(10), // tiny dummy
-    visibleHints: ['the 简体中文 link'],
+    briefingHints: [
+      { description: 'the simplified Chinese link', position: 'in_view', scrollToReveal: 0 },
+    ],
     recentActions: [],
     ...overrides,
   };

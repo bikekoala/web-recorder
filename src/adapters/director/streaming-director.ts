@@ -1,12 +1,12 @@
 import { DomainError } from '../../domain/errors.js';
-import type { ActionSummary } from '../../domain/director-state.js';
+import type { ActionSummary, BriefingHintForState } from '../../domain/director-state.js';
 import type { DirectorAction } from '../../domain/director-action.js';
 import { SCROLL_SPEED_PROFILES } from '../../domain/director-action.js';
 import type { ClickHint, DirectorBriefing } from '../../domain/plan.js';
 import { config } from '../../infra/config.js';
 import { track } from '../../infra/pending.js';
 import { logger as rootLogger } from '../../infra/logger.js';
-import type { DirectorReport, IDirector } from '../../ports/director.js';
+import type { DirectorReport, DirectorRunOpts, IDirector } from '../../ports/director.js';
 import type { DecisionResponse, ExpectAfter, IFastDecider } from '../../ports/fast-decider.js';
 import type { IPageSession } from '../../ports/page-session.js';
 import type { DirectorState } from '../../domain/director-state.js';
@@ -39,6 +39,7 @@ export class StreamingDirector implements IDirector {
   async run(
     briefing: DirectorBriefing,
     session: IPageSession,
+    opts: DirectorRunOpts = {},
   ): Promise<DirectorReport> {
     const startedAt = Date.now();
     const hardDeadlineAt = startedAt + briefing.durationMs * config.directorHardBudgetMult;
@@ -54,8 +55,21 @@ export class StreamingDirector implements IDirector {
     let pendingMeta: { id: number; firedAtMs: number; scrollY: number } | null = null;
     let expectAfter: ExpectAfter | null = null;
 
-    // Cold start: fire first decision call.
-    {
+    if (opts.prefiredDecision) {
+      // The runner pre-fired the first decision DURING setup/prelude (using
+      // the same screenshot the planner saw). It's already in flight or
+      // resolved by the time we get here — we skip the cold-start LLM call
+      // entirely. This is what hides the 1-7s cold-start latency that
+      // previously ate up to 70% of a 10s recording budget.
+      pending = opts.prefiredDecision;
+      decisionCount += 1;
+      pendingMeta = {
+        id: decisionCount,
+        firedAtMs: opts.prefiredDecision.firedAtMs,
+        scrollY: opts.prefiredDecision.scrollYAtFire,
+      };
+    } else {
+      // No pre-fire: fall back to the original cold start.
       const state = await this.observeState(briefing, session, recentActions, briefing.durationMs);
       pending = track(this.decider.decide(state));
       decisionCount += 1;
@@ -237,7 +251,7 @@ export class StreamingDirector implements IDirector {
       currentScrollY: scrollY,
       viewport,
       screenshot,
-      visibleHints: visibleHintNames(briefing.hints, scrollY, viewport),
+      briefingHints: enrichHints(briefing.hints, scrollY, viewport),
       recentActions: [...recentActions],
     };
   }
@@ -385,17 +399,31 @@ function viewportFrom(session: IPageSession): { width: number; height: number } 
     ?? { width: 1280, height: 720 };
 }
 
-function visibleHintNames(
+/**
+ * Surface ALL planner hints to the LLM — not just the ones in the current
+ * viewport — annotated with their position so the LLM can pick `click` for
+ * off-fold targets. The executor's discovery-click choreography handles the
+ * scroll-to-target internally; the LLM just needs to know the target exists.
+ */
+function enrichHints(
   hints: ClickHint[],
   scrollY: number,
   viewport: { width: number; height: number },
-): string[] {
-  return hints
-    .filter((h) => {
-      const yInView = h.bboxAtRest.y - scrollY;
-      return yInView >= 0 && yInView < viewport.height;
-    })
-    .map((h) => h.description);
+): BriefingHintForState[] {
+  return hints.map((h) => {
+    const yInView = h.bboxAtRest.y - scrollY;
+    if (yInView >= 0 && yInView < viewport.height) {
+      return { description: h.description, position: 'in_view', scrollToReveal: 0 };
+    }
+    if (yInView < 0) {
+      // Above viewport. Scroll up by enough to put the hint at ~35% from top.
+      const reveal = Math.round(yInView - viewport.height * 0.35);
+      return { description: h.description, position: 'above', scrollToReveal: reveal };
+    }
+    // Below viewport.
+    const reveal = Math.round(yInView - viewport.height * 0.35);
+    return { description: h.description, position: 'below', scrollToReveal: reveal };
+  });
 }
 
 function clamp(v: number, lo: number, hi: number): number {

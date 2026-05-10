@@ -8,6 +8,7 @@ import {
   DecisionResponse,
   type IFastDecider,
 } from '../../ports/fast-decider.js';
+import { deciderSystemPrompt, buildDeciderUserText } from '../../prompts/index.js';
 
 /**
  * LlmFastDecider — IFastDecider backed by OpenRouter (default Gemini Flash Lite).
@@ -28,46 +29,8 @@ export class FastDeciderError extends DomainError {
   }
 }
 
-const SYSTEM_PROMPT = `You are a streaming browser-recording DIRECTOR. On each call you receive the user's intent, the current page state, and a screenshot. You output 1-2 next "micro actions" the executor will play immediately.
-
-Output JSON ONLY, matching this exact shape:
-{
-  "actions": [ <DirectorAction>, ... ],
-  "expectAfter": { "urlContains": "...", "visibleText": ["..."] }   // optional
-}
-
-Where each DirectorAction is one of:
-  { "kind": "click",  "target": "<natural language description, in the user's language>", "reasoning": "<short>" }
-  { "kind": "scroll", "deltaPx": <integer in [-1500,-100] or [100,1500]>, "speed": "slow"|"normal"|"fast", "reasoning": "<short>" }
-  { "kind": "dwell",  "durationMs": <integer in [200,3000]>, "reasoning": "<short>" }
-  { "kind": "done",   "reasoning": "<short>" }
-
-Action semantics:
-- "click"  — the executor will smoothly scroll the target into view, pause briefly, then click. You do NOT need a separate scroll-to-target before a click.
-- "scroll" — smooth scroll. Speed: slow=250 px/s (reading), normal=450 (scanning), fast=800 (flinging).
-- "dwell"  — pause [200, 3000] ms. For LONGER waits (watching a video, reading a long passage, waiting for content to load), CHAIN multiple dwells — you will be re-asked after each one, which lets you react if the page changes. Do NOT request durationMs > 3000.
-- "done"   — signal that the user's intent has been satisfied; recording ends.
-
-VISUAL BLOCKERS — the user gave intent in plain language; they may not know about technical preconditions. Read the screenshot for explicit blockers and act on them BEFORE pursuing the stated goal. Do NOT dwell waiting for these to resolve themselves:
-- Paused video with a CENTRAL play-button overlay (triangle icon over the player) → click the play button. Browsers block autoplay; "watch a video" implies "click play first".
-- Cookie / privacy / consent dialog blocking content → click accept (or reject if the user's goal doesn't need cookies).
-- A "log in" / "sign up" modal blocking content → look for a dismiss/skip/close ("x") button; if absent, the goal may be unreachable.
-- An age-gate or region-gate dialog → click confirm if appropriate.
-- A loading spinner that fills the viewport with no other content → dwell once, then re-evaluate.
-A blocker is something CLEARLY in front of the content: a modal overlay, a cookie banner, a play-button covering the video. Do NOT treat normal page content (file lists, navigation menus, headers) as a blocker just because it looks unfamiliar.
-
-WHEN TO SAY "done":
-The user's intent must be FULLY satisfied. Every action the user asked for (click X, scroll, browse Y) must have been performed. A single scroll is NOT enough to declare a "scroll through the page" or "browse" intent done. Verify in the recent actions log that each verb in the user's intent has been executed.
-
-Quality rules:
-- Output 1-2 actions per response. Lookahead is for buffering, not committing to a long plan.
-- Don't repeat the SAME action three times in a row — alternate scroll lengths or insert a dwell.
-- If your previous TWO recent actions were both dwells, your next action MUST be click or scroll — never a third dwell unless you are explicitly waiting for a video / animation / load you have already initiated.
-- "expectAfter.urlContains" should be a SUBSTRING expected in URL after these actions complete (e.g. "zh-CN" after a language switch). Omit if no navigation expected.
-- "expectAfter.visibleText" should be 1-3 short strings expected to be visible after these actions. Omit if uncertain.
-- If lastActionFailure is set, address it explicitly in your reasoning.
-
-Output JSON only. No markdown, no commentary outside the schema.`;
+// SYSTEM_PROMPT moved to src/prompts/decider.ts — see plan.md docs/decisions
+// §0023 for rationale (centralized prompt management + Sonnet 4.6 compat).
 
 interface LlmFastDeciderOpts {
   /** Model id; defaults to config.llmDeciderModel. */
@@ -96,7 +59,7 @@ export class LlmFastDecider implements IFastDecider {
   }
 
   async decide(state: DirectorState): Promise<DecisionResponse> {
-    const userText = buildUserPrompt(state);
+    const userText = buildDeciderUserText(state);
     const userContent: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [
       { type: 'text', text: userText },
     ];
@@ -114,7 +77,7 @@ export class LlmFastDecider implements IFastDecider {
       const completion = await this.client.chat.completions.create({
         model: this.model,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: deciderSystemPrompt },
           { role: 'user', content: userContent },
         ],
         response_format: { type: 'json_object' },
@@ -153,29 +116,6 @@ export class LlmFastDecider implements IFastDecider {
     );
     return result.data;
   }
-}
-
-function buildUserPrompt(s: DirectorState): string {
-  const recent =
-    s.recentActions.length === 0
-      ? '(none)'
-      : s.recentActions
-          .map((a) => `${a.kind}: ${a.brief}${a.succeeded ? '' : ' [FAILED]'}`)
-          .join('; ');
-  const hints = s.visibleHints.length === 0 ? '(none in view)' : s.visibleHints.join('; ');
-  return [
-    `User intent: ${s.prompt}`,
-    `Time remaining (ms): ${s.remainingMs}`,
-    `Current scrollY: ${s.currentScrollY}`,
-    `Viewport: ${s.viewport.width}x${s.viewport.height}`,
-    `Briefing hints currently in viewport: ${hints}`,
-    `Recent actions (oldest→newest): ${recent}`,
-    s.lastActionFailure ? `LAST ACTION FAILED: ${s.lastActionFailure}` : '',
-    '',
-    'Choose 1-2 next actions. Output JSON only.',
-  ]
-    .filter(Boolean)
-    .join('\n');
 }
 
 function stripCodeFence(s: string): string {
