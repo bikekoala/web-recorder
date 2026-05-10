@@ -752,6 +752,97 @@ Open issues that did NOT block landing (all are timing/efficiency, not correctne
 
 ---
 
+## 0026 · Self-check evidence + draft-then-react planning (architectural upgrade)
+
+**Date**: 2026-05-10
+
+**Context**: Watching the §0025 regressions live, the user observed the agent doing things a real human would never do:
+
+- *"Why did YouTube open the LEFT SIDEBAR when I asked it to search?"* — `clickByDescription` resolved "click search bar" to the hamburger menu (similarly placed at the top). The action LOGGED as success because Playwright clicked SOMETHING; the agent never noticed it clicked the wrong thing.
+- *"Why did it type 'New York' twice on Maps? 'MrBeast' twice on YouTube?"* — pre-fire computed the next decision BEFORE the previous type's effect was visible, so the LLM, having no memory of what it just did, retyped.
+- *"Why didn't it stop after the first type and click the first result?"* — same root cause. The LLM had no structured memory of "I already typed".
+
+The user's diagnosis: *"是看不到结果吗？或者有哪些信息没有记录吗？"* — Information was not being recorded. `recentActions[]` carried only `{ kind, brief, succeeded }` — no proof of what the action did to the page. The LLM had to infer everything from the next screenshot, and pre-fire was making that screenshot stale.
+
+The user explicitly asked for **architectural upgrade**, not tuning patches.
+
+**Choice (1) — Self-check evidence in `ActionSummary`**:
+
+`ActionEvidence` is now a discriminated union per action kind in `src/domain/director-state.ts`. Each variant carries the minimum the LLM needs to verify "did this work?":
+
+```
+click  → urlBefore, urlAfter, urlChanged, titleBefore, titleAfter, titleChanged
+type   → expectedText, focusedValueAfter, matched           ← the fix for double-typing
+scroll → scrollYBefore, scrollYAfter, deltaRequested, deltaAchieved
+key    → key, urlBefore, urlAfter, urlChanged, titleBefore, titleAfter, titleChanged
+back   → urlBefore, urlAfter, urlChanged
+```
+
+The Director's `executeAction` snaps page state via the new `IPageSession` port methods `scrollY()` / `pageTitle()` / `focusedValue()` before AND after each action. Best-effort wrappers (`safe*`) ensure a momentary glitch never breaks the recording.
+
+The decider prompt's `recentActions` section now renders evidence inline:
+
+```
+Recent actions WITH EVIDENCE:
+  click "the search bar" — URL: unchanged; title: changed (SPA-style content swap)
+  type "New York" — focused value now: "New York", ✓ matches
+  key Enter — URL: maps.google.com → maps.google.com/?q=New+York; title: changed
+```
+
+The LLM sees that "New York" is already typed and won't retype.
+
+**Choice (2) — `DirectorBriefing.draftSequence` (planner pre-plans the happy path)**:
+
+Real humans don't decide "what next?" at every step — they form a rough plan and adapt if reality diverges. `LlmPlanner.brief()` now emits `draftSequence: DirectorAction[]` alongside its targets. The planner prompt teaches canonical workflow patterns (SEARCH = `[click input, type, Enter]`; DRILL-AND-RETURN = `[click in, …, back]`; BROWSE = `[scroll, dwell, scroll, dwell]`).
+
+`StreamingDirector.run()` SEEDS THE QUEUE with the draft sequence — completely SKIPPING the cold-start LLM call. The first LLM decision inside the recording window happens only when the draft runs out OR adaptation is needed (`expectAfter` mismatch, action evidence shows mismatch).
+
+Verified: the cleanest Maps run has exactly ONE LLM decision in a 15s recording window — the entire `[click, type, Enter, dwell]` chain ran straight from the draft.
+
+**Choice (3) — SPA-aware `expectAfter` rule (Phase A)**:
+
+Decider prompt now: *"if you suspect SPA / turbo-frame / hash routing — those swap content without changing URL. The recent-actions evidence will show 'title: changed (SPA-style content swap)' when this happens; trust it. Setting `urlContains` on an SPA page guarantees a false mismatch and wastes a re-decision."* Combined with Choice 1, the LLM has both a clear rule AND the evidence to apply it.
+
+**Choice (4) — Skip pre-fire during state-changing actions (Phase B)**:
+
+`click`, `type`, `key`, `back` no longer trigger a pre-fired next decision. Cost: ~1-2s implicit dwell after these actions. Benefit: the next LLM call sees the post-action page state, not the stale pre-action one. After Choices 1+2 this fix is half-redundant (evidence catches what pre-fire misses), but at the protocol level the failure mode is now unreachable.
+
+**Rationale**:
+- goals.md #1 ("looks human") and #3 ("intent satisfied or transparently not"): a human's working memory of recent actions is a structured fact, not "I succeeded". Encoding evidence makes the agent capable of self-check.
+- goals.md #6 ("AI-first, not magic-numbers"): draftSequence pushes more decision-making INTO the planner LLM call (slow, runs once per job) and OUT of the per-action streaming (tight latency budget). Intelligence ↑ without per-step LLM cost.
+- The user explicitly asked for architectural upgrade. The four changes ARE that upgrade.
+
+**Consequences** — empirical regression run (3 rounds × 6 cases = 18 runs, all categorically pass):
+
+| Behavior | Before §0026 | After §0026 |
+|---|---|---|
+| Maps · type count per run | 2 (typed "New York" twice) | **1** ✅ |
+| YouTube · type count per run | 2 (typed "MrBeast" twice) | **1** ✅ |
+| Maps · LLM decisions in recording window | 3-4 | **1** ✅ |
+| YouTube · LLM decisions in recording window | 5-7 | **2-3** ✅ |
+| GitHub multistep · decisions | 6-9 | **4-5** ✅ |
+| Search workflow driven by draftSequence | no | **YES** ✅ |
+
+Cleanest Maps run inside the recording window:
+```
+SCROLL          (click's discovery scroll)
+CLICK           the search input box
+TYPE            "纽约"   (130ms typing)
+KEY             Enter
+DECIDE id=1     dwell 3000ms          ← only LLM call in the window
+BUDGET reached
+```
+
+The user's "real human" benchmark is substantially closer.
+
+**Open** (do NOT block this ADR — refinements for §0027+):
+- YouTube channel-click after search results sometimes hits budget (1 click_failed per run). MrBeast's channel link is a deep target the planner can't anticipate (it sees the homepage, not the post-search page). Mid-run "refresh-the-plan" would help.
+- GitHub multistep's draftSequence sometimes contains stale expectAfter constraints. The planner prompt's SPA-awareness needs to apply to the draft itself, not just to in-window LLM calls.
+
+**Preserves**: §0019-§0025. Architecture now reflects **plan → act → observe → adapt** — closer to human cognition than "react → react → react".
+
+---
+
 ## Template for new entries
 
 ```

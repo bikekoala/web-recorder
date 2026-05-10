@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 
 import { DomainError } from '../../domain/errors.js';
+import { DirectorAction } from '../../domain/director-action.js';
 import { ClickHint, type DirectorBriefing } from '../../domain/plan.js';
 import { config } from '../../infra/config.js';
 import { logger as rootLogger } from '../../infra/logger.js';
@@ -82,7 +83,7 @@ export class LlmPlanner implements IPlanner {
     }
     if (!raw) throw new PlannerError('LLM returned empty brief content');
 
-    let parsed: { targets?: unknown; rationale?: unknown };
+    let parsed: { targets?: unknown; rationale?: unknown; draftSequence?: unknown };
     try {
       parsed = JSON.parse(stripCodeFence(raw));
     } catch (err) {
@@ -95,6 +96,16 @@ export class LlmPlanner implements IPlanner {
       ? (parsed.targets as unknown[]).filter((t): t is string => typeof t === 'string')
       : [];
     const rationale = typeof parsed.rationale === 'string' ? parsed.rationale : '';
+
+    // draftSequence: parse each entry through DirectorAction. Drop entries
+    // that don't validate so a single malformed action doesn't cost us the
+    // whole sequence. Keep the order of valid entries.
+    const draftSequence = Array.isArray(parsed.draftSequence)
+      ? (parsed.draftSequence as unknown[])
+          .map((entry) => DirectorAction.safeParse(entry))
+          .filter((r) => r.success)
+          .map((r) => (r as { success: true; data: import('../../domain/director-action.js').DirectorAction }).data)
+      : [];
 
     // Pre-resolve each target. Misses are dropped silently — Director's
     // search loop will rediscover them if they exist.
@@ -111,7 +122,11 @@ export class LlmPlanner implements IPlanner {
     }
 
     this.logger.info(
-      { model: this.model, hintCount: hints.length },
+      {
+        model: this.model,
+        hintCount: hints.length,
+        draftSequenceLen: draftSequence.length,
+      },
       'brief generated',
     );
 
@@ -120,6 +135,7 @@ export class LlmPlanner implements IPlanner {
       durationMs: input.durationMs,
       hints,
       rationale,
+      draftSequence,
     };
   }
 }

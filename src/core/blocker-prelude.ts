@@ -180,10 +180,18 @@ export class BlockerPrelude {
         // 2b. Click the target. On failure, log and bail.
         try {
           await session.clickByDescription(first.target);
+          // Prelude doesn't capture full evidence (it doesn't need to —
+          // the next iteration's pageDiagnostic IS its verification). Use
+          // a minimal click-evidence stub so ActionSummary's shape is met.
           recentActions.push({
             kind: 'click',
             brief: `click ${truncate(first.target, 40)}`,
             succeeded: true,
+            evidence: {
+              kind: 'click',
+              urlBefore: '', urlAfter: '', urlChanged: false,
+              titleBefore: '', titleAfter: '', titleChanged: false,
+            },
           });
           if (recentActions.length > 3) recentActions.shift();
         } catch (err) {

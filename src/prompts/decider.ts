@@ -82,8 +82,8 @@ QUALITY RULES:
 - Don't repeat the SAME action three times in a row — alternate scroll lengths or insert a dwell.
 - If your previous TWO recent actions were both dwells, your next action MUST be click / scroll / type / back — never a third dwell unless you are explicitly waiting for a video / animation / load you have already initiated.
 - ANTI-REPETITION (load-bearing): if your last TWO recent actions are both "click" on essentially the same target description (the descriptions are identical or near-identical), the next action MUST be different. Re-clicking the same input field repeatedly does NOTHING — to enter a search, you need to click ONCE then "type" your query. To dismiss something that didn't go away on first click, try a different target (e.g. an explicit close/cancel button, or "key Escape").
-- "expectAfter.urlContains" should be a SUBSTRING expected in URL after these actions complete (e.g. "zh-CN" after a language switch). Omit if no navigation expected.
-- "expectAfter.visibleText" should be 1-3 short strings expected to be visible after these actions. Omit if uncertain.
+- "expectAfter.urlContains" should be a SUBSTRING expected in URL after these actions complete (e.g. "zh-CN" after a language switch to a multi-page site). OMIT if you suspect SPA / turbo-frame / hash routing — those swap content without changing URL. The recent-actions evidence will already show "title: changed (SPA-style content swap)" when this happens; trust it. Setting urlContains on an SPA page guarantees a false mismatch and wastes a re-decision.
+- "expectAfter.visibleText" should be 1-3 short strings expected to be visible after these actions. Use this for SPA pages where URL won't change. Omit if uncertain.
 - If lastActionFailure is set, address it explicitly in your reasoning.
 - BRIEFING HINTS PRIORITY (ABSOLUTE — read carefully): the briefing-hints list contains targets the user EXPLICITLY asked you to click. If a hint's position is IN_VIEW, ABOVE, or BELOW, your FIRST action MUST be a "click" for that target — even if the target is not in the current viewport, even if you would prefer to scroll first. The executor handles the discovery scroll automatically as part of the click action. Scrolling first is REDUNDANT and wastes the recording budget. The ONLY exception: if a higher-priority visual blocker (cookie banner, paused video play overlay) is on screen, dismiss that first. Once briefing hints are processed, you may scroll for browse-style intents.
 
@@ -106,9 +106,7 @@ export function buildDeciderUserText(s: DirectorState): string {
   const recent =
     s.recentActions.length === 0
       ? '(none)'
-      : s.recentActions
-          .map((a) => `${a.kind}: ${a.brief}${a.succeeded ? '' : ' [FAILED]'}`)
-          .join('; ');
+      : s.recentActions.map((a) => formatRecentAction(a)).join('\n  ');
 
   const hints =
     s.briefingHints.length === 0
@@ -134,11 +132,64 @@ export function buildDeciderUserText(s: DirectorState): string {
     'Briefing hints (intended click targets, ALL of them, with current position):',
     hints,
     '',
-    `Recent actions (oldest→newest): ${recent}`,
+    'Recent actions (oldest→newest) WITH EVIDENCE — read these carefully before deciding the next action; they tell you what your last actions ACTUALLY did to the page, not just what you intended:',
+    `  ${recent}`,
     s.lastActionFailure ? `LAST ACTION FAILED: ${s.lastActionFailure}` : '',
     '',
     'Choose 1-2 next actions. Output JSON only.',
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+/**
+ * Render an ActionSummary with its evidence in a way the LLM can use to
+ * verify "did my last action work?". Each kind shows only the bits that
+ * matter for that action; failure is loud (` [FAILED]`).
+ */
+function formatRecentAction(a: import('../domain/director-state.js').ActionSummary): string {
+  const failTag = a.succeeded ? '' : ' [FAILED]';
+  const ev = a.evidence;
+  switch (ev.kind) {
+    case 'click': {
+      const url = ev.urlChanged ? `URL: ${ev.urlBefore} → ${ev.urlAfter}` : 'URL: unchanged';
+      const title = ev.titleChanged ? `title: changed` : 'title: unchanged';
+      // Title-changed-but-URL-stable is the SPA / turbo-frame fingerprint.
+      const spa = !ev.urlChanged && ev.titleChanged ? ' (SPA-style content swap)' : '';
+      return `${a.kind}: ${a.brief}${failTag} — ${url}; ${title}${spa}`;
+    }
+    case 'type': {
+      const post =
+        ev.focusedValueAfter == null
+          ? 'no element focused'
+          : `focused value now: "${truncate(ev.focusedValueAfter, 40)}"`;
+      const verdict = ev.matched ? '✓ matches' : '✗ MISMATCH (re-type was a no-op)';
+      return `${a.kind}: ${a.brief}${failTag} — ${post}, ${verdict}`;
+    }
+    case 'scroll': {
+      const ach = ev.deltaAchieved;
+      const verdict = Math.abs(ach) < Math.abs(ev.deltaRequested) * 0.5
+        ? '✗ scroll did NOT move much (page may be at top/bottom or scroll captured by inner element)'
+        : '✓ moved';
+      return `${a.kind}: ${a.brief}${failTag} — scrollY ${ev.scrollYBefore} → ${ev.scrollYAfter} (Δ${ach}/${ev.deltaRequested}), ${verdict}`;
+    }
+    case 'key': {
+      const url = ev.urlChanged ? `URL: ${ev.urlBefore} → ${ev.urlAfter}` : 'URL: unchanged';
+      const title = ev.titleChanged ? 'title: changed' : 'title: unchanged';
+      const spa = !ev.urlChanged && ev.titleChanged ? ' (SPA-style content swap)' : '';
+      return `${a.kind}: ${a.brief}${failTag} — ${url}; ${title}${spa}`;
+    }
+    case 'back': {
+      const url = ev.urlChanged ? `URL: ${ev.urlBefore} → ${ev.urlAfter}` : 'URL: unchanged (no history to go back to)';
+      return `${a.kind}: ${a.brief}${failTag} — ${url}`;
+    }
+    case 'dwell':
+      return `${a.kind}: ${a.brief}${failTag}`;
+    case 'done':
+      return `${a.kind}: ${a.brief}`;
+  }
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }

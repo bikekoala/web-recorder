@@ -110,6 +110,29 @@ export interface IPageSession {
   currentUrl(): Promise<string>;
 
   /**
+   * Current document scroll position in px. Read-only. Used by the
+   * Director to capture before/after evidence for `scroll` actions.
+   * Returns 0 if the session can't read scroll state.
+   */
+  scrollY(): Promise<number>;
+
+  /**
+   * Title of the currently-loaded page. Read-only. Used by the Director
+   * to detect whether a click triggered navigation/SPA-route change
+   * even when the URL doesn't update (turbo-frame, hash routing).
+   */
+  pageTitle(): Promise<string>;
+
+  /**
+   * Read the current value of the focused input/textarea/contenteditable.
+   * Returns null if nothing is focused or the focused element has no
+   * meaningful "value". Used by the Director to verify that a `type`
+   * action actually landed text in the right field (catches the
+   * "agent typed twice because it didn't see the first one" failure).
+   */
+  focusedValue(): Promise<string | null>;
+
+  /**
    * Capture a PNG screenshot of the current viewport. Used by the planner
    * to "see" the page once before recording starts. Not logged.
    *

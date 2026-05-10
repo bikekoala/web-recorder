@@ -57,4 +57,69 @@ export interface ActionSummary {
   /** Human-readable, ≤80 chars. e.g. "scroll +600 slow", "click 简中". */
   brief: string;
   succeeded: boolean;
+  /**
+   * Structured proof of what the action actually did to the page. Surfaced
+   * to the LLM in `recentActions` so it can verify "did my last action
+   * land?" without inferring everything from the screenshot. Catches the
+   * "type the same text twice" / "click hit the wrong element" failure
+   * modes — see ADR §0026.
+   */
+  evidence: ActionEvidence;
 }
+
+/**
+ * Proof captured by the Director after each executed action. Each variant
+ * carries the minimum the LLM needs to know "did this work?":
+ *   - urlBefore/urlAfter   navigation evidence (click/key/back)
+ *   - titleBefore/After     SPA / turbo-frame swap evidence (URL stable)
+ *   - scrollY*              real scroll achieved (sometimes < deltaPx
+ *                           because the page is at the bottom, etc.)
+ *   - focusedValueAfter     verifies `type` actually landed
+ *
+ * The fields are deliberately a SUPERSET — kinds carry the bits relevant
+ * to them and we render only those in the prompt. This keeps the type
+ * system simple (one shape per action kind) and avoids elaborate runtime
+ * dispatch in the prompt builder.
+ */
+export type ActionEvidence =
+  | {
+      kind: 'click';
+      urlBefore: string;
+      urlAfter: string;
+      urlChanged: boolean;
+      titleBefore: string;
+      titleAfter: string;
+      titleChanged: boolean;
+    }
+  | {
+      kind: 'type';
+      expectedText: string;
+      focusedValueAfter: string | null;
+      /** True iff focusedValueAfter contains expectedText (case-sensitive). */
+      matched: boolean;
+    }
+  | {
+      kind: 'scroll';
+      scrollYBefore: number;
+      scrollYAfter: number;
+      deltaRequested: number;
+      deltaAchieved: number;
+    }
+  | {
+      kind: 'key';
+      key: string;
+      urlBefore: string;
+      urlAfter: string;
+      urlChanged: boolean;
+      titleBefore: string;
+      titleAfter: string;
+      titleChanged: boolean;
+    }
+  | {
+      kind: 'back';
+      urlBefore: string;
+      urlAfter: string;
+      urlChanged: boolean;
+    }
+  | { kind: 'dwell'; durationMs: number }
+  | { kind: 'done' };

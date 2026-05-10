@@ -1324,6 +1324,37 @@ export class StagehandPageSession implements IPageSession {
     }
   }
 
+  // ---------------------- Public read-only state probes (Director evidence)
+
+  async scrollY(): Promise<number> {
+    return this.readScrollY();
+  }
+
+  async pageTitle(): Promise<string> {
+    try {
+      return await this.requirePage().title();
+    } catch {
+      return '';
+    }
+  }
+
+  async focusedValue(): Promise<string | null> {
+    try {
+      return await this.requirePage().evaluate(() => {
+        const el = document.activeElement as HTMLElement | null;
+        if (!el || el === document.body) return null;
+        // Plain inputs / textareas
+        const inputLike = el as HTMLInputElement | HTMLTextAreaElement;
+        if (typeof inputLike.value === 'string') return inputLike.value;
+        // Contenteditable (rich-text inputs, search bars on some sites)
+        if (el.isContentEditable) return el.innerText ?? '';
+        return null;
+      });
+    } catch {
+      return null;
+    }
+  }
+
   private async bboxOfSelector(
     selector: string,
   ): Promise<{ x: number; y: number; width: number; height: number } | null> {

@@ -26,7 +26,7 @@ export class FakePageSession implements IPageSession {
   events: Array<{ kind: string; payload: unknown; t: number }> = [];
   startedAt = Date.now();
 
-  scrollY = 0;
+  scrollYValue = 0;
   url = 'https://test.example/';
   viewport: Viewport = { width: 1280, height: 720 };
   screenshotBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]); // PNG header
@@ -82,7 +82,7 @@ export class FakePageSession implements IPageSession {
   async scroll(deltaY: number, opts?: { durationMs?: number; easing?: ScrollEasing }) {
     const d = opts?.durationMs ?? 1000;
     this.record('scroll', { deltaY, durationMs: d, easing: opts?.easing });
-    this.scrollY = Math.max(0, this.scrollY + deltaY);
+    this.scrollYValue = Math.max(0, this.scrollYValue + deltaY);
     await new Promise((r) => setTimeout(r, d));
   }
   async wait(ms: number): Promise<void> {
@@ -107,6 +107,14 @@ export class FakePageSession implements IPageSession {
     this.record('stable', opts);
   }
   async currentUrl(): Promise<string> { return this.url; }
+
+  /** Test-controllable evidence-probe state — set in tests as needed. */
+  pageTitleValue = '';
+  focusedValueResult: string | null = null;
+
+  async scrollY(): Promise<number> { return this.scrollYValue; }
+  async pageTitle(): Promise<string> { return this.pageTitleValue; }
+  async focusedValue(): Promise<string | null> { return this.focusedValueResult; }
   async screenshot(): Promise<Buffer> { return this.screenshotBytes; }
   async observeAll(): Promise<ObservedElement[]> { return this.observeResults; }
   async resolveTarget(): Promise<ObservedElement | null> { return this.resolveTargetResult; }

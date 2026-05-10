@@ -1,5 +1,5 @@
 import { DomainError } from '../../domain/errors.js';
-import type { ActionSummary, BriefingHintForState } from '../../domain/director-state.js';
+import type { ActionEvidence, ActionSummary, BriefingHintForState } from '../../domain/director-state.js';
 import type { DirectorAction } from '../../domain/director-action.js';
 import { SCROLL_SPEED_PROFILES } from '../../domain/director-action.js';
 import { descriptionsMatch } from '../../domain/intent-matching.js';
@@ -63,7 +63,17 @@ export class StreamingDirector implements IDirector {
     let pendingMeta: { id: number; firedAtMs: number; scrollY: number } | null = null;
     let expectAfter: ExpectAfter | null = null;
 
-    if (opts.prefiredDecision) {
+    if (briefing.draftSequence && briefing.draftSequence.length > 0) {
+      // §0026: planner pre-planned a draft action sequence. Seed the queue
+      // with it — no cold-start LLM call needed. The agent acts immediately
+      // on the recording-window opening; LLM is only invoked when evidence
+      // shows the plan needs adapting (or the queue empties).
+      actionQueue = [...briefing.draftSequence];
+      this.logger.info(
+        { steps: actionQueue.length, kinds: actionQueue.map((a) => a.kind) },
+        'seeded queue from planner draft',
+      );
+    } else if (opts.prefiredDecision) {
       // The runner pre-fired the first decision DURING setup/prelude (using
       // the same screenshot the planner saw). It's already in flight or
       // resolved by the time we get here — we skip the cold-start LLM call
@@ -77,7 +87,7 @@ export class StreamingDirector implements IDirector {
         scrollY: opts.prefiredDecision.scrollYAtFire,
       };
     } else {
-      // No pre-fire: fall back to the original cold start.
+      // No draft sequence and no pre-fire: fall back to the original cold start.
       const state = await this.observeState(briefing, session, recentActions, briefing.durationMs, fulfilledHints);
       pending = track(this.decider.decide(state));
       decisionCount += 1;
@@ -145,10 +155,16 @@ export class StreamingDirector implements IDirector {
       const action = actionQueue.shift()!;
 
       // Pre-fire the next decision call BEFORE awaiting the animation.
-      // EXCEPTIONS: skip pre-fire if the action is `done` (we're about to exit)
-      // or if expectAfter is set (we validate first; mismatch clears and re-fires,
-      // match continues with the already-queued actions).
-      if (action.kind !== 'done' && pending === null && expectAfter === null) {
+      // EXCEPTIONS:
+      //   1. `done` (we're about to exit).
+      //   2. `expectAfter` set (we validate first; mismatch clears + re-fires).
+      //   3. State-changing actions (click/type/key/back) — pre-fire would
+      //      see a stale screenshot from BEFORE the action's effect lands,
+      //      causing the "type the same text twice" / "click again to make
+      //      sure" loop. We accept ~1-2s implicit dwell after these actions
+      //      in exchange for accurate post-action observation. (§0026)
+      const stateChanging = isStateChangingActionKind(action.kind);
+      if (action.kind !== 'done' && pending === null && expectAfter === null && !stateChanging) {
         const state = await this.observeState(briefing, session, recentActions, remainingMs, fulfilledHints);
         pending = track(this.decider.decide(state));
         decisionCount += 1;
@@ -161,11 +177,7 @@ export class StreamingDirector implements IDirector {
       });
       const summary = await Promise.race([
         this.executeAction(action, session),
-        watchdog.then(() => ({
-          kind: action.kind,
-          brief: 'budget cut',
-          succeeded: false,
-        }) satisfies ActionSummary),
+        watchdog.then(() => buildBudgetCutSummary(action) satisfies ActionSummary),
       ]);
       recentActions.push(summary);
       if (recentActions.length > 3) recentActions.shift();
@@ -284,13 +296,24 @@ export class StreamingDirector implements IDirector {
   private async executeAction(action: DirectorAction, session: IPageSession): Promise<ActionSummary> {
     switch (action.kind) {
       case 'click': {
+        const urlBefore = await safeUrl(session);
+        const titleBefore = await safeTitle(session);
+        let succeeded = true;
         try {
           await session.clickByDescription(action.target);
-          return { kind: 'click', brief: `click ${truncate(action.target, 40)}`, succeeded: true };
         } catch (err) {
           this.logger.warn({ err, target: action.target }, 'click failed');
-          return { kind: 'click', brief: `click ${truncate(action.target, 40)} [err]`, succeeded: false };
+          succeeded = false;
         }
+        const urlAfter = await safeUrl(session);
+        const titleAfter = await safeTitle(session);
+        const evidence: ActionEvidence = {
+          kind: 'click',
+          urlBefore, urlAfter, urlChanged: urlBefore !== urlAfter,
+          titleBefore, titleAfter, titleChanged: titleBefore !== titleAfter,
+        };
+        const brief = `click ${truncate(action.target, 40)}${succeeded ? '' : ' [err]'}`;
+        return { kind: 'click', brief, succeeded, evidence };
       }
       case 'scroll': {
         const profile = SCROLL_SPEED_PROFILES[action.speed];
@@ -299,46 +322,103 @@ export class StreamingDirector implements IDirector {
           800,
           2800,
         );
+        const scrollYBefore = await safeScrollY(session);
         await session.scroll(action.deltaPx, { durationMs, easing: profile.easing });
+        const scrollYAfter = await safeScrollY(session);
+        const evidence: ActionEvidence = {
+          kind: 'scroll',
+          scrollYBefore, scrollYAfter,
+          deltaRequested: action.deltaPx,
+          deltaAchieved: scrollYAfter - scrollYBefore,
+        };
         return {
           kind: 'scroll',
           brief: `scroll ${action.deltaPx > 0 ? '+' : ''}${action.deltaPx} ${action.speed}`,
           succeeded: true,
+          evidence,
         };
       }
       case 'dwell': {
         await session.wait(action.durationMs);
-        return { kind: 'dwell', brief: `dwell ${action.durationMs}ms`, succeeded: true };
+        return {
+          kind: 'dwell',
+          brief: `dwell ${action.durationMs}ms`,
+          succeeded: true,
+          evidence: { kind: 'dwell', durationMs: action.durationMs },
+        };
       }
       case 'type': {
+        let succeeded = true;
         try {
           await session.type(action.text);
-          return { kind: 'type', brief: `type "${truncate(action.text, 30)}"`, succeeded: true };
         } catch (err) {
           this.logger.warn({ err, text: action.text }, 'type failed');
-          return { kind: 'type', brief: `type "${truncate(action.text, 30)}" [err]`, succeeded: false };
+          succeeded = false;
         }
+        const focusedValueAfter = await safeFocusedValue(session);
+        const matched =
+          focusedValueAfter != null && focusedValueAfter.includes(action.text);
+        const evidence: ActionEvidence = {
+          kind: 'type',
+          expectedText: action.text,
+          focusedValueAfter,
+          matched,
+        };
+        return {
+          kind: 'type',
+          brief: `type "${truncate(action.text, 30)}"${succeeded ? '' : ' [err]'}`,
+          succeeded,
+          evidence,
+        };
       }
       case 'key': {
+        const urlBefore = await safeUrl(session);
+        const titleBefore = await safeTitle(session);
+        let succeeded = true;
         try {
           await session.pressKey(action.key);
-          return { kind: 'key', brief: `key ${action.key}`, succeeded: true };
         } catch (err) {
           this.logger.warn({ err, key: action.key }, 'key failed');
-          return { kind: 'key', brief: `key ${action.key} [err]`, succeeded: false };
+          succeeded = false;
         }
+        const urlAfter = await safeUrl(session);
+        const titleAfter = await safeTitle(session);
+        const evidence: ActionEvidence = {
+          kind: 'key',
+          key: action.key,
+          urlBefore, urlAfter, urlChanged: urlBefore !== urlAfter,
+          titleBefore, titleAfter, titleChanged: titleBefore !== titleAfter,
+        };
+        return {
+          kind: 'key',
+          brief: `key ${action.key}${succeeded ? '' : ' [err]'}`,
+          succeeded,
+          evidence,
+        };
       }
       case 'back': {
+        const urlBefore = await safeUrl(session);
+        let succeeded = true;
         try {
           await session.goBack();
-          return { kind: 'back', brief: 'back', succeeded: true };
         } catch (err) {
           this.logger.warn({ err }, 'back failed');
-          return { kind: 'back', brief: 'back [err]', succeeded: false };
+          succeeded = false;
         }
+        const urlAfter = await safeUrl(session);
+        const evidence: ActionEvidence = {
+          kind: 'back',
+          urlBefore, urlAfter, urlChanged: urlBefore !== urlAfter,
+        };
+        return {
+          kind: 'back',
+          brief: `back${succeeded ? '' : ' [err]'}`,
+          succeeded,
+          evidence,
+        };
       }
       case 'done':
-        return { kind: 'done', brief: 'done', succeeded: true };
+        return { kind: 'done', brief: 'done', succeeded: true, evidence: { kind: 'done' } };
     }
   }
 
@@ -365,9 +445,7 @@ export class StreamingDirector implements IDirector {
   }
 
   private async readScrollY(session: IPageSession): Promise<number> {
-    // FakePageSession exposes scrollY as a field; the real adapter exposes
-    // it via screenshot/observe but we can derive it from a tiny evaluate.
-    return (session as unknown as { scrollY?: number }).scrollY ?? 0;
+    return safeScrollY(session);
   }
 
   /**
@@ -455,6 +533,61 @@ function briefAction(a: DirectorAction): string {
 function viewportFrom(session: IPageSession): { width: number; height: number } {
   return (session as unknown as { viewport?: { width: number; height: number } }).viewport
     ?? { width: 1280, height: 720 };
+}
+
+// Best-effort state probes — every Director executeAction wraps a port
+// read so a momentary glitch (page closed, evaluate threw) doesn't cause
+// the action's evidence-capture to bubble an error. We'd rather log
+// ambiguous evidence ("urlBefore=''") than fail the recording.
+async function safeUrl(session: IPageSession): Promise<string> {
+  try { return await session.currentUrl(); } catch { return ''; }
+}
+async function safeTitle(session: IPageSession): Promise<string> {
+  try { return await session.pageTitle(); } catch { return ''; }
+}
+async function safeScrollY(session: IPageSession): Promise<number> {
+  try { return await session.scrollY(); } catch { return 0; }
+}
+async function safeFocusedValue(session: IPageSession): Promise<string | null> {
+  try { return await session.focusedValue(); } catch { return null; }
+}
+
+/**
+ * State-changing actions whose effects must land BEFORE the next
+ * decision's screenshot is taken. Pre-fire is skipped during these so
+ * the next LLM call sees the post-action page.
+ */
+function isStateChangingActionKind(kind: DirectorAction['kind']): boolean {
+  return kind === 'click' || kind === 'type' || kind === 'key' || kind === 'back';
+}
+
+/**
+ * Build a placeholder ActionSummary for the watchdog-cut path. Evidence
+ * is a "noop" shape per kind — the action did NOT actually run, so we
+ * record empty/zero state, with `succeeded: false` and a `[budget cut]`
+ * brief so the LLM can see what happened on the next decision.
+ */
+function buildBudgetCutSummary(action: DirectorAction): ActionSummary {
+  const kind = action.kind;
+  const evidence: ActionEvidence = (() => {
+    switch (kind) {
+      case 'click':
+        return { kind: 'click', urlBefore: '', urlAfter: '', urlChanged: false, titleBefore: '', titleAfter: '', titleChanged: false };
+      case 'scroll':
+        return { kind: 'scroll', scrollYBefore: 0, scrollYAfter: 0, deltaRequested: action.deltaPx, deltaAchieved: 0 };
+      case 'dwell':
+        return { kind: 'dwell', durationMs: 0 };
+      case 'type':
+        return { kind: 'type', expectedText: action.text, focusedValueAfter: null, matched: false };
+      case 'key':
+        return { kind: 'key', key: action.key, urlBefore: '', urlAfter: '', urlChanged: false, titleBefore: '', titleAfter: '', titleChanged: false };
+      case 'back':
+        return { kind: 'back', urlBefore: '', urlAfter: '', urlChanged: false };
+      case 'done':
+        return { kind: 'done' };
+    }
+  })();
+  return { kind, brief: 'budget cut', succeeded: false, evidence };
 }
 
 /**
