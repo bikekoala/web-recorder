@@ -9,6 +9,9 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "smoke:recording": "tsx scripts/smoke-recording.ts",
     "prototype:stagehand": "tsx scripts/prototype-stagehand.ts",
     "test:planner": "tsx scripts/test-planner.ts",
@@ -25,6 +28,7 @@
   "devDependencies": {
     "@types/node": "^22.9.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.9"
   }
 }
