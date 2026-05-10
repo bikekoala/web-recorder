@@ -646,7 +646,36 @@ export class StagehandPageSession implements IPageSession {
       );
     }
 
-    // Branch 3: not on page at all.
+    // Branch 3: Playwright fast matchers failed. Fall back to LLM-based
+    // Stagehand observe via `resolveTarget` — slower (~3-8s) but smart
+    // enough to handle complex descriptions ("the 简体中文 link", etc.)
+    // that Playwright's literal text/role matchers miss.
+    const resolved = await this.resolveTarget(description);
+    if (resolved && resolved.selector && resolved.bbox) {
+      const targetPageY = resolved.bbox.y;
+      const desiredViewportY = this.cfg.viewport.height * 0.35;
+      const initialDeltaY = Math.round(targetPageY - desiredViewportY);
+
+      // If the target is within ~viewport height of comfortable position,
+      // discovery click can scroll directly to it.
+      if (Math.abs(initialDeltaY) <= this.cfg.viewport.height * 1.2) {
+        await this.clickSelector(resolved.selector, { description });
+        return;
+      }
+
+      // Otherwise, scroll most of the way (leave 600px for clickSelector's
+      // approach choreography), then let clickSelector finish.
+      const direction = Math.sign(initialDeltaY) || 1;
+      const preScroll = direction * (Math.abs(initialDeltaY) - 600);
+      await this.scroll(preScroll, {
+        durationMs: Math.max(800, Math.abs(preScroll) / 600 * 1000),
+        easing: 'outQuart',
+      });
+      await this.clickSelector(resolved.selector, { description });
+      return;
+    }
+
+    // Truly not on page (even LLM couldn't find it).
     throw new ElementNotFoundError(`target not found on page: ${description}`);
   }
 
