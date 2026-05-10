@@ -407,6 +407,48 @@ The runner's `recomputeClickDurations()` mirrors these bands so plan budget stay
 
 ---
 
+## 0019 · Streaming Director with LLM-in-the-loop (partial reversal of §0013)
+
+**Date**: 2026-05-10
+
+**Context**: §0013 required zero LLM calls inside the recording window to guarantee fluidity. That worked but produced rigid plan-then-execute recordings that could not adapt to lazy targets, mid-recording surprises, or position-dependent decisions. The "click 简中" Recordly scenario showed teleport-style clicks because the executor jumped straight to a known target instead of staging discovery, and lazy-loaded targets had no recovery path.
+
+**Choice**: Introduce a `StreamingDirector` (`src/adapters/director/streaming-director.ts`) that runs an LLM decision loop *inside* the recording window, using a fast multimodal model (Gemini Flash Lite / gpt-4o-mini, sub-second p95) and a **double-queue with pre-fired calls** so LLM latency overlaps animation and is invisible to viewers.
+
+The Director consumes a tiny 4-primitive `DirectorAction` vocabulary:
+- `click(target, reasoning)` — discovery + search + click choreography (preserves §0017/§0018)
+- `scroll(deltaPx, speed, reasoning)` — speed maps to (px/s, easing) profile
+- `dwell(durationMs, reasoning)` — pause
+- `done(reasoning)` — end recording
+
+Setup is unchanged from §0016: planner fires once with screenshot, extracts likely click targets, pre-resolves their selectors via Stagehand observe → outputs `DirectorBriefing { prompt, durationMs, hints, rationale }`. The Director's `IFastDecider` then takes over for the recording window.
+
+**Rationale**:
+- The original "no LLM in window" constraint was a means to "no visible stalls". Pre-firing achieves the same goal without the constraint.
+- The 4-primitive vocabulary keeps decisions trivial for the LLM, making sub-second JSON-mode responses reliable.
+- Choreography (discovery click, multi-stage scroll, easings) stays in code — LLM picks intent only.
+- An implicit-dwell fallback (200ms × 4 cap) and a hard-deadline watchdog (1.05× × `durationMs` default) bound the worst case.
+- `expectAfter` validation lets the LLM cheaply mark "I expect URL contains X / text Y visible" so the Director can detect divergence and re-decide without burning the whole queue on stale plans.
+
+**Consequences**:
+- Removed: `TimelinePlan` and the entire step schema (`PlanStep`, `ScrollStep`, `ClickStep`, `WaitStep`, `StableStep`), `LlmPlanner.plan()`, `RecordJobRunner.adjustPlanDuration` / `recomputeClickDurations` / `expectedPlanDurationMs` / `estimateClickDurationMs` / `countSteps` / `preResolveClicks` / `executePlan` / `executeClick`. Net delete: −661 lines.
+- Added: ports `IDirector`, `IFastDecider`; adapters `StreamingDirector`, `LlmFastDecider`; domain types `DirectorAction`, `DirectorState`, `DirectorBriefing`, `ClickHint`; infra utility `Pending<T>`; `IPageSession.quickFindInViewport` / `quickFindOnPage` / `clickByDescription` (with internal search loop and LLM fallback).
+- Recording window now contains LLM calls (typically 2-4 per 10s recording, ~$0.001-$0.003 with gpt-4o-mini). Their latency is hidden under animation; an implicit-dwell fallback handles tail latency.
+- New env vars: `LLM_DECIDER_MODEL`, `DIRECTOR_LOOKAHEAD_MAX`, `DIRECTOR_DWELL_FALLBACK_MS`, `DIRECTOR_HARD_BUDGET_MULT`.
+- Spec: `docs/superpowers/specs/2026-05-10-streaming-director-design.md`. Plan: `docs/superpowers/plans/2026-05-10-streaming-director.md`.
+- Empirical run on Recordly (single integration test): trimmed-video 10640ms (+6.4% over 10000 target), 5 implicit dwells, 1 pre-resolved click hint, 1 expectAfter mismatch (recovered cleanly), end reason `budget`.
+
+**Reverses (partially)**: §0013. The strict "0 LLM in window" constraint is loosened; the broader "no visible stalls" intent is preserved by streaming.
+
+**Preserves**: §0001 (Architecture B post-process cursor overlay still planned), §0006 (Stagehand v3 + Playwright recordVideo via cdpUrl), §0010 (addInitScript browser-side helpers), §0017 (discovery click choreography is the executor for `click` actions), §0018 (multi-stage long scroll backs the search loop), §0009 (OpenRouter only for LLM auth).
+
+**Tuning notes**:
+- gpt-4o-mini through OpenRouter is currently the most reliable decider model (Gemini Flash Lite shows higher tail latency on this network).
+- `DIRECTOR_HARD_BUDGET_MULT=1.05` is necessary for 10s recordings to stay within ±10% — the 1.2 default leaves too much slack given the FastDecider's tail latency.
+- A faster decider (Groq llama-3.2-vision, Cerebras, local Ollama) could cut implicit dwells from ~5 to ~0 and let `DIRECTOR_HARD_BUDGET_MULT` go back to 1.2 with no risk of overshoot.
+
+---
+
 ## Template for new entries
 
 ```

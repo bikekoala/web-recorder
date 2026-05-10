@@ -25,10 +25,13 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Project scaffolding | ✅ |
 | `IPageSession` + Stagehand adapter | ✅ |
 | Playwright video recording + ffmpeg trim | ✅ |
-| `IPlanner` + LlmPlanner adapter | ✅ |
-| `RecordJobRunner` (core orchestrator) | ✅ |
-| Pre-resolved click selectors (zero LLM in recording window) | ✅ |
+| `IPlanner` + LlmPlanner adapter (now `brief()` only) | ✅ |
+| `IDirector` + StreamingDirector (streaming LLM-in-the-loop) | ✅ |
+| `IFastDecider` + LlmFastDecider (Gemini Flash Lite default) | ✅ |
+| `RecordJobRunner` (orchestrates plan → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
+| Vitest unit tests (44 passing) | ✅ |
+| Integration test on Recordly scenario | ✅ |
 | Cursor trajectory synth (`ICursorSynthesizer`) | ⏳ |
 | HTTP API | ⏳ |
 
@@ -36,14 +39,18 @@ Architectural decisions live in [`docs/decisions.md`](./docs/decisions.md). Upda
 
 The **naturalness catalog** in [`docs/naturalness-catalog.md`](./docs/naturalness-catalog.md) tracks every observable behavior that contributes to "this looks like a human, not a robot." Every new natural-feeling feature (or gap) flips a status row there.
 
-### Measured performance (Recordly README, "click 简中, slow scroll, 10s", 6+ runs)
+### Measured performance (Recordly README, "click 简中, slow scroll, 10s")
+
+After §0019 (streaming Director), single integration run on macOS + OpenRouter `openai/gpt-4o-mini`:
 
 | Metric | Value |
 |---|---|
-| Trimmed video duration vs target | mean +5.7%, std ±300ms |
-| Total wall-clock | 23s ± 1.5s |
-| LLM calls in recording window | **0** |
-| Click resolution success rate | 100% |
+| Trimmed video duration | 10640 ms (target 10000, +6.4%) |
+| Implicit dwells (LLM tail latency hidden as natural pauses) | 5 (~1.0s total) |
+| Resolved click hints | 1 (planner pre-resolved 简体中文) |
+| FastDecider calls during recording | 2 |
+| Director end reason | `budget` (hit 1.05× cap) |
+| Total wall-clock incl. setup + brief + trim | ~49s |
 
 ## Common commands
 
