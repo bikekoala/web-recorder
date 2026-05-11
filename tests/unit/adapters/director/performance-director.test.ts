@@ -5,7 +5,12 @@ import { FakePageSession } from '../../../fakes/fake-page-session.js';
 import type { Performance } from '../../../../src/domain/performance.js';
 import type { ActionLogEntry } from '../../../../src/domain/action-log.js';
 
+// Default helper: a target whose bbox center is well inside the (1280×720)
+// fake viewport at scrollY 0, so the director coordinate-clicks it (`clickAt`).
 const target = (sel: string) => ({ selector: sel, bbox: { x: 0, y: 0, width: 10, height: 10 }, description: sel });
+// A target whose bbox is far below the viewport at scrollY 0 → coord-click is
+// out of range → the director falls back to `clickSelector`.
+const offscreenTarget = (sel: string) => ({ selector: sel, bbox: { x: 0, y: 5000, width: 10, height: 10 }, description: sel });
 
 const perf = (steps: Performance['steps'], durationMs = 20000): Performance => ({
   prompt: 'do the thing', durationMs, steps, totalEstimatedMs: 5000, rationale: 'test',
@@ -39,7 +44,7 @@ describe('PerformanceDirector — deterministic playback', () => {
     expect(session.events.some((e) => e.kind === 'wait' && e.payload === 200)).toBe(true);
   });
 
-  it('renders a click step via clickSelector after an anticipation wait', async () => {
+  it('coordinate-clicks a target after an anticipation wait', async () => {
     const session = new FakePageSession();
     const director = new PerformanceDirector({ replanner: new FakeReconnoiterer() });
     await director.run(perf([
@@ -47,9 +52,58 @@ describe('PerformanceDirector — deterministic playback', () => {
       { kind: 'done', reasoning: 'fin' },
     ]), session);
     expect(session.events.some((e) => e.kind === 'wait' && e.payload === 500)).toBe(true);
-    const clicks = session.events.filter((e) => e.kind === 'click');
-    expect(clicks).toHaveLength(1);
-    expect(clicks[0]!.payload).toMatchObject({ selector: 'text=Go' });
+    const coordClicks = session.events.filter((e) => e.kind === 'clickAt');
+    expect(coordClicks).toHaveLength(1);
+    expect(coordClicks[0]!.payload).toMatchObject({ x: 5, y: 5 });
+    expect(session.events.some((e) => e.kind === 'click')).toBe(false);
+  });
+
+  it('clicks a target by coordinate when its bbox is in the viewport', async () => {
+    const session = new FakePageSession();
+    const director = new PerformanceDirector({ replanner: new FakeReconnoiterer() });
+    await director.run(perf([
+      { kind: 'click', target: { selector: 'xpath=//a[1]', bbox: { x: 100, y: 200, width: 40, height: 18 }, description: 'a link' }, anticipationMs: 0, reasoning: 'tap' },
+      { kind: 'done', reasoning: 'fin' },
+    ]), session);
+    const coordClicks = session.events.filter((e) => e.kind === 'clickAt');
+    expect(coordClicks).toHaveLength(1);
+    expect(coordClicks[0]!.payload).toMatchObject({ x: 120, y: 209, description: 'a link' });
+    expect(session.events.some((e) => e.kind === 'click')).toBe(false);
+  });
+
+  it('falls back to clickSelector when the bbox is out of the viewport', async () => {
+    const session = new FakePageSession();
+    const director = new PerformanceDirector({ replanner: new FakeReconnoiterer() });
+    await director.run(perf([
+      { kind: 'click', target: offscreenTarget('xpath=//a[1]'), anticipationMs: 0, reasoning: 'tap' },
+      { kind: 'done', reasoning: 'fin' },
+    ]), session);
+    expect(session.events.some((e) => e.kind === 'clickAt')).toBe(false);
+    expect(session.events.some((e) => e.kind === 'click' && (e.payload as { selector: string }).selector === 'xpath=//a[1]')).toBe(true);
+  });
+
+  it('falls back to clickSelector when clickAt throws', async () => {
+    const session = new FakePageSession();
+    session.clickAtImpl = () => { throw new Error('pixel click failed'); };
+    const director = new PerformanceDirector({ replanner: new FakeReconnoiterer() });
+    await director.run(perf([
+      { kind: 'click', target: target('text=Go'), anticipationMs: 0, reasoning: 'tap' },
+      { kind: 'done', reasoning: 'fin' },
+    ]), session);
+    expect(session.events.some((e) => e.kind === 'clickAt')).toBe(true); // attempted
+    expect(session.events.some((e) => e.kind === 'click' && (e.payload as { selector: string }).selector === 'text=Go')).toBe(true); // fell back
+  });
+
+  it('waits for visual stability after a click', async () => {
+    const session = new FakePageSession();
+    const director = new PerformanceDirector({ replanner: new FakeReconnoiterer() });
+    await director.run(perf([
+      { kind: 'click', target: target('text=Go'), anticipationMs: 0, reasoning: 'tap' },
+      { kind: 'done', reasoning: 'fin' },
+    ]), session);
+    const clickIdx = session.events.findIndex((e) => e.kind === 'clickAt');
+    expect(clickIdx).toBeGreaterThanOrEqual(0);
+    expect(session.events.slice(clickIdx + 1).some((e) => e.kind === 'stable')).toBe(true);
   });
 
   it('renders a type step: focus, pre-pause, type', async () => {
@@ -59,7 +113,7 @@ describe('PerformanceDirector — deterministic playback', () => {
       { kind: 'type', target: target('input[name=q]'), text: 'hi', preMs: 250, keystrokeMs: 80, reasoning: 'enter query' },
       { kind: 'done', reasoning: 'fin' },
     ]), session);
-    expect(session.events.some((e) => e.kind === 'click' && (e.payload as { selector: string }).selector === 'input[name=q]')).toBe(true);
+    expect(session.events.some((e) => e.kind === 'clickAt')).toBe(true);
     expect(session.events.some((e) => e.kind === 'wait' && e.payload === 250)).toBe(true);
     expect(session.events.some((e) => e.kind === 'type' && e.payload === 'hi')).toBe(true);
   });
@@ -99,7 +153,8 @@ describe('PerformanceDirector — re-plan checkpoint', () => {
     expect(replan.calls[0]!.priorSteps?.[0]).toMatchObject({ kind: 'click' });
     expect(session.appendedEntries.some((e: ActionLogEntry) => e.type === 'replan')).toBe(true);
     expect(report.endReason).toBe('done');
-    expect(session.events.some((e) => e.kind === 'click' && (e.payload as { selector: string }).selector === 'text=Recovered')).toBe(true);
+    // The recovered step is also coordinate-clicked (its bbox is in-viewport).
+    expect(session.events.filter((e) => e.kind === 'clickAt')).toHaveLength(2);
   });
 
   it('does NOT re-plan when expectAfter matches', async () => {
@@ -147,8 +202,8 @@ describe('PerformanceDirector — re-plan checkpoint', () => {
       (e: ActionLogEntry) => e.type === 'decision_failure' && e.reason === 'expect_after_mismatch',
     )).toBe(true);
     // The stale tail click was dropped; the filler scroll + dwell were rendered instead.
-    expect(session.events.some((e) => e.kind === 'click' && (e.payload as { selector: string }).selector === 'text=stale')).toBe(false);
-    const failedClickIdx = session.events.findIndex((e) => e.kind === 'click' && (e.payload as { selector: string }).selector === 'text=build');
+    expect(session.events.some((e) => e.kind === 'clickAt' && (e.payload as { description: string }).description === 'text=stale')).toBe(false);
+    const failedClickIdx = session.events.findIndex((e) => e.kind === 'clickAt' && (e.payload as { description: string }).description === 'text=build');
     expect(failedClickIdx).toBeGreaterThanOrEqual(0);
     expect(session.events.slice(failedClickIdx + 1).some((e) => e.kind === 'scroll')).toBe(true);
     expect(session.events.slice(failedClickIdx + 1).some((e) => e.kind === 'wait' && e.payload === 700)).toBe(true);

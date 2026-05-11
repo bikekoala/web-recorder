@@ -141,6 +141,19 @@ export class FakePageSession implements IPageSession {
     await new Promise((r) => setTimeout(r, 50));
   }
   /**
+   * Optional test hook — if set, called by `clickAt` AFTER recording the
+   * event. Use it to model a coordinate-click effect, or throw to model a
+   * pixel-click that failed (so the director falls back to `clickSelector`).
+   */
+  clickAtImpl: ((x: number, y: number, opts?: { description?: string }) => Promise<void> | void) | null = null;
+  async clickAt(x: number, y: number, opts?: { description?: string }) {
+    this.record('clickAt', { x, y, description: opts?.description });
+    if (this.clickAtImpl) {
+      await this.clickAtImpl(x, y, opts);
+    }
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  /**
    * Optional test hook — if set, called by `clickByDescription` after
    * recording the event. Use this to simulate failures, e.g.
    * `session.clickByDescriptionImpl = () => { throw new ElementNotFoundError(...); }`.
