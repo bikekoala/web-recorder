@@ -112,4 +112,30 @@ describe('computeIntentSatisfaction — UNIQUE-hint matching', () => {
     expect(r.level).toBe('complete');
     expect(r.clicksExecuted).toBe(1); // setupClick excluded from window
   });
+
+  // §0033 — over-count regression. Models the exact github-multistep case
+  // surfaced by the §0030 video judge: 3 hints, only 2 clicks (both on the
+  // same Chinese-language element), and the old many-to-many matching
+  // credited the lone "link" token toward all 3 hints. With 1-to-1
+  // bipartite assignment, only the genuinely-clicked hint matches.
+  it('(§0033) one click cannot satisfy multiple unrelated hints via a single shared UI noun', () => {
+    const r = computeIntentSatisfaction(
+      [
+        'the simplified 简体中文 link',
+        'the build directory link',
+        'the package.json file link',
+      ],
+      [
+        click(5000, 'the simplified Chinese language switcher link in the GitHub footer'),
+        click(8000, 'the Chinese language option'),
+        scroll(9000),
+      ],
+      WINDOW,
+    );
+    // Both clicks land on the Chinese hint — only 1/3 hints should count.
+    // (Pre-§0033 this was reported "complete (all 3 hint(s) clicked)" because
+    //  every other hint shared the lone "link" token with the click descs.)
+    expect(r.level).toBe('partial');
+    expect(r.note).toMatch(/1\/3/);
+  });
 });

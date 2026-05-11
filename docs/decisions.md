@@ -1185,6 +1185,79 @@ Both can layer onto the same recovery infrastructure later without re-architecti
 
 ---
 
+## 0033 · `intentSatisfaction` — 1-to-1 bipartite assignment (Class 3)
+
+**Date**: 2026-05-11
+
+**Context**: The §0030 video judge's first run reported `intentExecution: fail` on the github-multistep-natural case ("only 1 of 4 verbs actually happened"), but the action-log-side `intentSatisfaction` metric reported `level: complete, "all 3 hint(s) clicked at least once + scrolling occurred"`. Investigation ([`docs/findings/2026-05-11-intent-satisfaction-overcount.md`](./findings/2026-05-11-intent-satisfaction-overcount.md)) found the metric's `descriptionsMatch` heuristic was over-crediting: two clicks on the same Chinese-language paragraph element matched against 3 unrelated hints because every hint and every click description happened to contain the word "link", and the matching was `filter+some` (any-overlap counted).
+
+The class is: **string-overlap heuristics applied many-to-many over-credit when descriptions share generic vocabulary** — UI nouns (link/button/option/tab/page/...) appear in nearly every hint and click description and form spurious 1-token "bridges" between unrelated targets.
+
+**Choice — 1-to-1 bipartite assignment, no blocklist changes**:
+
+Replace `computeIntentSatisfaction`'s many-to-many loop:
+
+```ts
+// BEFORE: each hint check is independent — one click can satisfy many hints.
+const hintsClicked = hintDescriptions.filter((hint) =>
+  clickDescriptions.some((cd) => descriptionsMatch(hint, cd)),
+).length;
+```
+
+with a new pure function `countMatchedHints(hints, clicks)` in `domain/intent-matching.ts`:
+
+```ts
+// AFTER: each click satisfies at most ONE hint; greedy by descending overlap.
+export function countMatchedHints(hints, clicks): number {
+  const edges = []; // { hintIdx, clickIdx, score }
+  for h in hints, for c in clicks: edges.push({h, c, overlapScore(hints[h], clicks[c])});
+  edges.sort((a, b) => b.score - a.score);
+  const usedH = new Set(), usedC = new Set();
+  let matched = 0;
+  for (e of edges)
+    if (!usedH.has(e.hintIdx) && !usedC.has(e.clickIdx)) {
+      usedH.add(e.hintIdx); usedC.add(e.clickIdx); matched++;
+    }
+  return matched;
+}
+```
+
+A new helper `overlapScore(a, b)` returns the count of shared content tokens (not just a boolean). Greedy is good enough for N ≤ ~10 hints/clicks — swap for Hungarian if we ever scale.
+
+The github over-count walkthrough now:
+- (H "Chinese link",   C "the simplified Chinese language switcher link in the GitHub footer"): score 3 (simplified, chinese, link)
+- (H "Chinese link",   C "the Chinese language option"): score 1 (chinese)
+- (H "build link",     C "the simplified Chinese ... link in the footer"): score 1 (link)  ← was the bridge
+- (H "build link",     C "the Chinese language option"): score 0
+- (H "package link",   C "the simplified Chinese ... link in the footer"): score 1 (link)  ← was the bridge
+- (H "package link",   C "the Chinese language option"): score 0
+
+Sorted by score: (H1, C1, 3) → assigned. The remaining edges all have C1 OR C2 consumed. Result: 1 of 3 hints matched → `level: partial`, matching the judge.
+
+**Why not also blocklist UI nouns?**
+
+An earlier draft of this ADR added `link, button, tab, option, page, section, area, list, menu, icon, image, text, field` (and CJK equivalents) to the `contentTokens` STOPWORDS. This broke a legitimate cross-language match path: `"the simplified Chinese link"` (English hint) vs. `"click 简体中文 link"` (CJK click) shares ONLY the `link` token — the English description has no CJK characters and the CJK description has no extra ASCII match material. Removing `link` from the valid token set turned a real positive into a false negative.
+
+The 1-to-1 constraint alone fixes the over-count without losing the cross-language bridge: when one click has a high-overlap match to hint A AND a single-UI-noun match to hint B, greedy assigns A and B goes unmatched. UI-noun bridges only "win" when they're the BEST available edge — which is the right answer in those cases.
+
+**Why keep `descriptionsMatch` lenient?** R3 constraint from the finding doc — the Director's §0025 fulfilled-hints filter and §0028 unreachable filter both rely on the existing lenient boolean. Changing them would re-introduce the "LLM keeps re-clicking 简体中文" loop. By making the new tighter algorithm a separate function (`countMatchedHints` using `overlapScore`), we get strict matching at scoring time AND preserve lenient matching at filter time.
+
+**Consequences**:
+
+- New pure functions in `domain/intent-matching.ts`: `overlapScore`, `countMatchedHints`. `descriptionsMatch` unchanged.
+- `core/record-job-runner.ts` now imports `countMatchedHints` instead of `descriptionsMatch`.
+- New unit test: §0033 regression case asserts that two clicks on the same Chinese element produce `partial 1/3`, NOT `complete 3/3`. Total unit 76 → 77.
+- No prompt changes. No port changes. No config knobs added.
+- Metric now agrees with the §0030 video judge on the github case (both say "1 of N hints actually clicked").
+
+**Validation plan**: re-run the §0030 judge on a fresh regression batch. Expectation: `intentExecution` verdict matches the action-log `intentSatisfaction.level` (within reason — partial vs. probably_synthetic etc are different scales). The two should never categorically disagree like the original bug.
+
+**Preserves**: §0019-§0032. Goals.md non-negotiables #3 (intent satisfied or transparently not: the metric now is transparent, not falsely optimistic), #6 (AI-first: no hardcoded thresholds — the algorithm is pure structure).
+
+**Future hook**: when we want even stronger correctness, we can replace `overlapScore`'s token-count with a one-shot LLM judgment ("does click X satisfy hint Y?"). Cost: one extra LLM call per recording. Defer until we observe a case the bipartite-with-overlap can't handle.
+
+---
+
 ## Template for new entries
 
 ```

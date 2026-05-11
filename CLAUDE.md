@@ -33,7 +33,7 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Three independent model knobs (`LLM_MODEL` / `LLM_PLANNER_MODEL` / `LLM_DECIDER_MODEL`) | ✅ |
 | `RecordJobRunner` (orchestrates plan → prelude → pre-fire → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (76 passing — pruned schema-only redundancy) | ✅ |
+| Vitest unit tests (77 passing — pruned schema-only redundancy) | ✅ |
 | Action vocabulary: 7 primitives (click / scroll / dwell / type / key / back / done) | ✅ |
 | ActionEvidence per-action — LLM verifies last action via URL/title/focused-value (§0026) | ✅ |
 | `DirectorBriefing.draftSequence` — planner pre-plans, Director seeds queue (§0026) | ✅ |
@@ -43,6 +43,7 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `IRecordingJudge` + LlmVisionJudge — automated 5-dim rubric naturalness grading via Gemini 3.1 Pro (§0030) | ✅ |
 | Naturalness rendering bundle — pre-typing pause, slower keystroke delay, inter-scroll micro-pause, anti-idle prompt rule (§0031) | ✅ |
 | State awareness — `historyDepth` surfaced to decider + about:blank auto-recovery (§0032) | ✅ |
+| `intentSatisfaction` 1-to-1 bipartite matching — no more single-token UI-noun bridges over-crediting hints (§0033) | ✅ |
 | Regression suite — 3 sites × 2 human-prompt variants, categorical asserts only | ✅ |
 | Operation log: `decision` / `decision_failure` / `page_diagnostic` entries | ✅ |
 | Visual-blocker prompt rules (auto-clicks paused-video play overlays etc.) | ✅ |

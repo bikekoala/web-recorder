@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 import type { ActionLogEntry, RecordingWindow } from '../domain/action-log.js';
 import type { BriefingHintForState } from '../domain/director-state.js';
-import { descriptionsMatch } from '../domain/intent-matching.js';
+import { countMatchedHints } from '../domain/intent-matching.js';
 import { trimVideo, videoDurationMs } from '../infra/ffmpeg.js';
 import { logger as rootLogger } from '../infra/logger.js';
 import { track } from '../infra/pending.js';
@@ -400,11 +400,13 @@ export function computeIntentSatisfaction(
   const clicksExecuted = clicks.length;
   const scrollsExecuted = scrolls.length;
 
-  // Count UNIQUE click targets by their description, lenient match.
+  // Count UNIQUE click targets via 1-to-1 best-match assignment (§0033).
+  // Each click satisfies at most ONE hint; greedy descending overlap score
+  // picks the global pairing. Replaces the prior many-to-many `filter+some`
+  // loop that over-credited when descriptions shared a single UI noun
+  // (e.g. "the X link" matching "the Y link" on bare "link").
   const clickDescriptions = clicks.map((c) => c.description ?? '').filter(Boolean);
-  const hintsClicked = hintDescriptions.filter((hint) =>
-    clickDescriptions.some((cd) => descriptionsMatch(hint, cd)),
-  ).length;
+  const hintsClicked = countMatchedHints(hintDescriptions, clickDescriptions);
 
   const totalHints = hintDescriptions.length;
   let level: IntentSatisfaction['level'];
