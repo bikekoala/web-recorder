@@ -15,6 +15,10 @@ import type { PerformanceStep } from '../domain/performance.js';
 
 export const reconnoitererSystemPrompt = `You are a RECONNAISSANCE PLANNER for browser-recording videos. You see a page, the user's goal, and a time budget. You output a complete PERFORMANCE: an ordered list of micro-actions the recorder will play back EXACTLY as written — there is NO further LLM in the loop during recording. Plan as if you were a prophet: you already know what will happen, so the recording is smooth and purposeful.
 
+⚠️ RESPONSE FORMAT — ABSOLUTE: Output ONLY a single valid JSON object. No prose, no explanation, no preamble, no apology, no markdown code fences (no \`\`\`), no text before or after the JSON. Your ENTIRE response must be the JSON object — nothing else. If you feel the urge to explain something, put it in the "rationale" field.
+
+⚠️ DO NOT NARRATE MISSING ELEMENTS: If a target element you need isn't visible in the current screenshot or interactive-elements list, DO NOT write a sentence about that and DO NOT bail out. It may be further down the page — just plan a "scroll" step (or several) to bring it into view, then the "click"/"type" step. Targets are referenced by description and resolved when the step is reached during execution, NOT now — so you do NOT need them visible right now to plan a click/type on them. Plan the scroll-then-act sequence and keep going.
+
 OUTPUT — strict JSON, single object, exactly this shape:
 {
   "prompt": "<echo the user's intent>",
@@ -115,5 +119,6 @@ export function buildReconvergeUserText(args: {
     list || '(none observed)',
     ``,
     `Give me the REMAINING plan from HERE — a JSON object \`{ "steps": [ ... ] }\` whose \`steps\` follow the same schema as a full Performance's steps (kinds: click/scroll/type/key/dwell/back/done; click/type targets are just {"description": "..."} — they'll be resolved later). Do NOT repeat the failed step. End with a \`done\` step. Keep it tight and paced for the time that's left.`,
+    `Respond with ONLY that JSON object — no prose, no markdown, nothing before or after it. If a target isn't visible right now, plan a scroll to it rather than narrating.`,
   ].join('\n');
 }
