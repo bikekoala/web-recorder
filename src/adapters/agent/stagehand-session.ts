@@ -1156,16 +1156,20 @@ export class StagehandPageSession implements IPageSession {
    * workaround. It's a no-op off macOS, when headless, or when
    * `BROWSER_RETURN_FOCUS=false`.
    *
-   * Two paths, both best-effort (never throw — a failed osascript must not
+   * Three tiers, all best-effort (never throw — a failed osascript must not
    * break the session, just logs at debug level):
-   *   - `BROWSER_RETURN_FOCUS_TO=<app>` set → `activate` that app by name.
-   *     Reliable, needs no special permission, but you must name it.
-   *   - otherwise → a single Cmd+Tab (`key code 48` = Tab), i.e. "go back
-   *     to the app I was in" — no app name, no hardcoded terminal logic.
-   *     NOTE: this path needs macOS Accessibility permission for the
-   *     controlling process (your terminal); if it isn't granted, osascript
-   *     errors and we fall through harmlessly — set BROWSER_RETURN_FOCUS_TO
-   *     to avoid needing that permission.
+   *   1. `BROWSER_RETURN_FOCUS_TO=<app>` set → `activate` that app by name.
+   *      Explicit override; reliable; needs no special permission.
+   *   2. else `$__CFBundleIdentifier` present (→ `config.browserReturnFocusBundleId`)
+   *      → `tell application id "<bundle-id>" to activate`. macOS sets that
+   *      env var to the launching GUI app's bundle id (your terminal) for it
+   *      and all descendants, so this is the running terminal's own
+   *      identifier — not a hardcoded mapping. `activate` needs no special
+   *      permission. This is the no-permission default for most setups.
+   *   3. else → a single Cmd+Tab (`key code 48` = Tab), i.e. "go back to the
+   *      app I was in". NOTE: this path needs macOS Accessibility permission
+   *      for the controlling process (your terminal); if it isn't granted,
+   *      osascript errors and we fall through harmlessly.
    */
   private async returnFocusAfterLaunchIfEnabled(): Promise<void> {
     if (!config.browserReturnFocus) return;
@@ -1173,12 +1177,21 @@ export class StagehandPageSession implements IPageSession {
     if (this.cfg.headless) return;
 
     const app = config.browserReturnFocusToApp;
+    const bundleId = config.browserReturnFocusBundleId;
     try {
       if (app) {
         // execFile with an args array — never a shell string — so the app
         // name (semi-trusted, from config) can't be used for shell injection.
         await execFileAsync('osascript', ['-e', `tell application "${app}" to activate`]);
         this.logger.debug({ app }, 'returned focus to named app');
+      } else if (bundleId) {
+        // bundleId comes from $__CFBundleIdentifier (trusted env); still use
+        // the args-array form so it can never be a shell string.
+        await execFileAsync('osascript', [
+          '-e',
+          `tell application id "${bundleId}" to activate`,
+        ]);
+        this.logger.debug({ bundleId }, 'returned focus via $__CFBundleIdentifier');
       } else {
         await execFileAsync('osascript', [
           '-e',
@@ -1187,7 +1200,7 @@ export class StagehandPageSession implements IPageSession {
         this.logger.debug('returned focus via Cmd+Tab');
       }
     } catch (err) {
-      this.logger.debug({ err, app }, 'osascript focus-return failed; leaving focus as-is');
+      this.logger.debug({ err, app, bundleId }, 'osascript focus-return failed; leaving focus as-is');
     }
   }
 

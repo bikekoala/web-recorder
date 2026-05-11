@@ -15,8 +15,8 @@
  *   PROTOTYPE_URL   the URL to record
  *   PROTOTYPE_PROMPT  the natural-language instruction
  *   PROTOTYPE_DURATION_MS  the target recording duration in ms
- *   PROTOTYPE_HEADLESS  "false" to watch the browser (default headless — no
- *                       window pops up / steals focus; the video is the output)
+ *   PROTOTYPE_HEADLESS  "true" to run headless (no browser window); default is
+ *                       visible so you can watch.
  */
 
 import { StagehandPageSession } from '../src/adapters/agent/stagehand-session.js';
@@ -32,10 +32,9 @@ const USER_PROMPT =
   process.env.PROTOTYPE_PROMPT ??
   '点击页面上的"简体中文"链接，然后慢慢向下滑动浏览内容';
 const DURATION_MS = Number(process.env.PROTOTYPE_DURATION_MS ?? 10_000);
-// Default headless — a visible Chromium pops up on (potentially the wrong)
-// display and steals focus. The recording is the deliverable; set
-// PROTOTYPE_HEADLESS=false only when you actively want to watch.
-const HEADLESS = process.env.PROTOTYPE_HEADLESS !== 'false';
+// Visible by default so you can watch; set PROTOTYPE_HEADLESS=true for no
+// window (no focus-stealing, but you can't see it).
+const HEADLESS = process.env.PROTOTYPE_HEADLESS === 'true';
 
 async function main(): Promise<void> {
   const log = logger.child({ script: 'prototype-stagehand' });

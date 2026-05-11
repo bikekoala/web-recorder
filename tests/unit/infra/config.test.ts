@@ -80,6 +80,16 @@ describe('config — BROWSER_RETURN_FOCUS / BROWSER_RETURN_FOCUS_TO', () => {
     const config = await loadConfig({ BROWSER_RETURN_FOCUS_TO: 'iTerm2' });
     expect(config.browserReturnFocusToApp).toBe('iTerm2');
   });
+
+  it('browserReturnFocusBundleId is $__CFBundleIdentifier when set', async () => {
+    const config = await loadConfig({ __CFBundleIdentifier: 'com.test.term' });
+    expect(config.browserReturnFocusBundleId).toBe('com.test.term');
+  });
+
+  it('browserReturnFocusBundleId is undefined when unset', async () => {
+    const config = await loadConfig({ __CFBundleIdentifier: undefined });
+    expect(config.browserReturnFocusBundleId).toBeUndefined();
+  });
 });
 
 describe('rehearsal config knobs', () => {
