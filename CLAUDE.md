@@ -33,13 +33,14 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Three independent model knobs (`LLM_MODEL` / `LLM_PLANNER_MODEL` / `LLM_DECIDER_MODEL`) | ✅ |
 | `RecordJobRunner` (orchestrates plan → prelude → pre-fire → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (67 passing — pruned schema-only redundancy) | ✅ |
+| Vitest unit tests (73 passing — pruned schema-only redundancy) | ✅ |
 | Action vocabulary: 7 primitives (click / scroll / dwell / type / key / back / done) | ✅ |
 | ActionEvidence per-action — LLM verifies last action via URL/title/focused-value (§0026) | ✅ |
 | `DirectorBriefing.draftSequence` — planner pre-plans, Director seeds queue (§0026) | ✅ |
 | `IClickVerifier` — AI screenshot check after each click; failed click clears queue (§0027) | ✅ |
 | Retry cap — per-target rejection counter; after N=2 failures the target is filtered + LLM is told it's unreachable (§0028) | ✅ |
 | Opening hold — 200-500ms "context absorption" at recording start (naturalness C4, §0029) | ✅ |
+| `IRecordingJudge` + LlmVisionJudge — automated 5-dim rubric naturalness grading via Gemini 3.1 Pro (§0030) | ✅ |
 | Regression suite — 3 sites × 2 human-prompt variants, categorical asserts only | ✅ |
 | Operation log: `decision` / `decision_failure` / `page_diagnostic` entries | ✅ |
 | Visual-blocker prompt rules (auto-clicks paused-video play overlays etc.) | ✅ |
@@ -81,6 +82,10 @@ npm run typecheck
 # Defaults to GitHub Recordly README + the "click 简中, slow scroll" 10s test.
 # Override with PROTOTYPE_URL / PROTOTYPE_PROMPT / PROTOTYPE_DURATION_MS env vars.
 npm run prototype:stagehand
+
+# Grade a finished recording.webm against the 5-dimension naturalness rubric.
+# Writes judgment.json next to the video. See ADR §0030.
+npm run judge -- <video-path> "<user-prompt>" --duration-ms 10000
 
 # Verify the recording pipeline alone (no LLM, no Stagehand)
 npm run smoke:recording

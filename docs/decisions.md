@@ -980,6 +980,99 @@ The hold appears in the action log as a regular `wait` entry, which:
 
 ---
 
+## 0030 · Automated naturalness judge — 5-dimension VLM rubric (`IRecordingJudge`)
+
+**Date**: 2026-05-11
+
+**Context**: With §0029 closing the last Tier-1 *timing* gap (opening hold), the remaining bottleneck for the "looks human" non-negotiable (goals.md #1) was **the human reviewer step itself**. The regression suite runs cheaply, but every iteration of the project required someone to actually open 6 webm files and form an opinion. This made every refinement loop slow, gated on availability, and not reproducible across sessions.
+
+Two prior attempts to mechanize this were ruled out:
+1. **Frame-based judging** (sample 6-10 keyframes, ask a VLM): user correctly pushed back — naturalness lives in *motion* (easing, anticipation, scroll inertia). A single frame cannot express "the scroll decelerated naturally" or "the pause before the click felt anticipatory".
+2. **Action-log-derived rubric** (no video; read the log + apply rules): cheap and deterministic, but blind to what was actually rendered (browser cancels easing, paint timing differs from action timing, modal popups in frames aren't in the log).
+
+**Choice — video-native VLM judge with structured rubric**:
+
+A new port `IRecordingJudge` (`src/ports/recording-judge.ts`) + adapter `LlmVisionJudge` (`src/adapters/judge/llm-vision-judge.ts`) that consumes the trimmed `recording.webm` and the user's original prompt, and returns a typed `RecordingJudgment`:
+
+```ts
+type Verdict =
+  | 'looks_human'         // indistinguishable from real recording
+  | 'probably_human'      // 1-2 small tells
+  | 'probably_synthetic'  // several clear tells
+  | 'robotic';            // obvious automation
+
+type DimensionKey =
+  | 'motionQuality'    // scrolls eased, clicks approached, no teleports
+  | 'pacing'           // rhythm varies, anticipation pauses present
+  | 'intentExecution'  // every verb in the user's prompt visibly happened
+  | 'recovery'         // when something failed, agent switched approach
+  | 'visualCoherence'; // every page change has a clear on-screen cause
+```
+
+Each dimension is `pass / partial / fail` plus an evidence array of `{ atSecond, observation }` so a reviewer can jump to the moment.
+
+The adapter calls OpenRouter with the video as a `video_url` content part (data URL, base64). Default model `google/gemini-3.1-pro-preview` (native video input; configurable via `LLM_JUDGE_MODEL`). Raw `fetch` instead of the `openai` SDK because the SDK's content types don't include `video_url` yet — when they do, flip the adapter and the rest stays the same.
+
+**Rubric design choices** (these are the parts that took the longest to get right):
+
+1. **No action-log input.** The judge is the "fact eye". Feeding it the agent's own action log primes it with self-reported success. Cross-checking the judge's `intentExecution` verdict against the action-log-driven `intentSatisfaction` metric is the entire point — when they disagree, the run is suspect.
+
+2. **Five dimensions, not one verdict.** A flat "looks human" is undebuggable. Per-dimension fail tells you *which* part to fix.
+
+3. **Verdict is LLM-emitted, not code-derived.** A formula like "any fail → robotic" is brittle and lossy. We want the model's holistic judgment.
+
+4. **"Default to skeptical" rule** in the system prompt. False negatives ("looked human but isn't") are much costlier than false positives — the cost of a wrong "pass" is shipping a robot-looking recording.
+
+5. **Evidence required for every non-pass.** Each `partial` or `fail` must cite at least one `atSecond + observation`. If the judge can't point at a moment, it can't downgrade.
+
+6. **Cursor-absence carved out.** Project currently has no visible cursor sprite (B1-B11 ❌); the prompt explicitly tells the judge not to penalise this in any dimension — we're tracking cursor separately.
+
+**Invocation**:
+
+Manual via `npm run judge -- <video> "<prompt>" --duration-ms <n>`. Writes `judgment.json` next to the video. The judge is NOT wired into every recording run (latency ~25-30s per call, cost ~$0.02-0.05) — it's a manual / regression tool. If we later want it in CI, the standalone path makes that one-line wiring.
+
+**First-run validation (this commit)**:
+
+Ran the judge against `output/2026-05-11/11-14-38-regression-github-multistep-natural/recording.webm`. The action-log-side `intentSatisfaction` had reported `level: complete` ("all 3 hints clicked + scrolling occurred"). The judge returned:
+
+```
+verdict:    ROBOTIC
+motionQuality:    pass
+pacing:           fail   — @ 2.0s "page sits idle 15s with no actions"
+intentExecution:  fail   — @ 2.0s "successfully switches to Chinese, but fails to navigate to build directory or open package.json"
+recovery:         pass
+visualCoherence:  fail   — @ 18.0s "screen turns completely white and remains until end"
+```
+
+**Two latent bugs the judge caught that the existing metrics missed**:
+- **intentSatisfaction over-counts**: user asked for 4 verbs, only 1 visibly happened, but the metric reported `complete` because lenient `descriptionsMatch` let a single click satisfy multiple hints. Spun off as a follow-up investigation.
+- **White-screen bug at 18s**: page navigation went somewhere that never loaded (or stayed `about:blank` after a `back()`). No code-side metric noticed; the visual judge did. Spun off as a follow-up investigation.
+
+This is exactly the disagreement we built the judge to surface.
+
+**Consequences**:
+
+- New domain type `RecordingJudgment` with Zod schema. Strict — any malformed LLM output throws `RecordingJudgeError`.
+- New unit test suite (6 cases) covering happy path, HTTP failure, invalid JSON, schema mismatch, invalid verdict enum, and code-fence stripping. Total unit 67 → 73.
+- New `npm run judge` command + standalone CLI.
+- `intentSatisfaction` is no longer the only naturalness signal — the judge is a more authoritative cross-check.
+- Goals.md #6 (no magic numbers): the rubric is categorical end-to-end. No threshold drift across model versions.
+
+**Honest limitations**:
+
+- **Latency**: ~25-30s per video on Gemini 3.1 Pro Preview. Acceptable for offline / regression usage, not for inline gating.
+- **Cost**: ~$0.02-0.05 per call (videos ~1-3 MB base64-encoded). The user explicitly accepted this for manual testing.
+- **Variance**: VLM-as-judge typically shows 5-10% inter-run variance on subjective dimensions. We have not yet quantified ours; first observation suggests the rubric is concrete enough that variance is low, but a 3-run sample size is too small to claim this.
+- **Model coupling**: depends on Gemini supporting video input through OpenRouter. If that changes we'd need an alternate adapter (Claude doesn't natively take video as of 2026-05; GPT-4o uses frame sampling which our rubric explicitly assumes isn't sufficient).
+
+**Preserves**: §0019-§0029. Goals.md non-negotiables #1 (looks human: now machine-checkable), #3 (intent satisfied or transparently not: the judge IS the transparent half), #6 (AI-first, not magic-numbers: categorical rubric, no thresholds).
+
+**Future hooks**:
+- Wire judge into regression suite optionally (env-gated to keep CI cost predictable).
+- Use judgments to A/B compare runs after each architectural change — turn "feels like it improved" into "judge agrees `motionQuality` is `pass` here vs. `partial` before".
+
+---
+
 ## Template for new entries
 
 ```

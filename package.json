@@ -14,6 +14,7 @@
     "regression": "vitest run --config vitest.regression.config.ts",
     "smoke:recording": "tsx scripts/smoke-recording.ts",
     "prototype:stagehand": "tsx scripts/prototype-stagehand.ts",
+    "judge": "tsx scripts/judge-recording.ts",
     "playwright:install": "playwright install chromium"
   },
   "dependencies": {

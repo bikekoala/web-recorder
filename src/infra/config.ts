@@ -57,6 +57,18 @@ const Schema = z.object({
   llmDeciderModel: z.string().min(1).default('openai/gpt-4o-mini'),
 
   /**
+   * Recording-judge model — used ONCE per finished recording to grade
+   * naturalness against the 5-dimension rubric (§0030). Needs native
+   * VIDEO input support (not just images), so the default is Gemini
+   * 3.1 Pro Preview. Override with LLM_JUDGE_MODEL — e.g. switch to
+   * `google/gemini-3.1-flash-lite` for cheap routine grading.
+   *
+   * Latency is not constrained (one offline call per recording); we
+   * pick for judgment quality.
+   */
+  llmJudgeModel: z.string().min(1).default('google/gemini-3.1-pro-preview'),
+
+  /**
    * Maximum actions per FastDecider response (lookahead depth).
    * Higher = more buffer against LLM tail latency, but more chance of
    * stale lookahead. Default 2.
@@ -139,6 +151,7 @@ const raw = {
   llmModel: process.env.LLM_MODEL,
   llmPlannerModel: process.env.LLM_PLANNER_MODEL,
   llmDeciderModel: process.env.LLM_DECIDER_MODEL,
+  llmJudgeModel: process.env.LLM_JUDGE_MODEL,
   directorLookaheadMax: process.env.DIRECTOR_LOOKAHEAD_MAX
     ? Number(process.env.DIRECTOR_LOOKAHEAD_MAX)
     : undefined,
