@@ -15,12 +15,12 @@ Status legend:
 
 | ID | Behavior | Status | Notes |
 |---|---|---|---|
-| A1 | Animated scroll (not snap) | ✅ | `requestAnimationFrame` loop |
-| A2 | Easing curve options | ✅ | `inOutQuad / outQuart / outExpo / linear` |
+| A1 | Animated scroll (not snap) | ⚠️ | `requestAnimationFrame` loop — but the §0034 video judge read the canonical-run scroll as "fast & linear" (possible causes: low video fps over a short ~2.4s scroll, the `smoothScrollTo` easing, lazy React content popping in). Scroll-rendering investigation = Task #21. |
+| A2 | Easing curve options | ✅ | `inOutQuad / outQuart / outExpo / linear`; recon picks per `scroll` step (§0034) |
 | A3 | Distance-adaptive choreography | ✅ | short / medium / long bands |
 | A4 | Two-stage long scroll (fling → micro-pause → slow approach) | ✅ | for distances > 2500px |
-| A5 | Reading-pace exploration scrolls (≤ 350 px/s) | ⚠️ | planner-driven; no executor enforcement |
-| A6 | Inter-scroll micro-pause (50-200ms between consecutive scrolls) | ✅ | 120-280ms tail wait appended in StreamingDirector after every scroll (§0031) |
+| A5 | Reading-pace exploration scrolls (≤ 350 px/s) | ⚠️ | recon-emitted `scroll.durationPx`/`durationMs` decide pace; no executor enforcement, and §0034's first run shows recon ignores pacing adjectives ("slow scroll" → 2.4s/600px·s⁻¹) — Task #21 |
+| A6 | Inter-scroll micro-pause (50-200ms between consecutive scrolls) | ✅ | `dwellAfterMs` field on each recon-emitted `scroll` `PerformanceStep` (§0034; was a StreamingDirector tail wait in §0031). `StagehandPageSession.scroll()` still applies the `SCROLL_TAIL_*` config range as a default; the per-step value overrides it. |
 | A7 | Inertia / momentum after a fling (decay-then-stop motion) | ❌ | the easing approximates this; no real inertia model |
 | A8 | Overshoot + correction (rare scroll-too-far + scroll-back) | ❌ | very natural touch but easily abused; behind a feature flag when added |
 | A9 | Direction-mixed scrolls (look back up after scrolling down) | ❌ | depends on planner generating reversal steps |
@@ -52,7 +52,7 @@ Status legend:
 | C1 | Pre-click anticipation pause (500-800ms randomized) | ✅ |
 | C2 | Post-click stable wait (DOM-mutation observer) | ✅ |
 | C3 | Long-scroll micro-pause (fling → 150-250ms → slow approach) | ✅ |
-| C4 | Opening hold (200-500ms of "context absorption" at recording start) | ✅ randomized in [200,500]ms inside StreamingDirector.run, after `beginRecording` |
+| C4 | Opening hold ("context absorption" at recording start) | ⚠️ | No longer a hard-coded Director wait (the StreamingDirector + `OPENING_HOLD_*` config knobs are gone, §0034). Now the *reconnoiterer* is expected to emit a `dwell` as the first `PerformanceStep` — a planned, model-decided "look at the page" beat. Works in practice (the §0034 integration run produced ~1.1s of opening hold: 400ms + 700ms), but whether the recon *reliably* emits it is recon-prompt quality — Task #21. |
 | C5 | Reading pauses (longer dwell after navigating to a content-rich page) | ❌ |
 | C6 | Inter-action variability (no two consecutive durations are identical) | ⚠️ partial via random anticipation |
 | C7 | Decision pauses (longer for ambiguous targets) | ❌ |
@@ -118,15 +118,18 @@ demo, it's:
 
 ```
 Tier 1 — strictly required to not look mechanical (~3-5 days work):
-   A1, A2, A3, A4   ✅ all done — the foundation
+   A2, A3, A4       ✅ done — the foundation
+   A1               ⚠️ animated scroll exists but reads "fast & linear" to the §0034 judge — Task #21
    D1, D2           ✅ done — discovery click
-   C1, C2, C3, C4   ✅ done — timing rhythm + opening hold
+   C1, C2, C3       ✅ done — timing rhythm
+   C4               ⚠️ opening hold is now a recon-emitted `dwell` (§0034) — works in practice, depends on recon-prompt quality
    B1, B2, B3       ❌ visible cursor with path + velocity profile
 
 Tier 2 — pushes from "passable" to "convincing" (~1-2 weeks):
    B4, B5, B6       ❌ tremor + overshoot + hover hesitation
    B7, B8           ❌ cursor type + click ripple
-   A6, C6           ❌ inter-scroll micro-pause + variability across runs
+   A6               ✅ inter-scroll micro-pause (recon `scroll.dwellAfterMs`, §0034)
+   C6               ❌ variability across runs
    H2               ❌ stylized cursor (not OS default)
 
 Tier 3 — only matters for "would fool a careful reviewer":
@@ -138,7 +141,7 @@ Tier 3 — only matters for "would fool a careful reviewer":
 
 ## Recommended next milestone
 
-**Tier 1 completion** = ship cursor synth (B1, B2, B3) + opening hold (C4).
+**Tier 1 completion** = ship cursor synth (B1, B2, B3) + firm up scroll rendering (A1, Task #21).
 
 That single milestone moves us from "the page scrolls weirdly nicely" to
 "this looks like a real person navigating." Everything beyond is polish that

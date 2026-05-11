@@ -11,6 +11,7 @@ import {
   ActionLog,
   type ActionLogEntry,
   type PageDiagnostic,
+  type Viewport,
 } from '../../domain/action-log.js';
 import {
   ElementNotFoundError,
@@ -190,6 +191,11 @@ export class StagehandPageSession implements IPageSession {
       verbose: 1,
       ...cfg,
     };
+  }
+
+  /** The viewport this session renders at (px). Stable for the session's lifetime. */
+  get viewport(): Viewport {
+    return this.cfg.viewport;
   }
 
   // -------------------------------------------------------------------- lifecycle
@@ -659,8 +665,7 @@ export class StagehandPageSession implements IPageSession {
         // Scroll one step in target direction.
         // Search-loop scrolls intentionally slower than default scroll() —
         // ~250 px/s reading pace so the viewer perceives a person scanning,
-        // not a fast scroll-jump. See SCROLL_SPEED_PROFILES.slow in
-        // src/domain/director-action.ts.
+        // not a fast scroll-jump.
         const remaining = budgetPx - scrolled;
         const thisStep = direction * Math.min(stepPx, remaining);
         await this.scroll(thisStep, {
@@ -1035,17 +1040,20 @@ export class StagehandPageSession implements IPageSession {
    *
    * Caller must focus the field first via clickSelector / clickByDescription.
    */
-  async type(text: string): Promise<void> {
+  async type(
+    text: string,
+    opts: { preMs?: number; keystrokeMs?: number } = {},
+  ): Promise<void> {
     const page = this.requirePage();
     const scrollY = await this.readScrollY();
     const t0 = this.elapsed();
     const startedAtWall = Date.now();
 
-    const preMs = randInRange(config.typingPreMinMs, config.typingPreMaxMs);
+    const preMs = opts.preMs ?? randInRange(config.typingPreMinMs, config.typingPreMaxMs);
     if (preMs > 0) {
       await page.waitForTimeout(preMs);
     }
-    const delay = randInRange(config.typingKeystrokeMinMs, config.typingKeystrokeMaxMs);
+    const delay = opts.keystrokeMs ?? randInRange(config.typingKeystrokeMinMs, config.typingKeystrokeMaxMs);
     await page.keyboard.type(text, { delay });
 
     this.recordEntry({
@@ -1160,8 +1168,8 @@ export class StagehandPageSession implements IPageSession {
    * defaults so a partial failure here never breaks the recording.
    * Heuristic-only — false positives/negatives are expected.
    *
-   * Public per IPageSession.pageDiagnostic — used by the BlockerPrelude to
-   * detect visual blockers BEFORE the recording window opens, and by
+   * Public per IPageSession.pageDiagnostic — surfaced to the reconnoiterer
+   * (so it can fold blocker dismissal into the Performance) and used by
    * `beginRecording` to capture a snapshot at recording_start.
    */
   async pageDiagnostic(): Promise<PageDiagnostic> {

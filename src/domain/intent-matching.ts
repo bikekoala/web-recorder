@@ -2,14 +2,12 @@
  * Intent matching — pure utilities for "did the user's intent for hint X
  * actually get acted upon?"
  *
- * Used in two places:
- *   - `record-job-runner.computeIntentSatisfaction` to score the final run.
- *   - `StreamingDirector.observeState` to FILTER hints that have already
- *     been clicked successfully so they aren't shown to the LLM again
- *     (preventing the "click the same hint 3 times" loop).
+ * Used by `record-job-runner.computeIntentSatisfaction` to score the final
+ * run against the reconnoiterer's resolved click-target descriptions.
  *
- * The matching is intentionally LENIENT — the planner's hint description
- * and the LLM's click action description rarely match verbatim. Examples:
+ * The matching is intentionally LENIENT — the reconnoiterer's target
+ * description and the recorded click description rarely match verbatim.
+ * Examples:
  *   "the simplified Chinese link"      ↔ "click 简体中文链接"        → match (CJK n-grams)
  *   "the build directory folder link"  ↔ "click the build folder"   → match ("build", "folder")
  *   "the search input box"             ↔ "the search bar"            → match ("search")

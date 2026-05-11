@@ -28,11 +28,14 @@ export type ScrollEasing = 'inOutQuad' | 'outQuart' | 'outExpo' | 'linear';
  * - Translating library exceptions into typed DomainErrors
  *
  * Implementations are NOT responsible for:
- * - LLM planning (that is IPlanner — not yet defined)
+ * - LLM planning (that is IReconnoiterer)
  * - Cursor synthesis (that is ICursorSynthesizer — not yet defined)
  * - Final video composition (that is IComposer — not yet defined)
  */
 export interface IPageSession {
+  /** The viewport this session is rendering at (px). Stable for the session's lifetime. */
+  readonly viewport: Viewport;
+
   /** Launch browser, open page, begin recording. Idempotent: safe to call once. */
   start(): Promise<void>;
 
@@ -76,11 +79,12 @@ export interface IPageSession {
   wait(durationMs: number): Promise<void>;
 
   /**
-   * Type into the currently focused element with human-paced per-keystroke
-   * delay (40-90 ms randomised). Caller must focus the field FIRST (usually
-   * via clickSelector / clickByDescription on the input). Logged as `type`.
+   * Type into the currently focused element. `opts.preMs` (pause before the
+   * first keystroke) and `opts.keystrokeMs` (inter-keystroke delay) override
+   * the config defaults when provided. Caller must focus the field first.
+   * Logged as `type`.
    */
-  type(text: string): Promise<void>;
+  type(text: string, opts?: { preMs?: number; keystrokeMs?: number }): Promise<void>;
 
   /**
    * Press a single named key (Enter / Escape / Tab / arrow / Backspace).
@@ -267,10 +271,9 @@ export interface IPageSession {
    * top visible headings, and detected blocker signals (e.g.
    * `consent_dialog`, `auth_modal`, `play_overlay`, `search_only`).
    *
-   * Used by the BlockerPrelude (pre-recording) to decide whether any visual
-   * blockers need dismissing before the recording window opens, and by the
-   * session itself at `recording_start` to write a `page_diagnostic`
-   * entry into the action log.
+   * Surfaced to the reconnoiterer (so it can fold blocker dismissal into
+   * the Performance) and captured by the session itself at `recording_start`
+   * as a `page_diagnostic` entry in the action log.
    *
    * The returned shape excludes `t`, `scrollY`, and `viewport` — those are
    * filled in by the caller if/when the snapshot is logged. Heuristic-only;

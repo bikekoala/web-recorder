@@ -22,13 +22,10 @@
  * - Domain types are imported from `src/domain/`; nothing else.
  *
  * One file per LLM role:
- * - `planner.ts` — the once-per-job click-target extractor.
- * - `decider.ts` — the per-action streaming director's prompts.
- * - `prelude.ts` — the BlockerPrelude's dismissal-loop prompt.
+ * - `reconnoiterer.ts` — the off-camera recon call that produces a paced
+ *   Performance (and is reused for re-plans). See ADR §0034.
+ * - `recording-judge.ts` — the once-per-recording naturalness grader.
  */
 
-export { plannerSystemPrompt, buildPlannerUserText } from './planner.js';
-export { deciderSystemPrompt, buildDeciderUserText } from './decider.js';
-export { buildPreludeUserPrompt } from './prelude.js';
-export { clickVerifierSystemPrompt, buildClickVerifierUserText } from './click-verifier.js';
 export { recordingJudgeSystemPrompt, buildRecordingJudgeUserText } from './recording-judge.js';
+export { reconnoitererSystemPrompt, buildReconUserText } from './reconnoiterer.js';

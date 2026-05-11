@@ -29,17 +29,26 @@ The dependency arrows point **inward**. `adapters/` knows about `ports/` and `do
 src/
   domain/           # Pure types, schemas, error classes. No I/O. No external deps except zod.
     action-log.ts
+    performance.ts        # the pre-resolved, paced action sequence (§0034)
     errors.ts
-    (later: plan.ts, project.ts, ...)
   ports/            # Interface definitions. No I/O. No external deps.
-    page-session.ts
-    (later: planner.ts, recorder.ts, cursor-synth.ts, composer.ts, ...)
+    page-session.ts       # IPageSession
+    reconnoiterer.ts      # IReconnoiterer  — recon → Performance (also re-planner)
+    director.ts           # IDirector       — plays back a Performance
+    recording-judge.ts    # IRecordingJudge — automated naturalness grading
   adapters/         # Concrete implementations. Talks to libraries / external services.
     agent/
       stagehand-session.ts   # IPageSession via Stagehand+Playwright
-    (later: planner/llm-planner.ts, composer/ffmpeg.ts, ...)
-  core/             # Orchestration. Imports only domain/ + ports/. (Empty until V1 pipeline lands.)
-  infra/            # Cross-cutting: config, logger, queue, IDs.
+    recon/
+      llm-reconnoiterer.ts   # IReconnoiterer via OpenRouter (vision + planning)
+    director/
+      performance-director.ts # IDirector — deterministic playback + re-plan checkpoint
+    judge/
+      llm-vision-judge.ts    # IRecordingJudge via Gemini (native video input)
+  core/             # Orchestration. Imports only domain/ + ports/ + infra/.
+    record-job-runner.ts   # setup → recon → director → trim
+  prompts/          # LLM prompts (content, not code): reconnoiterer.ts, recording-judge.ts
+  infra/            # Cross-cutting: config, logger, ffmpeg, IDs.
     config.ts
     logger.ts
 scripts/            # One-off entry points (prototypes, smoke tests). Compose adapters directly.
@@ -53,31 +62,38 @@ scripts/            # One-off entry points (prototypes, smoke tests). Compose ad
 
 ## Naming conventions
 
-- **Ports** are interfaces named `I<Capability>` (e.g. `IPageSession`, `IPlanner`).
+- **Ports** are interfaces named `I<Capability>` (e.g. `IPageSession`, `IReconnoiterer`, `IDirector`, `IRecordingJudge`).
 - **Adapters** are concrete classes named `<Tech><Capability>` (e.g. `StagehandPageSession`).
 - **Domain types** are POJOs validated by Zod schemas. Schema and type are co-located: `export const ActionLogEntry = z.object({...}); export type ActionLogEntry = z.infer<typeof ActionLogEntry>;`
 - **Errors** end in `Error` and extend `DomainError`. They carry a stable string `code`.
 
-## Lifecycle of a recording job (target shape, not yet built)
+## Lifecycle of a recording job ("prophet" pipeline, ADR §0034)
 
 ```
-HTTP POST /record
+(future: HTTP POST /record)
    │
    ▼
-core/job-runner.run(input)
+core/record-job-runner.run({ url, prompt, durationMs })
    │
-   ├── IPlanner.plan(url, prompt)               → TimelinePlan (domain type)
-   ├── IPageSession.start()                     → Browser + page + recordVideo on
-   ├── core/runner.execute(session, plan)       → action log
-   ├── IPageSession.stop()                      → raw video path + action log
-   ├── ICursorSynthesizer.synthesize(actionLog) → cursor frames
-   ├── IComposer.compose(video, cursorFrames)   → final mp4 path
+   ├── IPageSession.start() / goto(url)         → Browser + page + recordVideo on
+   ├── IReconnoiterer.recon(req, session)       → Performance (OFF-CAMERA: observe,
+   │                                              resolve every target to selector+bbox,
+   │                                              pace each step, set expectAfter)
+   ├── IDirector.run(performance, session)       → ON-CAMERA: deterministic playback.
+   │                                              At most config.maxReplans re-plan
+   │                                              checkpoints, each delegating back to
+   │                                              IReconnoiterer.recon (now used as a
+   │                                              re-planner from the diverged step).
+   ├── IPageSession.stop()                       → raw video path + action log
+   ├── ffmpeg trim raw → recording.webm          (using the session's recording window)
+   │  (later: ICursorSynthesizer / IComposer for cursor overlay + final mp4)
    │
    ▼
-return { videoUrl, actionLog }
+return { videoPath, rawVideoPath, actionLogPath, performance, metrics, directorReport }
 ```
 
-Today only `IPageSession` exists. The rest are scheduled.
+Today `IPageSession`, `IReconnoiterer`, `IDirector`, `IRecordingJudge` exist.
+Cursor synth + composition + HTTP API are scheduled.
 
 ## Boundary checklist for adding a feature
 

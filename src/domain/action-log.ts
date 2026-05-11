@@ -34,10 +34,9 @@ export type Viewport = z.infer<typeof Viewport>;
  * `page_diagnostic` ActionLogEntry variant, minus `t`/`scrollY`/`viewport`
  * which are filled in by the caller when (and if) the snapshot is logged.
  *
- * Used by the BlockerPrelude (pre-recording) to decide whether any visual
- * blockers (cookie consent, login modal, paused-video play overlay, etc.)
- * need dismissing before the recording window opens. Also captured as a
- * `page_diagnostic` ActionLogEntry at recording_start by the session.
+ * Captured as a `page_diagnostic` ActionLogEntry at recording_start by the
+ * session so the operator can tell at a glance whether the page loaded with
+ * real content or hit a "blank-ish" anomaly (geo block, login wall, etc.).
  *
  * Heuristic-only — false positives/negatives are expected.
  */
@@ -74,11 +73,11 @@ export type PageDiagnostic = z.infer<typeof PageDiagnostic>;
  * - VISUAL ACTIONS (goto/act/click/scroll/wait) — what the browser did.
  *   These are what the cursor synth + post-prod layers consume.
  * - LIFECYCLE (recording_start, visual_stable, observe) — context.
- * - INTROSPECTION (decision, decision_failure, page_diagnostic) — why the
- *   system did what it did. Cheap to write, invaluable when reviewing a
- *   run after the fact ("did the LLM see the page correctly? what did it
- *   choose, and why? did the page even load right?"). Skipped by the
- *   cursor synth — they have no visual effect.
+ * - INTROSPECTION (replan, page_diagnostic, plus the legacy
+ *   decision/decision_failure variants) — why the system did what it did.
+ *   Cheap to write, invaluable when reviewing a run after the fact ("did
+ *   the recon see the page correctly? did a step diverge? did the page
+ *   even load right?"). Skipped by the cursor synth — no visual effect.
  */
 export const ActionLogEntry = z.discriminatedUnion('type', [
   z.object({
@@ -158,7 +157,7 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
   z.object({
     t: z.number().nonnegative(),
     type: z.literal('type'),
-    /** Truncated to 200 chars per the schema in director-action.ts. */
+    /** Truncated to 200 chars before write. */
     text: z.string(),
     /** Wall-clock duration of the typing animation (per-keystroke delay × len). */
     durationMs: z.number().nonnegative(),
@@ -184,24 +183,17 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
     viewport: Viewport,
   }),
   /**
-   * `decision` — written every time the FastDecider returns a response.
-   * Captures the inputs the LLM saw (page state) and what it chose, so a
-   * run can be reviewed without re-running the LLM. The screenshot the LLM
-   * actually saw is implicitly captured by the recorded video at this `t`.
+   * `decision` — LEGACY (streaming-era). Kept in the union so old action
+   * logs still parse; the prophet pipeline (§0034) does not emit it.
+   * Captured the inputs the per-action LLM saw (page state) and what it
+   * chose, so a run could be reviewed without re-running the LLM.
    */
   z.object({
     t: z.number().nonnegative(),
     type: z.literal('decision'),
-    /**
-     * Sequence number for cross-referencing.
-     *
-     * Positive ids (1, 2, …) belong to the Director's recording-window
-     * decisions. NEGATIVE ids (−1, −2, …) belong to the BlockerPrelude
-     * (see §0021) — the sign distinguishes which phase the decision came
-     * from at a glance. Either is valid; the schema accepts any integer.
-     */
+    /** Sequence number for cross-referencing. Any integer. */
     decisionId: z.number().int(),
-    /** Model id reported by the FastDecider (e.g., `openai/gpt-4o-mini`). */
+    /** Model id reported by the decider (e.g., `openai/gpt-4o-mini`). */
     modelId: z.string().min(1),
     /** End-to-end latency of the LLM call, in ms. */
     latencyMs: z.number().nonnegative(),
@@ -225,16 +217,21 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
     viewport: Viewport,
   }),
   /**
-   * `decision_failure` — something the LLM-driven loop tried didn't work
-   * the way the system expected. The `reason` field is the audit hook —
-   * each value tells the operator whether this is a system bug
-   * (`schema_validation`, `llm_call_failed`) or a page-vs-LLM mismatch
-   * (`expect_after_mismatch`, `click_failed`) that may be recoverable.
+   * `decision_failure` — originally a streaming-era entry; still emitted by
+   * the prophet pipeline (§0034) on the graceful-degradation path: when a
+   * step's `expectAfter` diverges but the Director degrades gracefully
+   * instead of re-planning (budget too low / replans exhausted) it logs a
+   * `decision_failure` (reason `expect_after_mismatch`); when it actually
+   * re-plans it logs a `replan` entry instead. Kept broad so old logs still
+   * parse. The `reason` field is the audit hook — each value tells the
+   * operator whether this was a system bug (`schema_validation`,
+   * `llm_call_failed`) or a page-vs-plan mismatch (`expect_after_mismatch`,
+   * `click_failed`).
    */
   z.object({
     t: z.number().nonnegative(),
     type: z.literal('decision_failure'),
-    /** See `decision.decisionId` doc — accepts negative for prelude phase. */
+    /** Any integer; optional. */
     decisionId: z.number().int().optional(),
     reason: z.enum([
       'schema_validation',
@@ -242,7 +239,6 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
       'llm_call_failed',
       'click_failed',
       'budget_exceeded',
-      'about_blank_recovered',
     ]),
     /** Free-form one-liner. Truncated to 500 chars on write to keep logs lean. */
     details: z.string(),
@@ -280,8 +276,27 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
     scrollY: z.number(),
     viewport: Viewport,
   }),
+  /**
+   * `replan` — the PerformanceDirector hit a step whose `expectAfter` did
+   * not match reality and called the reconnoiterer to re-plan the remaining
+   * steps. `fromStepIndex` is the index (in the working step list) of the
+   * step that diverged. See ADR §0034.
+   */
+  z.object({
+    t: z.number().nonnegative(),
+    type: z.literal('replan'),
+    fromStepIndex: z.number().int().nonnegative(),
+    reason: z.enum(['expect_after_mismatch', 'about_blank', 'target_vanished']),
+    details: z.string(),
+    scrollY: z.number(),
+    viewport: Viewport,
+  }),
 ]);
 export type ActionLogEntry = z.infer<typeof ActionLogEntry>;
+
+/** Standalone schema alias — same union, exported under the `Schema` suffix
+ *  for callers that prefer the conventional naming pattern. */
+export const ActionLogEntrySchema = ActionLogEntry;
 
 /**
  * Recording window meta. Both timestamps are ms relative to the session start

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ActionLog, ActionLogEntry } from '../../../src/domain/action-log.js';
+import { ActionLog, ActionLogEntry, ActionLogEntrySchema } from '../../../src/domain/action-log.js';
 
 const VIEWPORT = { width: 1280, height: 720 };
 
@@ -10,11 +10,10 @@ const VIEWPORT = { width: 1280, height: 720 };
  * below cover only the LOAD-BEARING parts — TypeScript+Zod handle shape.
  */
 describe('ActionLogEntry — load-bearing refinements', () => {
-  it('accepts NEGATIVE decisionId (BlockerPrelude phase, see §0021)', () => {
-    // Regression guard: an early version declared decisionId as int().nonnegative(),
-    // which conflicted with §0021 where BlockerPrelude uses negative ids
-    // (-1, -2, ...) to mark prelude-phase decisions. ActionLog.parse() then
-    // crashed at session.stop() whenever the prelude actually fired.
+  it('accepts NEGATIVE decisionId on the legacy `decision` entry', () => {
+    // Regression guard: an early version declared decisionId as
+    // int().nonnegative(); the streaming-era prelude used negative ids
+    // (-1, -2, ...). The `decision` entry is legacy now but still parses.
     const e = ActionLogEntry.parse({
       t: 800,
       type: 'decision',
@@ -74,5 +73,20 @@ describe('ActionLogEntry — load-bearing refinements', () => {
       ],
     });
     expect(log.entries).toHaveLength(4);
+  });
+});
+
+describe('action-log replan entry (§0034)', () => {
+  it('accepts a replan entry', () => {
+    const entry = {
+      t: 4200, type: 'replan' as const, fromStepIndex: 3,
+      reason: 'expect_after_mismatch', details: 'expected urlContains "/build" but URL was ".../Recordly"',
+      scrollY: 1500, viewport: { width: 1280, height: 720 },
+    };
+    expect(ActionLogEntrySchema.parse(entry)).toMatchObject({ type: 'replan' });
+  });
+  it('rejects a replan entry missing fromStepIndex', () => {
+    const bad = { t: 1, type: 'replan', reason: 'expect_after_mismatch', details: 'y', scrollY: 0, viewport: { width: 1, height: 1 } };
+    expect(() => ActionLogEntrySchema.parse(bad)).toThrow();
   });
 });

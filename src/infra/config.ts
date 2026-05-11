@@ -35,26 +35,42 @@ const Schema = z.object({
   llmModel: z.string().min(1).default('openai/gpt-4o-mini'),
 
   /**
-   * Planner model — used once per job for the brief() vision call. Needs
-   * strong visual reasoning to extract click hints from a screenshot.
-   * Defaults to `LLM_MODEL` for backwards compatibility, but you SHOULD
-   * set `LLM_PLANNER_MODEL` explicitly for production. Suggested: a
-   * stronger vision model like `google/gemini-3.1-pro-preview` or
-   * `anthropic/claude-sonnet-4.6`.
+   * Fallback model for `llmReconModelResolved`. The recon model is resolved
+   * as: `llmReconModel` (LLM_RECON_MODEL) if set, else this
+   * (LLM_PLANNER_MODEL), else `llmModel` (LLM_MODEL). In other words, set
+   * this to a strong vision+planning model (e.g. `google/gemini-3.1-pro-preview`
+   * or `anthropic/claude-sonnet-4.6`) to use it for reconnaissance when
+   * `LLM_RECON_MODEL` isn't set. Optional. (Vestigial name — it fed the
+   * old streaming planner's brief() call; that's gone, only the recon
+   * fallback role remains.)
    */
   llmPlannerModel: z.string().min(1).optional(),
 
   /**
-   * FastDecider model — used by the Director's per-action decision calls.
-   * Optimized for low latency + cost.
-   *
-   * Default `openai/gpt-4o-mini` — empirically faster (~0.6-1.0s p95) than
-   * `google/gemini-3.1-flash-lite` on OpenRouter today (preview, ~1.5s p95).
-   * Revisit when 3.1 Flash Lite goes GA (non-preview).
-   *
-   * Override with LLM_DECIDER_MODEL.
+   * Reconnaissance model — used once per recording (and again per re-plan)
+   * to build the Performance. Needs strong vision + planning. Defaults to
+   * the resolved planner model. Override with LLM_RECON_MODEL.
    */
-  llmDeciderModel: z.string().min(1).default('openai/gpt-4o-mini'),
+  llmReconModel: z.string().min(1).optional(),
+
+  /**
+   * Per-recording cap on re-plan checkpoints. After this many, the
+   * PerformanceDirector stops re-planning and plays out remaining steps
+   * as-is (reality checks become advisory). Test/eval infra, not a
+   * behaviour threshold (goals.md #6 carve-out). Override with MAX_REPLANS.
+   */
+  maxReplans: z.number().int().min(0).max(10).default(3),
+
+  /**
+   * Mid-recording re-plan (a full recon call, ~30–50 s) is only worth doing
+   * when at least this much recording budget remains. Below it,
+   * PerformanceDirector degrades gracefully (drops the stale tail, appends a
+   * short filler scroll, ends) rather than freezing the frame for the
+   * duration of a recon call. Default 60 s ⇒ effectively no mid-recording
+   * re-plan for recordings shorter than ~1 min. Override with
+   * REPLAN_MIN_REMAINING_MS.
+   */
+  replanMinRemainingMs: z.number().int().min(0).default(60000),
 
   /**
    * Recording-judge model — used ONCE per finished recording to grade
@@ -69,46 +85,11 @@ const Schema = z.object({
   llmJudgeModel: z.string().min(1).default('google/gemini-3.1-pro-preview'),
 
   /**
-   * Maximum actions per FastDecider response (lookahead depth).
-   * Higher = more buffer against LLM tail latency, but more chance of
-   * stale lookahead. Default 2.
-   */
-  directorLookaheadMax: z.number().int().min(1).max(5).default(2),
-
-  /**
-   * Implicit dwell duration when LLM is slower than animation, ms.
-   * Per-iteration; the Director will keep dwelling in 200ms chunks until
-   * the FastDecider response arrives.
-   */
-  directorDwellFallbackMs: z.number().int().min(50).max(800).default(200),
-
-  /**
-   * Recording window hard cap as multiple of `durationMs`. The Director
-   * forcibly injects `done` if the recording exceeds this.
+   * Recording window hard cap as multiple of `durationMs`. The
+   * PerformanceDirector forcibly stops playback if the recording exceeds
+   * this.
    */
   directorHardBudgetMult: z.number().min(1.0).max(2.0).default(1.2),
-
-  /**
-   * Per-run cap on how many times the Director will tolerate a single
-   * click-target description failing (Playwright throw OR verifier
-   * rejection) before declaring the target unreachable for the rest of
-   * the run. Filtered out of briefing hints; surfaced to the decider so
-   * it tries a different element. Default 2 — i.e. one retry, then give
-   * up. See ADR §0028.
-   */
-  directorClickRejectionLimit: z.number().int().min(1).max(5).default(2),
-
-  /**
-   * Opening-hold range (ms). Right after the recording window opens, the
-   * Director waits a random duration in [min, max] before pulling the
-   * first action. Simulates the 200-500ms of "context absorption" a real
-   * human spends scanning a page they just opened before moving the
-   * cursor (naturalness-catalog C4). Pure rendering parameter — per
-   * goals.md #6 it's an acceptable hardcoded range. Set max=0 to
-   * disable (used in some unit tests that need deterministic timing).
-   */
-  openingHoldMinMs: z.number().int().min(0).max(2000).default(200),
-  openingHoldMaxMs: z.number().int().min(0).max(2000).default(500),
 
   /**
    * Typing rendering (catalog F2 + the gmaps "text appears instantly" finding).
@@ -177,25 +158,14 @@ const raw = {
   openrouterBaseUrl: process.env.OPENROUTER_BASE_URL,
   llmModel: process.env.LLM_MODEL,
   llmPlannerModel: process.env.LLM_PLANNER_MODEL,
-  llmDeciderModel: process.env.LLM_DECIDER_MODEL,
+  llmReconModel: process.env.LLM_RECON_MODEL,
+  maxReplans: process.env.MAX_REPLANS ? Number(process.env.MAX_REPLANS) : undefined,
+  replanMinRemainingMs: process.env.REPLAN_MIN_REMAINING_MS
+    ? Number(process.env.REPLAN_MIN_REMAINING_MS)
+    : undefined,
   llmJudgeModel: process.env.LLM_JUDGE_MODEL,
-  directorLookaheadMax: process.env.DIRECTOR_LOOKAHEAD_MAX
-    ? Number(process.env.DIRECTOR_LOOKAHEAD_MAX)
-    : undefined,
-  directorDwellFallbackMs: process.env.DIRECTOR_DWELL_FALLBACK_MS
-    ? Number(process.env.DIRECTOR_DWELL_FALLBACK_MS)
-    : undefined,
   directorHardBudgetMult: process.env.DIRECTOR_HARD_BUDGET_MULT
     ? Number(process.env.DIRECTOR_HARD_BUDGET_MULT)
-    : undefined,
-  directorClickRejectionLimit: process.env.DIRECTOR_CLICK_REJECTION_LIMIT
-    ? Number(process.env.DIRECTOR_CLICK_REJECTION_LIMIT)
-    : undefined,
-  openingHoldMinMs: process.env.OPENING_HOLD_MIN_MS
-    ? Number(process.env.OPENING_HOLD_MIN_MS)
-    : undefined,
-  openingHoldMaxMs: process.env.OPENING_HOLD_MAX_MS
-    ? Number(process.env.OPENING_HOLD_MAX_MS)
     : undefined,
   typingPreMinMs: process.env.TYPING_PRE_MIN_MS
     ? Number(process.env.TYPING_PRE_MIN_MS)
@@ -240,6 +210,7 @@ export const config = {
   // back to `LLM_MODEL` for backwards compat. Adapters should read
   // `config.llmPlannerModelResolved`, never `data.llmPlannerModel` directly.
   llmPlannerModelResolved: data.llmPlannerModel ?? data.llmModel,
+  llmReconModelResolved: data.llmReconModel ?? data.llmPlannerModel ?? data.llmModel,
   isDev: data.nodeEnv === 'development',
   isProd: data.nodeEnv === 'production',
 } as const;
