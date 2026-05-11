@@ -1,6 +1,5 @@
 import type { DirectorAction } from '../domain/director-action.js';
 import type { ActionSummary, DirectorState } from '../domain/director-state.js';
-import type { DirectorBriefing } from '../domain/plan.js';
 import type { PageDiagnostic } from '../domain/action-log.js';
 import { logger as rootLogger } from '../infra/logger.js';
 import type { DecisionResponse, IFastDecider } from '../ports/fast-decider.js';
@@ -85,7 +84,7 @@ export class BlockerPrelude {
 
   async run(
     session: IPageSession,
-    briefing: DirectorBriefing,
+    userPrompt: string,
   ): Promise<BlockerPreludeReport> {
     const startedAt = Date.now();
     const deadlineAt = startedAt + this.maxMs;
@@ -105,7 +104,7 @@ export class BlockerPrelude {
       }
 
       this.logger.info(
-        { signals: initialSignals, prompt: briefing.prompt.slice(0, 80) },
+        { signals: initialSignals, prompt: userPrompt.slice(0, 80) },
         'blocker prelude detected signals; running dismissal loop',
       );
 
@@ -135,7 +134,7 @@ export class BlockerPrelude {
         const viewport = readViewport(session);
         const remainingMs = Math.max(0, deadlineAt - Date.now());
         const state: DirectorState = {
-          prompt: buildPreludeUserPrompt(briefing.prompt, lastDiag.blockerSignals),
+          prompt: buildPreludeUserPrompt(userPrompt, lastDiag.blockerSignals),
           remainingMs,
           currentScrollY: scrollY,
           viewport,

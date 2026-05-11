@@ -101,7 +101,7 @@ export class PerformanceDirector implements IDirector {
       case 'type':
         await session.clickSelector(step.target.selector, { description: step.target.description });
         if (step.preMs > 0) await session.wait(step.preMs);
-        await session.type(step.text);
+        await session.type(step.text, { preMs: 0, keystrokeMs: step.keystrokeMs });
         return;
       case 'key':
         await session.pressKey(step.key);

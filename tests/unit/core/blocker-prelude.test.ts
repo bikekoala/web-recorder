@@ -1,19 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { ElementNotFoundError } from '../../../src/domain/errors.js';
-import type { DirectorBriefing } from '../../../src/domain/plan.js';
 import type { PageDiagnostic } from '../../../src/domain/action-log.js';
 import { FakeFastDecider } from '../../fakes/fake-fast-decider.js';
 import { FakePageSession } from '../../fakes/fake-page-session.js';
 import { BlockerPrelude } from '../../../src/core/blocker-prelude.js';
 
-const briefing = (overrides: Partial<DirectorBriefing> = {}): DirectorBriefing => ({
-  prompt: 'click play and watch the video',
-  durationMs: 10_000,
-  hints: [],
-  rationale: 'test',
-  ...overrides,
-});
+const USER_PROMPT = 'click play and watch the video';
 
 const cleanDiag: PageDiagnostic = {
   url: 'https://test.example/',
@@ -38,7 +31,7 @@ describe('BlockerPrelude — clean page', () => {
     const decider = new FakeFastDecider();
     const prelude = new BlockerPrelude({ decider });
 
-    const report = await prelude.run(session, briefing());
+    const report = await prelude.run(session, USER_PROMPT);
 
     expect(report.iterations).toBe(0);
     expect(report.endReason).toBe('clean');
@@ -53,7 +46,7 @@ describe('BlockerPrelude — clean page', () => {
     const decider = new FakeFastDecider();
     const prelude = new BlockerPrelude({ decider });
 
-    await prelude.run(session, briefing());
+    await prelude.run(session, USER_PROMPT);
 
     const decisions = session.appendedEntries.filter((e) => e.type === 'decision');
     expect(decisions).toHaveLength(0);
@@ -77,7 +70,7 @@ describe('BlockerPrelude — single blocker dismissal', () => {
     ]);
     const prelude = new BlockerPrelude({ decider });
 
-    const report = await prelude.run(session, briefing());
+    const report = await prelude.run(session, USER_PROMPT);
 
     expect(report.iterations).toBe(1);
     expect(report.endReason).toBe('clean');
@@ -105,7 +98,7 @@ describe('BlockerPrelude — single blocker dismissal', () => {
     ]);
     const prelude = new BlockerPrelude({ decider });
 
-    await prelude.run(session, briefing());
+    await prelude.run(session, USER_PROMPT);
 
     const decisions = session.appendedEntries.filter((e) => e.type === 'decision');
     const diagnostics = session.appendedEntries.filter((e) => e.type === 'page_diagnostic');
@@ -134,7 +127,7 @@ describe('BlockerPrelude — single blocker dismissal', () => {
     ]);
     const prelude = new BlockerPrelude({ decider });
 
-    await prelude.run(session, briefing({ prompt: 'do something specific to this user' }));
+    await prelude.run(session, 'do something specific to this user');
 
     expect(decider.decisions).toHaveLength(1);
     expect(decider.decisions[0]!.state.prompt).toContain('do something specific to this user');
@@ -155,7 +148,7 @@ describe('BlockerPrelude — bounds', () => {
     ]);
     const prelude = new BlockerPrelude({ decider, maxIterations: 3 });
 
-    const report = await prelude.run(session, briefing());
+    const report = await prelude.run(session, USER_PROMPT);
 
     expect(report.iterations).toBe(3);
     expect(report.endReason).toBe('iter_cap');
@@ -178,7 +171,7 @@ describe('BlockerPrelude — bounds', () => {
     };
     const prelude = new BlockerPrelude({ decider, maxIterations: 100, maxMs: 500 });
 
-    const report = await prelude.run(session, briefing());
+    const report = await prelude.run(session, USER_PROMPT);
 
     expect(report.endReason).toBe('time_cap');
     expect(report.totalMs).toBeGreaterThanOrEqual(500);
@@ -195,7 +188,7 @@ describe('BlockerPrelude — decider returns non-click', () => {
     ]);
     const prelude = new BlockerPrelude({ decider });
 
-    const report = await prelude.run(session, briefing());
+    const report = await prelude.run(session, USER_PROMPT);
 
     expect(report.endReason).toBe('decider_done');
     expect(report.iterations).toBe(1);
@@ -217,7 +210,7 @@ describe('BlockerPrelude — decider returns non-click', () => {
     ]);
     const prelude = new BlockerPrelude({ decider });
 
-    const report = await prelude.run(session, briefing());
+    const report = await prelude.run(session, USER_PROMPT);
 
     expect(report.endReason).toBe('decider_done');
     const scrolls = session.events.filter((e) => e.kind === 'scroll');
@@ -237,7 +230,7 @@ describe('BlockerPrelude — click failure', () => {
     ]);
     const prelude = new BlockerPrelude({ decider });
 
-    const report = await prelude.run(session, briefing());
+    const report = await prelude.run(session, USER_PROMPT);
 
     expect(report.endReason).toBe('click_failed');
     const failures = session.appendedEntries.filter((e) => e.type === 'decision_failure');
@@ -259,7 +252,7 @@ describe('BlockerPrelude — never breaks recording', () => {
     const decider = new FakeFastDecider();
     const prelude = new BlockerPrelude({ decider });
 
-    const report = await prelude.run(session, briefing());
+    const report = await prelude.run(session, USER_PROMPT);
 
     // Whatever the endReason, it must be one of the allowed values and
     // iterations must be 0. The recording continues regardless.
@@ -284,7 +277,7 @@ describe('BlockerPrelude — multiple iterations', () => {
     ]);
     const prelude = new BlockerPrelude({ decider });
 
-    const report = await prelude.run(session, briefing());
+    const report = await prelude.run(session, USER_PROMPT);
 
     expect(report.endReason).toBe('clean');
     expect(report.iterations).toBe(2);

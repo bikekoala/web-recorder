@@ -76,11 +76,12 @@ export interface IPageSession {
   wait(durationMs: number): Promise<void>;
 
   /**
-   * Type into the currently focused element with human-paced per-keystroke
-   * delay (40-90 ms randomised). Caller must focus the field FIRST (usually
-   * via clickSelector / clickByDescription on the input). Logged as `type`.
+   * Type into the currently focused element. `opts.preMs` (pause before the
+   * first keystroke) and `opts.keystrokeMs` (inter-keystroke delay) override
+   * the config defaults when provided. Caller must focus the field first.
+   * Logged as `type`.
    */
-  type(text: string): Promise<void>;
+  type(text: string, opts?: { preMs?: number; keystrokeMs?: number }): Promise<void>;
 
   /**
    * Press a single named key (Enter / Escape / Tab / arrow / Backspace).

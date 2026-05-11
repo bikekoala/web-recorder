@@ -1035,17 +1035,20 @@ export class StagehandPageSession implements IPageSession {
    *
    * Caller must focus the field first via clickSelector / clickByDescription.
    */
-  async type(text: string): Promise<void> {
+  async type(
+    text: string,
+    opts: { preMs?: number; keystrokeMs?: number } = {},
+  ): Promise<void> {
     const page = this.requirePage();
     const scrollY = await this.readScrollY();
     const t0 = this.elapsed();
     const startedAtWall = Date.now();
 
-    const preMs = randInRange(config.typingPreMinMs, config.typingPreMaxMs);
+    const preMs = opts.preMs ?? randInRange(config.typingPreMinMs, config.typingPreMaxMs);
     if (preMs > 0) {
       await page.waitForTimeout(preMs);
     }
-    const delay = randInRange(config.typingKeystrokeMinMs, config.typingKeystrokeMaxMs);
+    const delay = opts.keystrokeMs ?? randInRange(config.typingKeystrokeMinMs, config.typingKeystrokeMaxMs);
     await page.keyboard.type(text, { delay });
 
     this.recordEntry({
