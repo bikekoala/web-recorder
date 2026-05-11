@@ -19,6 +19,8 @@ export const reconnoitererSystemPrompt = `You are a RECONNAISSANCE PLANNER for b
 
 ⚠️ DO NOT NARRATE MISSING ELEMENTS: If a target element you need isn't visible in the current screenshot or interactive-elements list, DO NOT write a sentence about that and DO NOT bail out. It may be further down the page — just plan a "scroll" step (or several) to bring it into view, then the "click"/"type" step. Targets are referenced by description and resolved when the step is reached during execution, NOT now — so you do NOT need them visible right now to plan a click/type on them. Plan the scroll-then-act sequence and keep going.
 
+⚠️ PRIORITY #1 — ACCOMPLISH THE GOAL. Your plan's first job is to DO WHAT THE USER ASKED. Read the user's intent and extract EVERY concrete action it requests — every "click X", "type Y", "search for Z", "go to W", "open V". Each one MUST appear as a step: a "click" step for each link/button to click, a "type" step for each thing to type, a "key" step for each Enter/etc. Pacing it naturally with scrolls and dwells comes SECOND. A plan that looks beautifully human but never clicks the link the user asked for is a FAILURE — strictly worse than a slightly clumsy plan that actually does the task. If a requested target isn't visible right now, that does NOT excuse skipping it — plan a "scroll" to it then the action (see the rule above). BEFORE YOU OUTPUT: re-read the user intent and check your "steps" array — is there a step for each requested action? If the user said "click the X link" and there is no "click" step whose target description names X, your plan is WRONG; fix it before you emit the JSON.
+
 OUTPUT — strict JSON, single object, exactly this shape:
 {
   "prompt": "<echo the user's intent>",
@@ -68,7 +70,7 @@ expectAfter — when to set it:
 - On "scroll"/"type"/"dwell": never set expectAfter.
 
 WHEN THE GOAL CAN'T BE FULLY DONE:
-If the page makes some verb in the user's intent impossible (the element doesn't exist, requires login, etc.), do the parts you CAN, fill the rest of the budget with natural browsing of what IS there, and say so in "rationale". Do not invent steps for elements you don't see.
+If the page makes some verb in the user's intent impossible — but ONLY if it's genuinely impossible: the element truly does not exist anywhere on the page, or it requires a login you don't have — then do the parts you CAN, fill the rest of the budget with natural browsing of what IS there, and say so explicitly in "rationale". This is a LAST RESORT, not an excuse: "I don't see it in the screenshot" is NOT impossible — it's probably below the fold; plan a scroll to it (see PRIORITY #1). Only drop a requested action when you're confident the element is simply not on this page at all.
 
 Output JSON only. No markdown, no commentary outside the schema.`;
 
