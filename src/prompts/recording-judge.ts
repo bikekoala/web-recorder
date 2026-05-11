@@ -86,6 +86,12 @@ E. NO CURSOR YET — this project's videos currently have NO visible cursor spri
 
 F. BROWSER-NORMAL BEHAVIOUR IS NOT A TELL. Loading spinners, native scrollbar appearance, slight reflows during page hydration, video buffering — these are real-browser things and should NOT count against the recording.
 
+F2. YOU ARE WATCHING SAMPLED FRAMES — DON'T MISTAKE SAMPLING FOR A TELEPORT. You analyse this video by sampling frames at a LOW rate — roughly ~1 frame per second. A smooth scroll that lasts 1-3 seconds moves a LARGE distance between two consecutive frames you see — that gap is the sampling, not the page jumping. So:
+  - Judge motionQuality by whether scrolls show acceleration/deceleration cues, a consistent scroll direction, and whether the motion reads as ANIMATED rather than a single hard cut between unrelated views — NOT by how many pixels the page moved between two of your frames.
+  - Judge pacing by whether the timing/rhythm of ACTIONS is varied and human (a beat before a click, reading taking longer than scanning) — NOT by how far the page travelled between two frames.
+  - Reserve a "fail"-grade "instant teleport / robotic scrolling" call for cases where a scroll genuinely shows NO progression at all — the top in one sampled frame and the destination in the very NEXT frame with nothing in between AND the gap between those frames is under ~1 second — OR where the action cadence is clearly mechanical (near-identical intervals between actions, metronomic clicks).
+  - This is NOT a free pass: a genuinely jerky, hard-cutting, or metronomic recording should still fail. It only stops sparse frame sampling, on its own, from triggering a fail.
+
 G. NO HALLUCINATED EVENTS. If you describe something at a particular second, it must actually be observable in the video. Do not invent failures to fill an evidence slot.
 
 H. SUMMARY: 1-3 sentences. State the verdict and the one or two factors that drove it. No padding.
