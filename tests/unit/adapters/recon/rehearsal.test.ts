@@ -19,11 +19,15 @@ describe('rehearse()', () => {
     const session = new FakePageSession();
     session.url = 'https://test.example/';
     session.observeResults = [{ selector: 'a#x', description: 'x' }] as any;
-    session.clickSelectorImpl = () => {
+    // The walk now coord-clicks (bbox center in viewport at scrollY 0), but may
+    // fall back to clickSelector — wire both hooks to the same navigation effect.
+    const nav = () => {
       session.url = 'https://test.example/zh';
       session.observeResults = [{ selector: 'a#y', description: 'y' }] as any;
       session.pageDiagnosticImpl = () => ({ url: session.url, title: 'ZH', interactiveElementCount: 5, visibleHeadings: ['Heading ZH'], blockerSignals: [] });
     };
+    session.clickAtImpl = nav;
+    session.clickSelectorImpl = nav;
     const draft: PerformanceStep[] = [dwell(300), scroll(800), clickStep('the link', { urlContains: '/wrong', visibleText: ['gone'] }), dwell(400), done];
     const { steps, trace } = await rehearse({ draftSteps: draft, session, intent: 'click the link', reconverge: NEVER_RECONVERGE, rehearsalBudgetMs: 30000, reconvergeMax: 2, logger: log });
     expect(trace).toMatchObject({ divergences: 0, reconverges: 0, truncated: false, timedOut: false });
@@ -45,7 +49,9 @@ describe('rehearse()', () => {
     const reconverge = async (ctx: ReconvergeContext): Promise<PerformanceStep[]> => {
       reconvergeCalls++;
       expect(ctx.divergedStep.kind).toBe('click');
-      session.clickSelectorImpl = () => { session.url = 'https://test.example/real'; session.observeResults = [{ selector: 'a#z', description: 'z' }] as any; };
+      const nav = () => { session.url = 'https://test.example/real'; session.observeResults = [{ selector: 'a#z', description: 'z' }] as any; };
+      session.clickAtImpl = nav;
+      session.clickSelectorImpl = nav;
       return reconverged;
     };
     const draft: PerformanceStep[] = [clickStep('the link'), dwell(400), done];

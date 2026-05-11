@@ -42,8 +42,11 @@ describe('LlmReconnoiterer', () => {
     const session = new FakePageSession();
     session.url = 'https://x.test/';
     session.resolveTargetResult = { selector: 'text=Sign in', description: 'the sign-in link', bbox: { x: 10, y: 20, width: 80, height: 30 } };
-    // The rehearsal walk actually clicks; model the click navigating to /login so it doesn't diverge.
-    session.clickSelectorImpl = () => { session.url = 'https://x.test/login'; };
+    // The rehearsal walk actually clicks (coord-click first, selector fallback);
+    // model the click navigating to /login so it doesn't diverge — wire both paths.
+    const goLogin = () => { session.url = 'https://x.test/login'; };
+    session.clickAtImpl = goLogin;
+    session.clickSelectorImpl = goLogin;
     const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(llmPerformanceJson) });
     const perf = await recon.recon(
       { url: 'https://x.test/', prompt: 'click sign in then browse', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: Buffer.from([0x89]) },
@@ -94,7 +97,9 @@ describe('LlmReconnoiterer', () => {
     const session = new FakePageSession();
     session.url = 'https://site.test/';
     session.resolveTargetResult = { selector: 'a#go', description: 'go', bbox: { x: 0, y: 0, width: 1, height: 1 } };
-    session.clickSelectorImpl = () => { session.url = 'https://site.test/next'; };
+    const goNext = () => { session.url = 'https://site.test/next'; };
+    session.clickAtImpl = goNext;
+    session.clickSelectorImpl = goNext;
     const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goPlanJson) });
     const perf = await recon.recon(
       { url: 'https://site.test/', prompt: 'go somewhere', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null },
@@ -106,8 +111,8 @@ describe('LlmReconnoiterer', () => {
     const gotos = session.events.filter((e) => e.kind === 'goto');
     expect(gotos[gotos.length - 1]!.payload).toBe('https://site.test/');
     expect(session.events.some((e) => e.kind === 'stable')).toBe(true);
-    // sanity: the walk did click during rehearsal
-    expect(session.events.some((e) => e.kind === 'click')).toBe(true);
+    // sanity: the walk did click during rehearsal (coord-click → 'clickAt')
+    expect(session.events.some((e) => e.kind === 'click' || e.kind === 'clickAt')).toBe(true);
   });
 
   const dwellOnlyPlan = JSON.stringify({

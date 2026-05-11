@@ -98,6 +98,13 @@ export async function rehearse(
       logger.debug({ err, kind: step.kind }, 'rehearsal acting step threw');
     }
 
+    // Let a navigation-capable step settle before we observe the post-state —
+    // otherwise we'd rewrite expectAfter from a mid-navigation snapshot.
+    // (Not after `type`: typing into a field doesn't navigate.)
+    if (step.kind === 'click' || step.kind === 'key' || step.kind === 'back') {
+      await session.waitForVisualStability({ maxMs: 3000 }).catch(() => {});
+    }
+
     const urlAfter = await safeCurrentUrl(session);
     const diag = await session.pageDiagnostic().catch(() => null);
     const sigAfter = pageSignature(diag);
@@ -233,13 +240,42 @@ async function expectAfterSatisfied(
   return true;
 }
 
+/**
+ * Click a resolved target the way PerformanceDirector does on-camera: prefer a
+ * coordinate click (robust to React re-renders that stale the deep XPath) — the
+ * bbox is page-absolute (recon resolved it at scrollY 0), so its viewport
+ * position now is bbox.y - currentScrollY. If that lands inside the viewport,
+ * click the pixel; otherwise (or if the pixel-click throws) fall back to the
+ * selector. Small duplication of PerformanceDirector.clickTarget — acceptable,
+ * same as the stepExpectAfter duplication above.
+ */
+async function clickResolvedTarget(
+  target: { selector: string; bbox: { x: number; y: number; width: number; height: number }; description: string },
+  session: IPageSession,
+): Promise<void> {
+  const scrollY = await session.scrollY().catch(() => 0);
+  const vp = session.viewport;
+  const cx = target.bbox.x + target.bbox.width / 2;
+  const cy = target.bbox.y - scrollY + target.bbox.height / 2;
+  const inViewport = cx >= 0 && cx < vp.width && cy >= 0 && cy < vp.height;
+  if (inViewport) {
+    try {
+      await session.clickAt(cx, cy, { description: target.description });
+      return;
+    } catch {
+      // fall through to the selector
+    }
+  }
+  await session.clickSelector(target.selector, { description: target.description });
+}
+
 async function renderActingStepInstant(step: PerformanceStep, session: IPageSession): Promise<void> {
   switch (step.kind) {
     case 'click':
-      await session.clickSelector(step.target.selector, { description: step.target.description });
+      await clickResolvedTarget(step.target, session);
       return;
     case 'type':
-      await session.clickSelector(step.target.selector, { description: step.target.description });
+      await clickResolvedTarget(step.target, session);
       await session.type(step.text, { preMs: 0, keystrokeMs: 0 });
       return;
     case 'key':

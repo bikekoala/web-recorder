@@ -48,6 +48,11 @@ JSON SAFETY RULES — read carefully:
 PACING — you decide how human this looks:
 - "anticipationMs" on a click: 500-800ms for a normal click (the recorder pauses there as if locating the target). Shorter (~300ms) for an obvious button; longer (~1000ms) for an ambiguous target.
 - "scroll": speed = deltaPx / durationMs. ~250-350 px/s for reading scrolls, ~450 for scanning, ~800 for a fling. Big scrolls (>2500px) should be split into a fling step + a slower approach step. Always give a small "dwellAfterMs" (120-280ms) so the eye lands before the next action.
+
+SCROLL-TO-TARGET DISCIPLINE — read this:
+- Think in viewport-heights: one screenful ≈ 720 px. To bring a target into view, scroll ROUGHLY to where you think it is — do not overshoot. NEVER plan a "scroll way past it, then scroll back up" two-step dance to position something; that reads as a robot hunting.
+- Unsure of the exact position? Plan a MODERATE scroll (one or two screenfuls), then the click/type — execution will nudge the element the rest of the way into view if needed. Under-shooting slightly is fine; a wild overshoot is not.
+- A "slowly scroll down through the README / page" intent is a FEW moderate \`scroll\` steps (each ~600-900 px, easing "inOutQuad", "dwellAfterMs" ~200-400) interleaved with brief \`dwell\` steps — NOT one giant scroll to the bottom.
 - "type": "preMs" 200-400ms (a beat before typing starts — short strings look script-injected without it). "keystrokeMs" 60-140ms.
 - Insert "dwell" steps for naturalness: a 2-3s dwell after navigating to a content-rich page ("reading"), an opening 200-500ms dwell as the very first step ("absorbing the page"), a brief dwell after a search loads.
 - The recording window is a FIXED duration the user paid for. "totalEstimatedMs" should be within ~15% of "durationMs". If your plan is too short, add browsing/dwell steps that fit the page. Too long — trim.
@@ -118,7 +123,8 @@ export function buildReconvergeUserText(args: {
     `Interactive elements visible on the current page:`,
     list || '(none observed)',
     ``,
-    `Give me the REMAINING plan from HERE — a JSON object \`{ "steps": [ ... ] }\` whose \`steps\` follow the same schema as a full Performance's steps (kinds: click/scroll/type/key/dwell/back/done; click/type targets are just {"description": "..."} — they'll be resolved later). Do NOT repeat the failed step. End with a \`done\` step. Keep it tight and paced for the time that's left.`,
+    `Give me the REMAINING plan from HERE — a JSON object \`{ "steps": [ ... ] }\` whose \`steps\` follow the same schema as a full Performance's steps (kinds: click/scroll/type/key/dwell/back/done; click/type targets are just {"description": "..."} — they'll be resolved later). End with a \`done\` step. Keep it tight and paced for the time that's left.`,
+    `IMPORTANT — the failed step's GOAL still matters: the action did not work AS DESCRIBED, but if it was the thing the task asks for (e.g. clicking a particular link), DON'T abandon that outcome. What you must not do is blindly re-issue the EXACT same action on the EXACT same target description and hope. Instead reach the same outcome a DIFFERENT way: pick a different element from the interactive-elements list above, or \`scroll\` first to bring the right element fully into view and then act on it, or \`dwell\` so late-loading content appears and then act. Only if the goal genuinely cannot be reached from this page should you move on to whatever else the task asks for and fill the remaining time with that.`,
     `Respond with ONLY that JSON object — no prose, no markdown, nothing before or after it. If a target isn't visible right now, plan a scroll to it rather than narrating.`,
   ].join('\n');
 }
