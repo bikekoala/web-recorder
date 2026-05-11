@@ -1,11 +1,12 @@
 /**
- * Natural-language driven recording prototype.
+ * Natural-language driven recording prototype ("prophet" pipeline, ADR §0034).
  *
  * Input:  { url, prompt, durationMs }
  * Output: { trimmed video, raw video, action log, metrics }
  *
- * The whole pipeline is now LLM-planned — no hand-coded scenario. See
- * `src/core/record-job-runner.ts` for the orchestration.
+ * The whole pipeline is LLM-planned off-camera (reconnaissance), then played
+ * back deterministically on-camera. See `src/core/record-job-runner.ts` for
+ * the orchestration.
  *
  * Run:
  *   npm run prototype:stagehand
@@ -16,12 +17,9 @@
  *   PROTOTYPE_DURATION_MS  the target recording duration in ms
  */
 
-import { LlmClickVerifier } from '../src/adapters/decider/llm-click-verifier.js';
-import { LlmFastDecider } from '../src/adapters/decider/llm-fast-decider.js';
-import { StreamingDirector } from '../src/adapters/director/streaming-director.js';
 import { StagehandPageSession } from '../src/adapters/agent/stagehand-session.js';
-import { LlmPlanner } from '../src/adapters/planner/llm-planner.js';
-import { BlockerPrelude } from '../src/core/blocker-prelude.js';
+import { PerformanceDirector } from '../src/adapters/director/performance-director.js';
+import { LlmReconnoiterer } from '../src/adapters/recon/llm-reconnoiterer.js';
 import { RecordJobRunner } from '../src/core/record-job-runner.js';
 import { config } from '../src/infra/config.js';
 import { logger } from '../src/infra/logger.js';
@@ -37,7 +35,13 @@ async function main(): Promise<void> {
   const log = logger.child({ script: 'prototype-stagehand' });
 
   log.info(
-    { url: TARGET_URL, prompt: USER_PROMPT, durationMs: DURATION_MS, model: config.llmModel },
+    {
+      url: TARGET_URL,
+      prompt: USER_PROMPT,
+      durationMs: DURATION_MS,
+      model: config.llmModel,
+      reconModel: config.llmReconModelResolved,
+    },
     'starting',
   );
 
@@ -49,26 +53,12 @@ async function main(): Promise<void> {
     viewport: config.viewport,
     verbose: 1,
   });
-  const planner = new LlmPlanner();
-  // The Director and BlockerPrelude share an LlmFastDecider implementation
-  // (same model, same OpenRouter endpoint). Each constructs its own instance
-  // so latency stats from the prelude don't pollute the Director's report.
-  const director = new StreamingDirector({
-    decider: new LlmFastDecider(),
-    clickVerifier: new LlmClickVerifier(),
-  });
-  const blockerPrelude = new BlockerPrelude({ decider: new LlmFastDecider() });
-  // Pre-fire decider — separate instance again, but the LLM call it makes
-  // becomes Decision 1 inside the Director, replacing the cold-start.
-  const preFireDecider = new LlmFastDecider();
+  const reconnoiterer = new LlmReconnoiterer();
+  // The PerformanceDirector reuses the reconnoiterer as its re-planner at
+  // the (at most config.maxReplans) re-plan checkpoints.
+  const director = new PerformanceDirector({ replanner: reconnoiterer });
 
-  const runner = new RecordJobRunner(
-    session,
-    planner,
-    director,
-    blockerPrelude,
-    preFireDecider,
-  );
+  const runner = new RecordJobRunner(session, reconnoiterer, director);
 
   try {
     const result = await runner.run({
@@ -80,9 +70,17 @@ async function main(): Promise<void> {
 
     log.info({ metrics: result.metrics }, '📊 RUN METRICS');
     log.info({ directorReport: result.directorReport }, '🎬 DIRECTOR REPORT');
-    if (result.metrics.blockerPrelude) {
-      log.info({ blockerPrelude: result.metrics.blockerPrelude }, '🚧 BLOCKER PRELUDE');
-    }
+    log.info(
+      {
+        plannedSteps: result.metrics.plannedSteps,
+        finalSteps: result.performance.steps.length,
+        reconMs: result.metrics.reconMs,
+        replanCount: result.metrics.replanCount,
+        endReason: result.directorReport.endReason,
+        stepsExecuted: result.directorReport.stepsExecuted,
+      },
+      '🔮 PROPHET SUMMARY',
+    );
     log.info(
       `\n  Trimmed video: open "${result.videoPath}"`
         + `\n  Raw video:     open "${result.rawVideoPath}"`

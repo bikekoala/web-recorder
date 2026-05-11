@@ -212,7 +212,6 @@ describe('RecordJobRunner — prophet wiring', () => {
     expect(result.metrics.plannedSteps).toBe(3);
     expect(result.metrics.replanCount).toBe(1);
     expect(result.metrics.recordingMs).toBe(8123);
-    expect(result.metrics.blockerPrelude).toBeNull();
     // No clicks in the action log (StubDirector doesn't play back) → 1 click
     // target planned, 0 executed → unmet.
     expect(result.metrics.intentSatisfaction.hintsResolvedPreRecording).toBe(1);
@@ -225,17 +224,18 @@ describe('RecordJobRunner — prophet wiring', () => {
     expect(kinds).toContain('stop');
   });
 
-  it('runs without a BlockerPrelude (constructed with null)', async () => {
+  it('runs end-to-end with a no-op Performance', async () => {
     const session = new FakePageSession();
     const recon = new FakeReconnoiterer([perf([{ kind: 'done', reasoning: 'noop' }])]);
     const director = new StubDirector({ totalMs: 10, stepsExecuted: 1, replanCount: 0, endReason: 'done' });
-    const runner = new RecordJobRunner(session, recon, director, null);
+    const runner = new RecordJobRunner(session, recon, director);
     const result = await runner.run({
       url: 'https://test.example/',
       prompt: 'do nothing',
       durationMs: 5_000,
       outputDir: '/tmp/web-recorder-test-output',
     });
-    expect(result.metrics.blockerPrelude).toBeNull();
+    expect(result.metrics.plannedSteps).toBe(1);
+    expect(result.directorReport.endReason).toBe('done');
   });
 });

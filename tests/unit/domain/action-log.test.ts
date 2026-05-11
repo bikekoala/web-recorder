@@ -10,11 +10,10 @@ const VIEWPORT = { width: 1280, height: 720 };
  * below cover only the LOAD-BEARING parts — TypeScript+Zod handle shape.
  */
 describe('ActionLogEntry — load-bearing refinements', () => {
-  it('accepts NEGATIVE decisionId (BlockerPrelude phase, see §0021)', () => {
-    // Regression guard: an early version declared decisionId as int().nonnegative(),
-    // which conflicted with §0021 where BlockerPrelude uses negative ids
-    // (-1, -2, ...) to mark prelude-phase decisions. ActionLog.parse() then
-    // crashed at session.stop() whenever the prelude actually fired.
+  it('accepts NEGATIVE decisionId on the legacy `decision` entry', () => {
+    // Regression guard: an early version declared decisionId as
+    // int().nonnegative(); the streaming-era prelude used negative ids
+    // (-1, -2, ...). The `decision` entry is legacy now but still parses.
     const e = ActionLogEntry.parse({
       t: 800,
       type: 'decision',

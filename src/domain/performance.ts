@@ -5,7 +5,7 @@ import { Bbox } from './action-log.js';
 /**
  * The product of the reconnaissance phase: a complete, pre-resolved, paced
  * action sequence the PerformanceDirector plays back deterministically.
- * Replaces DirectorBriefing — see ADR §0034.
+ * The "prophet recording" core type — see ADR §0034.
  *
  * Schema-first (CLAUDE.md hard rule #2): the recon LLM emits JSON matching
  * this exactly; LlmReconnoiterer parses + validates and throws ReconError

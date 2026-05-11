@@ -8,7 +8,6 @@ import { logger as rootLogger } from '../infra/logger.js';
 import type { DirectorReport, IDirector } from '../ports/director.js';
 import type { IPageSession } from '../ports/page-session.js';
 import type { IReconnoiterer } from '../ports/reconnoiterer.js';
-import type { BlockerPrelude, BlockerPreludeReport } from './blocker-prelude.js';
 
 /**
  * Orchestrates a single recording job end-to-end ("prophet" pipeline, ADR §0034).
@@ -25,21 +24,16 @@ import type { BlockerPrelude, BlockerPreludeReport } from './blocker-prelude.js'
  *      - reconnoiterer.recon(...)     ALL reasoning happens here: observe the
  *        page, resolve every target to a selector+bbox, decide per-step
  *        pacing, set expectAfter → returns a complete, paced Performance.
+ *        On-page blockers (cookie/consent dialogs etc.) are folded into the
+ *        Performance as its first steps — see the recon prompt.
  *
- *   3. BlockerPrelude (NOT recorded — also BEFORE the recording window)
- *      - blockerPrelude.run(...)      probe → dismiss loop → re-probe.
- *        Skipped if the runner was constructed without one.
- *        Why pre-recording: dismissing in the deliverable shows clicks the
- *        user did not ask for and eats the budget. Doing it here is free
- *        and produces a cleaner deliverable. (goals.md #2 #3.)
- *
- *   4. Record window (RECORDED — owned by IDirector / PerformanceDirector)
+ *   3. Record window (RECORDED — owned by IDirector / PerformanceDirector)
  *      - director.run(performance, session)
  *        Deterministic playback of the Performance. Single re-plan checkpoint
  *        per step that carries an expectAfter is the only recovery path —
  *        no per-action LLM calls inside the recording window.
  *
- *   5. Stop + trim (NOT recorded)
+ *   4. Stop + trim (NOT recorded)
  *      - session.stop()               raw .webm finalized
  *      - ffmpeg trim raw → recording.webm using session.recording window
  *
@@ -79,8 +73,6 @@ export interface RunMetrics {
   plannedSteps: number;
   /** Re-plan checkpoints triggered during playback (from directorReport). */
   replanCount: number;
-  /** BlockerPrelude summary, or null if the runner was constructed without one. */
-  blockerPrelude: BlockerPreludeReport | null;
   /**
    * Best-effort categorical answer to "did we do what the user asked?".
    *
@@ -118,11 +110,6 @@ export class RecordJobRunner {
     private readonly session: IPageSession,
     private readonly reconnoiterer: IReconnoiterer,
     private readonly director: IDirector,
-    /**
-     * Optional pre-recording blocker dismissal phase. When null, the runner
-     * skips it and goes straight from recon() → director.run.
-     */
-    private readonly blockerPrelude: BlockerPrelude | null = null,
   ) {}
 
   async run(req: RunRequest): Promise<RunResult> {
@@ -163,31 +150,10 @@ export class RecordJobRunner {
       'setup + recon complete',
     );
 
-    // ------------------------------------ 2. BlockerPrelude (NOT recorded)
-    // Probe the page for visual blockers (cookie/consent dialogs, paused-video
-    // play overlays, login modals). If any are present, dismiss them BEFORE
-    // the recording window opens so the deliverable starts on a clean page.
-    // Failures here never break the run — see BlockerPrelude.run() docs.
-    const blockerPreludeReport = this.blockerPrelude
-      ? await this.blockerPrelude.run(this.session, req.prompt)
-      : null;
-    if (blockerPreludeReport) {
-      this.logger.info(
-        {
-          iterations: blockerPreludeReport.iterations,
-          endReason: blockerPreludeReport.endReason,
-          resolved: blockerPreludeReport.resolvedSignals,
-          remaining: blockerPreludeReport.remainingSignals,
-          totalMs: blockerPreludeReport.totalMs,
-        },
-        'blocker prelude complete',
-      );
-    }
-
-    // ------------------------------------ 3. Director (owns recording window)
+    // ------------------------------------ 2. Director (owns recording window)
     const directorReport = await this.director.run(performance, this.session);
 
-    // ------------------------------------ 4. Stop + trim
+    // ------------------------------------ 3. Stop + trim
     const artifacts = await this.session.stop();
 
     const tTrim = Date.now();
@@ -225,7 +191,6 @@ export class RecordJobRunner {
       trimmedVideoMs,
       plannedSteps: performance.steps.length,
       replanCount: directorReport.replanCount,
-      blockerPrelude: blockerPreludeReport,
       intentSatisfaction,
     };
 
@@ -278,8 +243,8 @@ export class RecordJobRunner {
  * "click 简体中文链接") — but strict on cardinality, so a single click can't
  * be credited toward multiple unrelated targets via a shared UI noun.
  *
- * Only entries inside the recording window count. Setup-phase clicks
- * (BlockerPrelude dismissals) are excluded — those are not user intent.
+ * Only entries inside the recording window count. Anything that happened
+ * before the recording window opened is excluded — that's not user intent.
  */
 export function computeIntentSatisfaction(
   hintDescriptions: ReadonlyArray<string>,

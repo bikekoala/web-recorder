@@ -5,14 +5,13 @@ import type { RecordingJudgeReport } from '../domain/recording-judgment.js';
  * recording. Consumes the trimmed video + the user's original prompt
  * and returns a structured judgment (5 dimensions + overall verdict).
  *
- * Why this is its own port (not piggy-backed on `IFastDecider`):
+ * Why this is its own port (not piggy-backed on `IReconnoiterer`):
  *
- *   - Different input shape: full video bytes vs. a single screenshot.
+ *   - Different input shape: full video bytes vs. a screenshot.
  *   - Different model class: needs native video understanding (Gemini
- *     2.5/3.x). Decider uses gpt-4o-mini-class. Conflating them forces
- *     one model to do both badly.
- *   - Different cadence: judge runs ONCE per finished recording, not
- *     5-15 times during it. Latency/cost tradeoffs are opposite.
+ *     2.5/3.x). Conflating them forces one model to do both badly.
+ *   - Different cadence: judge runs ONCE per finished recording.
+ *     Latency/cost tradeoffs are opposite.
  *   - Different consumer: the regression test (and a standalone script),
  *     not the Director. Keeping the seam clean means the Director never
  *     accidentally depends on judge output.

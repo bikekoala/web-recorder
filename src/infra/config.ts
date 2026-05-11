@@ -84,46 +84,11 @@ const Schema = z.object({
   llmJudgeModel: z.string().min(1).default('google/gemini-3.1-pro-preview'),
 
   /**
-   * Maximum actions per FastDecider response (lookahead depth).
-   * Higher = more buffer against LLM tail latency, but more chance of
-   * stale lookahead. Default 2.
-   */
-  directorLookaheadMax: z.number().int().min(1).max(5).default(2),
-
-  /**
-   * Implicit dwell duration when LLM is slower than animation, ms.
-   * Per-iteration; the Director will keep dwelling in 200ms chunks until
-   * the FastDecider response arrives.
-   */
-  directorDwellFallbackMs: z.number().int().min(50).max(800).default(200),
-
-  /**
-   * Recording window hard cap as multiple of `durationMs`. The Director
-   * forcibly injects `done` if the recording exceeds this.
+   * Recording window hard cap as multiple of `durationMs`. The
+   * PerformanceDirector forcibly stops playback if the recording exceeds
+   * this.
    */
   directorHardBudgetMult: z.number().min(1.0).max(2.0).default(1.2),
-
-  /**
-   * Per-run cap on how many times the Director will tolerate a single
-   * click-target description failing (Playwright throw OR verifier
-   * rejection) before declaring the target unreachable for the rest of
-   * the run. Filtered out of briefing hints; surfaced to the decider so
-   * it tries a different element. Default 2 — i.e. one retry, then give
-   * up. See ADR §0028.
-   */
-  directorClickRejectionLimit: z.number().int().min(1).max(5).default(2),
-
-  /**
-   * Opening-hold range (ms). Right after the recording window opens, the
-   * Director waits a random duration in [min, max] before pulling the
-   * first action. Simulates the 200-500ms of "context absorption" a real
-   * human spends scanning a page they just opened before moving the
-   * cursor (naturalness-catalog C4). Pure rendering parameter — per
-   * goals.md #6 it's an acceptable hardcoded range. Set max=0 to
-   * disable (used in some unit tests that need deterministic timing).
-   */
-  openingHoldMinMs: z.number().int().min(0).max(2000).default(200),
-  openingHoldMaxMs: z.number().int().min(0).max(2000).default(500),
 
   /**
    * Typing rendering (catalog F2 + the gmaps "text appears instantly" finding).
@@ -196,23 +161,8 @@ const raw = {
   llmReconModel: process.env.LLM_RECON_MODEL,
   maxReplans: process.env.MAX_REPLANS ? Number(process.env.MAX_REPLANS) : undefined,
   llmJudgeModel: process.env.LLM_JUDGE_MODEL,
-  directorLookaheadMax: process.env.DIRECTOR_LOOKAHEAD_MAX
-    ? Number(process.env.DIRECTOR_LOOKAHEAD_MAX)
-    : undefined,
-  directorDwellFallbackMs: process.env.DIRECTOR_DWELL_FALLBACK_MS
-    ? Number(process.env.DIRECTOR_DWELL_FALLBACK_MS)
-    : undefined,
   directorHardBudgetMult: process.env.DIRECTOR_HARD_BUDGET_MULT
     ? Number(process.env.DIRECTOR_HARD_BUDGET_MULT)
-    : undefined,
-  directorClickRejectionLimit: process.env.DIRECTOR_CLICK_REJECTION_LIMIT
-    ? Number(process.env.DIRECTOR_CLICK_REJECTION_LIMIT)
-    : undefined,
-  openingHoldMinMs: process.env.OPENING_HOLD_MIN_MS
-    ? Number(process.env.OPENING_HOLD_MIN_MS)
-    : undefined,
-  openingHoldMaxMs: process.env.OPENING_HOLD_MAX_MS
-    ? Number(process.env.OPENING_HOLD_MAX_MS)
     : undefined,
   typingPreMinMs: process.env.TYPING_PRE_MIN_MS
     ? Number(process.env.TYPING_PRE_MIN_MS)

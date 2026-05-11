@@ -659,8 +659,7 @@ export class StagehandPageSession implements IPageSession {
         // Scroll one step in target direction.
         // Search-loop scrolls intentionally slower than default scroll() —
         // ~250 px/s reading pace so the viewer perceives a person scanning,
-        // not a fast scroll-jump. See SCROLL_SPEED_PROFILES.slow in
-        // src/domain/director-action.ts.
+        // not a fast scroll-jump.
         const remaining = budgetPx - scrolled;
         const thisStep = direction * Math.min(stepPx, remaining);
         await this.scroll(thisStep, {
@@ -1163,8 +1162,8 @@ export class StagehandPageSession implements IPageSession {
    * defaults so a partial failure here never breaks the recording.
    * Heuristic-only — false positives/negatives are expected.
    *
-   * Public per IPageSession.pageDiagnostic — used by the BlockerPrelude to
-   * detect visual blockers BEFORE the recording window opens, and by
+   * Public per IPageSession.pageDiagnostic — surfaced to the reconnoiterer
+   * (so it can fold blocker dismissal into the Performance) and used by
    * `beginRecording` to capture a snapshot at recording_start.
    */
   async pageDiagnostic(): Promise<PageDiagnostic> {

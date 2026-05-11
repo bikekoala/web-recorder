@@ -25,29 +25,20 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Project scaffolding | ✅ |
 | `IPageSession` + Stagehand adapter | ✅ |
 | Playwright video recording + ffmpeg trim | ✅ |
-| `IPlanner` + LlmPlanner adapter (now `brief()` only) | ✅ |
-| `IDirector` + StreamingDirector (streaming LLM-in-the-loop) | ✅ |
-| `IFastDecider` + LlmFastDecider (gpt-4o-mini default; Gemini Flash Lite preview too slow) | ✅ |
-| Centralized prompts in `src/prompts/` — Sonnet 4.6 + Gemini Pro both viable as planner | ✅ |
-| Cold-start hidden via pre-fired Decision 1 during prelude | ✅ |
-| Three independent model knobs (`LLM_MODEL` / `LLM_PLANNER_MODEL` / `LLM_DECIDER_MODEL`) | ✅ |
-| `RecordJobRunner` (orchestrates plan → prelude → pre-fire → director → trim) | ✅ |
+| `IReconnoiterer` + LlmReconnoiterer (recon → `Performance`; reused as re-planner) | ✅ |
+| `IDirector` + PerformanceDirector (deterministic `Performance` playback + re-plan checkpoint, §0034) | ✅ |
+| `Performance` domain type (pre-resolved, paced action sequence) | ✅ |
+| Centralized prompts in `src/prompts/` — only `reconnoiterer` (+ `recording-judge`) remain | ✅ |
+| Two model knobs that matter: `LLM_MODEL` (Stagehand internals) / `LLM_RECON_MODEL` (recon+re-plan) | ✅ |
+| `RecordJobRunner` (orchestrates setup → recon → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (77 passing — pruned schema-only redundancy) | ✅ |
+| Vitest unit tests (46 passing) | ✅ |
 | Action vocabulary: 7 primitives (click / scroll / dwell / type / key / back / done) | ✅ |
-| ActionEvidence per-action — LLM verifies last action via URL/title/focused-value (§0026) | ✅ |
-| `DirectorBriefing.draftSequence` — planner pre-plans, Director seeds queue (§0026) | ✅ |
-| `IClickVerifier` — AI screenshot check after each click; failed click clears queue (§0027) | ✅ |
-| Retry cap — per-target rejection counter; after N=2 failures the target is filtered + LLM is told it's unreachable (§0028) | ✅ |
-| Opening hold — 200-500ms "context absorption" at recording start (naturalness C4, §0029) | ✅ |
 | `IRecordingJudge` + LlmVisionJudge — automated 5-dim rubric naturalness grading via Gemini 3.1 Pro (§0030) | ✅ |
-| Naturalness rendering bundle — pre-typing pause, slower keystroke delay, inter-scroll micro-pause, anti-idle prompt rule (§0031) | ✅ |
-| State awareness — `historyDepth` surfaced to decider + about:blank auto-recovery (§0032) | ✅ |
+| Naturalness rendering bundle — pre-typing pause, slower keystroke delay, inter-scroll micro-pause (§0031) | ✅ |
 | `intentSatisfaction` 1-to-1 bipartite matching — no more single-token UI-noun bridges over-crediting hints (§0033) | ✅ |
-| Regression suite — 3 sites × 2 human-prompt variants, categorical asserts only | ✅ |
-| Operation log: `decision` / `decision_failure` / `page_diagnostic` entries | ✅ |
-| Visual-blocker prompt rules (auto-clicks paused-video play overlays etc.) | ✅ |
-| Pre-recording `BlockerPrelude` (probe → dismiss loop, NOT in deliverable) | ✅ |
+| Regression suite — 3 sites × 2 human-prompt variants, categorical asserts only (rewire pending — Task 9) | ⏳ |
+| Operation log: `replan` / `page_diagnostic` entries (`decision` / `decision_failure` kept as legacy) | ✅ |
 | `intentSatisfaction` metric (transparent "did we do what user asked?") | ✅ |
 | Bot-detection mitigations (chrome flags + UA + optional storageState) | ✅ |
 | Cursor trajectory synth (`ICursorSynthesizer`) | ⏳ |
@@ -58,6 +49,8 @@ Architectural decisions live in [`docs/decisions.md`](./docs/decisions.md). Upda
 The **naturalness catalog** in [`docs/naturalness-catalog.md`](./docs/naturalness-catalog.md) tracks every observable behavior that contributes to "this looks like a human, not a robot." Every new natural-feeling feature (or gap) flips a status row there.
 
 ### Measured performance (Recordly README, "click 简中, slow scroll, 10s")
+
+(Stale — pre-§0034. Refreshed after the next integration run.)
 
 After §0019 (streaming Director), single integration run on macOS + OpenRouter `openai/gpt-4o-mini`:
 
@@ -92,9 +85,6 @@ npm run judge -- <video-path> "<user-prompt>" --duration-ms 10000
 
 # Verify the recording pipeline alone (no LLM, no Stagehand)
 npm run smoke:recording
-
-# Just the planner — produce a plan without recording
-npm run test:planner
 ```
 
 ## Environment
