@@ -508,12 +508,17 @@ export class StagehandPageSession implements IPageSession {
 
     try {
       const matches = await stagehand.observe(target, { page });
-      const first = matches[0];
-      if (!first) return null;
-      const bbox = await this.bboxOfSelector(first.selector);
-      return bbox
-        ? { selector: first.selector, description: first.description, bbox }
-        : { selector: first.selector, description: first.description };
+      // Walk the match list in order and take the FIRST one that has a real,
+      // sized bbox — `observe()` sometimes ranks a 0×0 wrapper element first,
+      // and a target without a clickable area is worse than no target (callers
+      // would emit a dead coordinate click on its origin). If none of the
+      // matches has a usable bbox, return null so the caller (the rehearsal
+      // walk) treats it as a divergence and reconverges. See sweep-1 P2.
+      for (const m of matches) {
+        const bbox = await this.bboxOfSelector(m.selector);
+        if (bbox) return { selector: m.selector, description: m.description, bbox };
+      }
+      return null;
     } catch (err) {
       this.logger.warn({ err, target }, 'resolveTarget failed');
       return null;
@@ -1425,7 +1430,13 @@ export class StagehandPageSession implements IPageSession {
       const page = this.requirePage();
       const handle = page.locator(selector).first();
       const box = await handle.boundingBox({ timeout: 1000 });
-      return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
+      // A degenerate 0×0 box (an empty wrapper <a>/<span>, an unloaded <img>,
+      // a layout-less node) is NOT a clickable target — clicking its origin
+      // corner lands on nothing. Treat it like "no box" so callers
+      // (resolveTarget, observeAll) skip it / fall through, rather than
+      // emitting a dead coordinate click. See robustness-sweep-1 finding P2.
+      if (!box || box.width < 1 || box.height < 1) return null;
+      return { x: box.x, y: box.y, width: box.width, height: box.height };
     } catch {
       return null;
     }

@@ -187,15 +187,20 @@ export class LlmReconnoiterer implements IReconnoiterer {
   }
 
   /**
-   * Turn raw step objects from the LLM into resolved {@link PerformanceStep}s:
-   * click/type targets are resolved to a selector + bbox via
-   * `session.resolveTarget()`. Other kinds pass through untouched.
+   * Turn raw step objects from the LLM into {@link PerformanceStep}s.
+   * Non-click/type kinds pass through untouched.
    *
-   * When `opts.keepUnresolvable` is true, a click/type step whose target won't
-   * resolve right now is kept with a sentinel target ({@link UNRESOLVED_SENTINEL}
-   * + zero bbox) — the rehearsal walk re-resolves it at the actual page state.
-   * When it's false (no rehearsal walk follows), or the step has no `target.description`
-   * at all, the step is dropped (and logged).
+   * When `opts.keepUnresolvable` is true a rehearsal walk follows, and the walk
+   * re-resolves every click/type target at its real scroll position anyway — so
+   * resolving here would be a wasted (and slow: ~3-8 s each, sequential)
+   * `observe()` call per target, immediately overwritten. Instead every
+   * click/type step gets a sentinel target ({@link UNRESOLVED_SENTINEL}); the
+   * walk does all resolution, once. (Sweep-1 finding P1.) A step with no
+   * `target.description` at all is dropped.
+   *
+   * When it's false (no walk follows) we DO resolve here — it's the only
+   * resolution that happens — via `session.resolveTarget()`; a target that
+   * won't resolve is dropped (and logged).
    */
   private async resolveSteps(
     rawSteps: Array<Record<string, unknown>>,
@@ -205,25 +210,24 @@ export class LlmReconnoiterer implements IReconnoiterer {
     const resolved: PerformanceStep[] = [];
     for (const rawStep of rawSteps) {
       const kind = rawStep.kind;
-      if (kind === 'click' || kind === 'type') {
-        const desc = (rawStep.target as { description?: string } | undefined)?.description;
-        if (!desc) { this.logger.debug({ rawStep }, 'recon step missing target description — dropped'); continue; }
-        const r = await session.resolveTarget(desc).catch(() => null);
-        if (!r || !r.bbox) {
-          if (opts.keepUnresolvable) {
-            this.logger.debug({ desc }, 'recon target unresolved eagerly — rehearsal walk will retry');
-            const target = ResolvedTargetSchema.parse({ selector: UNRESOLVED_SENTINEL, bbox: { x: 0, y: 0, width: 0, height: 0 }, description: desc });
-            resolved.push({ ...rawStep, target } as unknown as PerformanceStep);
-          } else {
-            this.logger.info({ desc }, 'recon target did not resolve — step dropped');
-          }
-          continue;
-        }
-        const target = ResolvedTargetSchema.parse({ selector: r.selector, bbox: r.bbox, description: desc });
-        resolved.push({ ...rawStep, target } as unknown as PerformanceStep);
-      } else {
+      if (kind !== 'click' && kind !== 'type') {
         resolved.push(rawStep as unknown as PerformanceStep);
+        continue;
       }
+      const desc = (rawStep.target as { description?: string } | undefined)?.description;
+      if (!desc) { this.logger.debug({ rawStep }, 'recon step missing target description — dropped'); continue; }
+
+      if (opts.keepUnresolvable) {
+        // Walk will resolve it. Sentinel for now.
+        const target = ResolvedTargetSchema.parse({ selector: UNRESOLVED_SENTINEL, bbox: { x: 0, y: 0, width: 0, height: 0 }, description: desc });
+        resolved.push({ ...rawStep, target } as unknown as PerformanceStep);
+        continue;
+      }
+
+      const r = await session.resolveTarget(desc).catch(() => null);
+      if (!r || !r.bbox) { this.logger.info({ desc }, 'recon target did not resolve — step dropped'); continue; }
+      const target = ResolvedTargetSchema.parse({ selector: r.selector, bbox: r.bbox, description: desc });
+      resolved.push({ ...rawStep, target } as unknown as PerformanceStep);
     }
     return resolved;
   }

@@ -189,12 +189,21 @@ export async function rehearse(
     // A dead element was clicked (the §0034 failure this whole thing exists to catch).
     const unchanged =
       (step.kind === 'click' || step.kind === 'type') && !threw && !pageChanged;
-    // An expectAfter mismatch only counts as a divergence when the action also
-    // produced no visible change. If the page *did* change, the action "worked"
-    // — the planner just guessed the post-state wrong — and we rewrite it below.
-    // (This gating is required by the no-divergence rehearsal test.)
-    const eaMismatch = !!ea && !eaSatisfied && !pageChanged;
-    const diverged = threw || aboutBlank || unchanged || eaMismatch;
+    // Hard expectAfter failure: the planner expected the URL to contain X
+    // afterwards, but the URL is literally unchanged AND still doesn't contain
+    // X. That's unambiguous — a click/key that was supposed to navigate didn't.
+    // It's NOT subject to the `pageChanged` leniency below (a one-tick
+    // pageDiagnostic flutter must not mask a click that plainly didn't navigate
+    // — sweep-1 finding P5).
+    const eaUrlHardFail =
+      !!ea?.urlContains && urlBefore === urlAfter && !urlAfter.includes(ea.urlContains);
+    // A *soft* expectAfter mismatch (visibleText didn't show, or urlContains on
+    // a page that did otherwise change) only counts as a divergence when the
+    // action also produced no visible change — if the page *did* change, the
+    // action "worked", the planner just guessed the post-state wrong, and we
+    // rewrite it below. (This gating is required by the no-divergence test.)
+    const eaSoftMismatch = !!ea && !eaSatisfied && !pageChanged;
+    const diverged = threw || aboutBlank || unchanged || eaSoftMismatch || eaUrlHardFail;
 
     if (!diverged) {
       walked.push(await rewriteExpectAfter(step, urlBefore, urlAfter, ea, diag, session));
@@ -203,7 +212,7 @@ export async function rehearse(
     }
 
     logger.info(
-      { i, kind: step.kind, threw, aboutBlank, unchanged, eaSatisfied },
+      { i, kind: step.kind, threw, aboutBlank, unchanged, eaSatisfied, eaUrlHardFail },
       'rehearsal divergence',
     );
     const result = await handleDivergence(i, step, urlAfter);
