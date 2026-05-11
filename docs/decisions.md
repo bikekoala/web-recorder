@@ -945,6 +945,41 @@ The LLM and the planner often phrase the same target differently ("the simplifie
 
 ---
 
+## 0029 · Opening hold — 200-500ms of "context absorption" at recording start (C4)
+
+**Date**: 2026-05-11
+
+**Context**: Replaying real recordings on the github-multistep case showed a structural unnaturalness at t=0 of the trim window — a person opening a fresh page spends a beat (~200-500ms) **scanning before they act**. Our pipeline previously had the Director pull its first action the instant `beginRecording()` returned. With `draftSequence` seeded and pre-fire warming the LLM, the first scroll/click animation began on frame ~1 of the recording. Combined with `naturalness-catalog` B1-B11 still ❌ (no visible cursor), the deliverable read as "robot starts moving immediately on page load" rather than "person opened a page and looked at it".
+
+This was already flagged as Tier-1 work in `naturalness-catalog.md` ("opening hold" — listed alongside cursor synth as the milestone that takes the project from "scrolls nicely" to "looks like a real person navigating").
+
+**Choice — randomized wait at the top of `StreamingDirector.run()`**:
+
+Immediately after `await session.beginRecording()` and before the action loop, the Director awaits `session.wait(rand(min, max))` where the range comes from new config knobs `OPENING_HOLD_MIN_MS` / `OPENING_HOLD_MAX_MS` (defaults 200 / 500). Logged as `opening hold (context absorption)`. Skipped when `max <= 0` (test bypass) or `max < min`.
+
+The hold appears in the action log as a regular `wait` entry, which:
+- Keeps `IPageSession.wait` as the single side-effect channel (no new port method).
+- Lets the cursor synth (B1-B11, future) render the cursor as still during this beat, matching the "person looking at the page" intent.
+- Does NOT pollute `recentActions` shown to the decider — the wait happens before the first `decide()` call, so the LLM never sees a "dwell" it didn't pick.
+
+**Why not the planner?** The planner emits `draftSequence` as a logical action sequence; opening hold is rendering trim, not part of the user's intent. Putting it in the planner would mean every prompt's plan starts with a `dwell` action that has no functional purpose, and the verifier / decider would need to learn to ignore it.
+
+**Why not the runner (before `director.run`)?** The recording window doesn't open until inside the Director (`session.beginRecording()`). A pause before that wouldn't appear in the trim. The opening hold must happen AFTER the recording starts to show up in the deliverable.
+
+**Why a randomized range and not a fixed value?** Hard rule #6 makes a carve-out for "pure rendering parameters" — and identical timings across runs are themselves a robot tell (catalog C6). 200-500ms is what `naturalness-catalog.md` already documented based on user observation; pinning random per-run means consecutive recordings of the same prompt don't show identical animation onsets.
+
+**Consequences**:
+- New unit test: opening-hold timing — verifies the first event after `beginRecording` is a `wait` in [200, 500]ms with no scroll/click preceding. Total unit 66 → 67.
+- One existing test loosened: `streaming overlap > fires next decider call DURING current animation` had a 500ms bound on when the second decision starts; opening hold can eat that on its own. Loosened to 1500ms — still distinguishes "during the 2400ms scroll" from "after the scroll".
+- Budget impact: 200-500ms eaten from the recording window. On a 10s recording that's 2-5%; trim still hits the target duration (the hard cap is `durationMs × 1.2`, well clear of this).
+- Cost impact: zero — pure local wait, no extra LLM call.
+
+**Preserves**: §0019-§0028. Goals.md non-negotiables #1 (looks human: adds the missing opening beat), #2 (no visible stalls: a 300ms opening beat is exactly the "natural pause" #2 carves out), #6 (rendering-parameter carve-out).
+
+**Future hook**: when cursor synth (B1-B11) lands, this hold is also the window where the synthesized cursor sits still on the page — no sudden cursor jump-into-frame on first action.
+
+---
+
 ## Template for new entries
 
 ```

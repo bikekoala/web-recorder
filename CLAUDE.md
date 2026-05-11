@@ -33,12 +33,13 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Three independent model knobs (`LLM_MODEL` / `LLM_PLANNER_MODEL` / `LLM_DECIDER_MODEL`) | ✅ |
 | `RecordJobRunner` (orchestrates plan → prelude → pre-fire → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (66 passing — pruned schema-only redundancy) | ✅ |
+| Vitest unit tests (67 passing — pruned schema-only redundancy) | ✅ |
 | Action vocabulary: 7 primitives (click / scroll / dwell / type / key / back / done) | ✅ |
 | ActionEvidence per-action — LLM verifies last action via URL/title/focused-value (§0026) | ✅ |
 | `DirectorBriefing.draftSequence` — planner pre-plans, Director seeds queue (§0026) | ✅ |
 | `IClickVerifier` — AI screenshot check after each click; failed click clears queue (§0027) | ✅ |
 | Retry cap — per-target rejection counter; after N=2 failures the target is filtered + LLM is told it's unreachable (§0028) | ✅ |
+| Opening hold — 200-500ms "context absorption" at recording start (naturalness C4, §0029) | ✅ |
 | Regression suite — 3 sites × 2 human-prompt variants, categorical asserts only | ✅ |
 | Operation log: `decision` / `decision_failure` / `page_diagnostic` entries | ✅ |
 | Visual-blocker prompt rules (auto-clicks paused-video play overlays etc.) | ✅ |

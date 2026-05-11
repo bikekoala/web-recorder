@@ -86,6 +86,18 @@ const Schema = z.object({
    */
   directorClickRejectionLimit: z.number().int().min(1).max(5).default(2),
 
+  /**
+   * Opening-hold range (ms). Right after the recording window opens, the
+   * Director waits a random duration in [min, max] before pulling the
+   * first action. Simulates the 200-500ms of "context absorption" a real
+   * human spends scanning a page they just opened before moving the
+   * cursor (naturalness-catalog C4). Pure rendering parameter — per
+   * goals.md #6 it's an acceptable hardcoded range. Set max=0 to
+   * disable (used in some unit tests that need deterministic timing).
+   */
+  openingHoldMinMs: z.number().int().min(0).max(2000).default(200),
+  openingHoldMaxMs: z.number().int().min(0).max(2000).default(500),
+
   // Browser / recording defaults. These are baseline values; specific jobs
   // may override per-session in the future (e.g. mobile viewports).
   viewport: z.object({
@@ -138,6 +150,12 @@ const raw = {
     : undefined,
   directorClickRejectionLimit: process.env.DIRECTOR_CLICK_REJECTION_LIMIT
     ? Number(process.env.DIRECTOR_CLICK_REJECTION_LIMIT)
+    : undefined,
+  openingHoldMinMs: process.env.OPENING_HOLD_MIN_MS
+    ? Number(process.env.OPENING_HOLD_MIN_MS)
+    : undefined,
+  openingHoldMaxMs: process.env.OPENING_HOLD_MAX_MS
+    ? Number(process.env.OPENING_HOLD_MAX_MS)
     : undefined,
   viewport: {
     width: process.env.VIEWPORT_WIDTH ? Number(process.env.VIEWPORT_WIDTH) : undefined,

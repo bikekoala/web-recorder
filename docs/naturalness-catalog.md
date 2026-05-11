@@ -52,7 +52,7 @@ Status legend:
 | C1 | Pre-click anticipation pause (500-800ms randomized) | ✅ |
 | C2 | Post-click stable wait (DOM-mutation observer) | ✅ |
 | C3 | Long-scroll micro-pause (fling → 150-250ms → slow approach) | ✅ |
-| C4 | Opening hold (200-500ms of "context absorption" at recording start) | ❌ |
+| C4 | Opening hold (200-500ms of "context absorption" at recording start) | ✅ randomized in [200,500]ms inside StreamingDirector.run, after `beginRecording` |
 | C5 | Reading pauses (longer dwell after navigating to a content-rich page) | ❌ |
 | C6 | Inter-action variability (no two consecutive durations are identical) | ⚠️ partial via random anticipation |
 | C7 | Decision pauses (longer for ambiguous targets) | ❌ |
@@ -120,9 +120,8 @@ demo, it's:
 Tier 1 — strictly required to not look mechanical (~3-5 days work):
    A1, A2, A3, A4   ✅ all done — the foundation
    D1, D2           ✅ done — discovery click
-   C1, C2, C3       ✅ done — timing rhythm
+   C1, C2, C3, C4   ✅ done — timing rhythm + opening hold
    B1, B2, B3       ❌ visible cursor with path + velocity profile
-   C4               ❌ opening hold
 
 Tier 2 — pushes from "passable" to "convincing" (~1-2 weeks):
    B4, B5, B6       ❌ tremor + overshoot + hover hesitation

@@ -83,6 +83,14 @@ export class StreamingDirector implements IDirector {
 
     await session.beginRecording();
 
+    // Naturalness C4 — "opening hold". A real person opening a page spends
+    // 200-500ms scanning before they move the cursor. We mirror that with
+    // a randomized wait right at the top of the recording window so the
+    // viewer sees a beat of stillness on a freshly-loaded page, not the
+    // first scroll/click firing on frame 1. Pure rendering parameter
+    // (goals.md #6 carve-out). Skipped when max=0 (test bypass).
+    await this.openingHold(session);
+
     let actionQueue: DirectorAction[] = [];
     let pending: ReturnType<typeof track<DecisionResponse>> | null = null;
     let pendingMeta: { id: number; firedAtMs: number; scrollY: number } | null = null;
@@ -559,6 +567,15 @@ export class StreamingDirector implements IDirector {
 
   private async readScrollY(session: IPageSession): Promise<number> {
     return safeScrollY(session);
+  }
+
+  private async openingHold(session: IPageSession): Promise<void> {
+    const min = config.openingHoldMinMs;
+    const max = config.openingHoldMaxMs;
+    if (max <= 0 || max < min) return;
+    const duration = min + Math.floor(Math.random() * (max - min + 1));
+    this.logger.info({ durationMs: duration }, 'opening hold (context absorption)');
+    await session.wait(duration);
   }
 
   /**

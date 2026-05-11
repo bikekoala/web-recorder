@@ -104,15 +104,17 @@ describe('StreamingDirector — streaming overlap', () => {
     await director.run(briefing(), session);
 
     // The scroll animation duration: 600 / 250 * 1000 = 2400ms (clamped to 2400)
-    // First decision should arrive at t≈50ms (defaultDelayMs).
-    // Scroll starts at t≈50, ends at t≈50+2400=2450.
-    // Second decision call should fire DURING the scroll, i.e. at t<2450.
+    // Opening hold (C4): 200-500ms before first decision is awaited.
+    // First decision arrives at t≈openingHold+50ms (defaultDelayMs).
+    // Scroll starts at t≈openingHold+50, ends at t≈openingHold+50+2400.
+    // Second decision call should fire DURING the scroll — well before it ends.
     expect(decider.decisions).toHaveLength(2);
     const secondDecisionT = decider.decisions[1]!.t;
-    // The second call must have STARTED before the scroll animation ended.
-    // Streaming director fires it right after the action begins, so t≈50ms.
-    // (If sequential, t would be ≈2450ms.)
-    expect(secondDecisionT).toBeLessThan(500); // generous bound
+    // Sequential would be openingHold+50+2400 ≈ 2700-3000ms. Streaming
+    // overlaps — second fires right as scroll begins, so t≈openingHold+50
+    // ≈ 250-600ms. Pick 1500ms as a clear boundary that distinguishes
+    // "during scroll" from "after scroll".
+    expect(secondDecisionT).toBeLessThan(1500);
   });
 
   it('does not fire a second call if the first action is "done"', async () => {
@@ -347,6 +349,32 @@ describe('StreamingDirector — click verifier (§0027)', () => {
       (e) => e.type === 'decision_failure' && e.reason === 'click_failed',
     );
     expect(failureEntries).toHaveLength(0);
+  });
+});
+
+describe('StreamingDirector — opening hold (C4)', () => {
+  it('waits 200-500ms right after beginRecording before any action', async () => {
+    const decider = new FakeFastDecider([
+      { response: { actions: [{ kind: 'scroll', deltaPx: 200, speed: 'normal', reasoning: 'go' }] } },
+      { response: { actions: [{ kind: 'done', reasoning: 'ok' }] } },
+    ]);
+    const session = new FakePageSession();
+    const director = new StreamingDirector({ decider });
+    await director.run(briefing(), session);
+
+    // Find beginRecording in the event log; the next non-internal event
+    // should be a `wait` with the opening-hold duration.
+    const beginIdx = session.events.findIndex((e) => e.kind === 'beginRecording');
+    expect(beginIdx).toBeGreaterThanOrEqual(0);
+    const firstAfterBegin = session.events[beginIdx + 1];
+    expect(firstAfterBegin?.kind).toBe('wait');
+    const ms = firstAfterBegin?.payload as number;
+    // Default config: 200..500 inclusive.
+    expect(ms).toBeGreaterThanOrEqual(200);
+    expect(ms).toBeLessThanOrEqual(500);
+    // No scroll or click happened before the hold.
+    const eventsBeforeHold = session.events.slice(0, beginIdx + 1);
+    expect(eventsBeforeHold.find((e) => e.kind === 'scroll' || e.kind === 'clickByDescription')).toBeUndefined();
   });
 });
 
