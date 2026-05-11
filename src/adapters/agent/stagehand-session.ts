@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 
 import OpenAI from 'openai';
 
@@ -50,6 +52,8 @@ import { logger as rootLogger } from '../../infra/logger.js';
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+const execFileAsync = promisify(execFile);
 
 export interface StagehandPageSessionConfig extends PageSessionConfig {
   /** Stagehand verbose level (0|1|2). 1 prints high-level steps. */
@@ -232,6 +236,16 @@ export class StagehandPageSession implements IPageSession {
         args: [
           '--remote-debugging-port=0',
           '--disable-blink-features=AutomationControlled',
+          // Local-dev only (no effect headless). When BROWSER_WINDOW_POSITION
+          // is set, place the window at those screen coords AND pin its size to
+          // the viewport — position alone lets Chromium pick its own size and
+          // can still overlap. See `src/infra/config.ts` / `.env.example`.
+          ...(config.browserWindowPosition
+            ? [
+                `--window-position=${config.browserWindowPosition.x},${config.browserWindowPosition.y}`,
+                `--window-size=${this.cfg.viewport.width},${this.cfg.viewport.height}`,
+              ]
+            : []),
         ],
         userAgent: REALISTIC_USER_AGENT,
         recordVideo: {
@@ -259,6 +273,12 @@ export class StagehandPageSession implements IPageSession {
       // existing about:blank page), so all later `window.__webRecorder.*`
       // calls will resolve.
       await this.context.addInitScript({ content: RUNTIME_HELPERS_SCRIPT });
+
+      // Local-dev only: launching a headless:false Chromium on macOS steals
+      // keyboard focus, and there's no reliable Chromium flag to prevent it.
+      // Best-effort `osascript ... activate` hands focus back to the user's
+      // terminal. Never throws — a failed osascript must not break the session.
+      await this.returnFocusToTerminalIfRequested();
     } catch (err) {
       await this.cleanupPartial();
       throw new SessionStartError('Failed to launch Playwright Chromium', err);
@@ -1127,6 +1147,29 @@ export class StagehandPageSession implements IPageSession {
       Math.min(maxDurationMs, Math.max(minDurationMs, computedMs)),
     );
     await this.scroll(deltaY, { durationMs, easing });
+  }
+
+  /**
+   * LOCAL DEV ONLY — macOS + headless:false. If `BROWSER_RETURN_FOCUS_TO`
+   * (or a TERM_PROGRAM-derived default) names an app, re-activate it so the
+   * just-launched Chromium window doesn't keep stealing keyboard focus.
+   * There's no reliable Chromium flag for "launch without stealing focus";
+   * this AppleScript `activate` is the pragmatic mitigation. Best-effort:
+   * any failure is logged at debug level and swallowed.
+   */
+  private async returnFocusToTerminalIfRequested(): Promise<void> {
+    const app = config.browserReturnFocusToApp;
+    if (!app) return;
+    if (process.platform !== 'darwin') return;
+    if (this.cfg.headless) return;
+    try {
+      // execFile with an args array — never a shell string — so the app name
+      // (semi-trusted, from config) can't be used for shell injection.
+      await execFileAsync('osascript', ['-e', `tell application "${app}" to activate`]);
+      this.logger.debug({ app }, 'returned focus to terminal app');
+    } catch (err) {
+      this.logger.debug({ err, app }, 'osascript activate failed; leaving focus as-is');
+    }
   }
 
   private requirePage(): Page {
