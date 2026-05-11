@@ -148,7 +148,57 @@ const Schema = z.object({
    * require authentication.
    */
   storageStatePath: z.string().min(1).optional(),
+
+  /**
+   * LOCAL DEV ONLY — has no effect when `headless: true`. Top-left pixel
+   * coords for the Chromium window, as `{ x, y }`. On macOS with an
+   * extended display the secondary monitor occupies a coordinate region
+   * offset from the primary (e.g. `{ x: 1920, y: 0 }` if it's to the
+   * right of a 1920-wide primary; `x` may be negative if it's to the
+   * left). Set `BROWSER_WINDOW_POSITION="x,y"` once to keep headless:false
+   * runs off your primary display. When set, the adapter also pins
+   * `--window-size` to the viewport so the position is meaningful.
+   */
+  browserWindowPosition: z
+    .string()
+    .regex(/^-?\d+,-?\d+$/, 'BROWSER_WINDOW_POSITION must be "x,y" e.g. "1920,40"')
+    .transform((s) => {
+      const [x, y] = s.split(',').map(Number) as [number, number];
+      return { x, y };
+    })
+    .optional(),
+
+  /**
+   * LOCAL DEV ONLY — macOS + `headless: false` only. Name of a macOS
+   * application (your terminal) to re-activate after Chromium launches,
+   * so keyboard focus returns to you. There is no reliable Chromium flag
+   * for "launch without stealing focus"; an `osascript ... activate` is
+   * the pragmatic mitigation. Set `BROWSER_RETURN_FOCUS_TO="iTerm2"`
+   * (or `"Terminal"` / `"Ghostty"` / ...). If unset, we derive it from
+   * `TERM_PROGRAM` when we can map it cleanly (see below).
+   */
+  browserReturnFocusToApp: z.string().min(1).optional(),
 });
+
+/**
+ * Best-effort mapping from the `TERM_PROGRAM` env var (set by most macOS
+ * terminals) to the application name AppleScript's `activate` expects.
+ * Only return a value for terminals we can map confidently; otherwise the
+ * user must set `BROWSER_RETURN_FOCUS_TO` explicitly.
+ */
+function appNameFromTermProgram(termProgram: string | undefined): string | undefined {
+  switch (termProgram) {
+    case 'iTerm.app':
+      return 'iTerm2';
+    case 'Apple_Terminal':
+      return 'Terminal';
+    case 'ghostty':
+    case 'Ghostty':
+      return 'Ghostty';
+    default:
+      return undefined;
+  }
+}
 
 const raw = {
   nodeEnv: process.env.NODE_ENV,
@@ -191,6 +241,10 @@ const raw = {
   },
   browserChannel: process.env.BROWSER_CHANNEL,
   storageStatePath: process.env.STORAGE_STATE_PATH,
+  browserWindowPosition: process.env.BROWSER_WINDOW_POSITION,
+  // Explicit env var wins; otherwise try to derive from TERM_PROGRAM.
+  browserReturnFocusToApp:
+    process.env.BROWSER_RETURN_FOCUS_TO ?? appNameFromTermProgram(process.env.TERM_PROGRAM),
 };
 
 const parsed = Schema.safeParse(raw);
