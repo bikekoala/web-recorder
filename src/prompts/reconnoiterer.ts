@@ -1,5 +1,6 @@
 import type { ReconInput } from '../ports/reconnoiterer.js';
 import type { ObservedElement } from '../ports/page-session.js';
+import type { PerformanceStep } from '../domain/performance.js';
 
 /**
  * Reconnoiterer prompts — used by LlmReconnoiterer.recon().
@@ -82,4 +83,37 @@ export function buildReconUserText(input: ReconInput, observed: ObservedElement[
     '',
     'Produce the complete Performance JSON for this. Output JSON only.',
   ].filter(Boolean).join('\n');
+}
+
+/**
+ * User message for a *reconverge* call during the off-camera rehearsal walk
+ * (Task #21). A draft step did not do what the planner expected; we hand the
+ * LLM the current page state and ask for the REST of the plan from here. The
+ * system prompt is the same `reconnoitererSystemPrompt` (it already specifies
+ * the Performance JSON shape); we only need the remaining `steps` array back.
+ */
+export function buildReconvergeUserText(args: {
+  intent: string;
+  divergedStep: PerformanceStep;
+  observedUrl: string;
+  observed: ReadonlyArray<{ selector: string; description: string }>;
+}): string {
+  const { intent, divergedStep, observedUrl, observed } = args;
+  const stepDesc =
+    divergedStep.kind === 'click' || divergedStep.kind === 'type'
+      ? `${divergedStep.kind} "${divergedStep.target.description}"`
+      : divergedStep.kind === 'key'
+        ? `key ${divergedStep.key}`
+        : divergedStep.kind;
+  const list = observed.slice(0, 40).map((e, n) => `${n + 1}. ${e.description} — selector: ${e.selector}`).join('\n');
+  return [
+    `RE-PLAN (mid-rehearsal).`,
+    `Original task: ${intent}`,
+    `The planned step \`${stepDesc}\` (reasoning: "${divergedStep.reasoning}") did NOT produce the expected result — the page either did not change, did not navigate as expected, or went blank.`,
+    `Current page URL: ${observedUrl}`,
+    `Interactive elements visible on the current page:`,
+    list || '(none observed)',
+    ``,
+    `Give me the REMAINING plan from HERE — a JSON object \`{ "steps": [ ... ] }\` whose \`steps\` follow the same schema as a full Performance's steps (kinds: click/scroll/type/key/dwell/back/done; click/type targets are just {"description": "..."} — they'll be resolved later). Do NOT repeat the failed step. End with a \`done\` step. Keep it tight and paced for the time that's left.`,
+  ].join('\n');
 }
