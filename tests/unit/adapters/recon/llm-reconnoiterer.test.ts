@@ -9,6 +9,21 @@ function fakeClient(content: string) {
   } as unknown as ConstructorParameters<typeof LlmReconnoiterer>[0]['client'];
 }
 
+/**
+ * Fake client whose `create` returns `contents[n]` on the n-th call (clamps to
+ * the last entry once exhausted), and records every call's args for assertions.
+ */
+function sequencedClient(...contents: string[]) {
+  const calls: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+  const create = vi.fn(async (args: { messages: Array<{ role: string; content: unknown }> }) => {
+    const idx = Math.min(calls.length, contents.length - 1);
+    calls.push(args);
+    return { choices: [{ message: { content: contents[idx] } }] };
+  });
+  const client = { chat: { completions: { create } } } as unknown as ConstructorParameters<typeof LlmReconnoiterer>[0]['client'];
+  return { client, create, calls };
+}
+
 const llmPerformanceJson = JSON.stringify({
   prompt: 'click sign in then browse',
   durationMs: 10000,
@@ -93,6 +108,63 @@ describe('LlmReconnoiterer', () => {
     expect(session.events.some((e) => e.kind === 'stable')).toBe(true);
     // sanity: the walk did click during rehearsal
     expect(session.events.some((e) => e.kind === 'click')).toBe(true);
+  });
+
+  const dwellOnlyPlan = JSON.stringify({
+    prompt: 'just look around',
+    durationMs: 5000,
+    steps: [
+      { kind: 'dwell', durationMs: 400, reasoning: 'absorbing the page' },
+      { kind: 'dwell', durationMs: 2000, reasoning: 'reading' },
+      { kind: 'done', reasoning: 'done' },
+    ],
+    totalEstimatedMs: 2400,
+    rationale: 'nothing to click',
+  });
+
+  it('recovers JSON wrapped in prose (no retry)', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x.test/';
+    const { client, create } = sequencedClient('Sure, here is the plan: ' + dwellOnlyPlan + ' Let me know if you need changes.');
+    const recon = new LlmReconnoiterer({ model: 'test/model', client });
+    const perf = await recon.recon(
+      { url: 'https://x.test/', prompt: 'just look around', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
+      session,
+    );
+    expect(perf.steps.map((s) => s.kind)).toEqual(['dwell', 'dwell', 'done']);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries once on a non-JSON response, then succeeds', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x.test/';
+    const { client, create, calls } = sequencedClient(
+      "I can't see the target you mentioned, let me explain what I'd do instead...",
+      dwellOnlyPlan,
+    );
+    const recon = new LlmReconnoiterer({ model: 'test/model', client });
+    const perf = await recon.recon(
+      { url: 'https://x.test/', prompt: 'just look around', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
+      session,
+    );
+    expect(perf.steps.map((s) => s.kind)).toEqual(['dwell', 'dwell', 'done']);
+    expect(create).toHaveBeenCalledTimes(2);
+    const secondCallMessages = calls[1]!.messages;
+    expect(secondCallMessages.some((m) => typeof m.content === 'string' && m.content.includes('REMINDER'))).toBe(true);
+  });
+
+  it('throws ReconError if both attempts are non-JSON', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x.test/';
+    const { client, create } = sequencedClient(
+      'I cannot help with that, here is why...',
+      'Still no JSON, sorry.',
+    );
+    const recon = new LlmReconnoiterer({ model: 'test/model', client });
+    await expect(
+      recon.recon({ url: 'https://x.test/', prompt: 'p', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null }, session),
+    ).rejects.toBeInstanceOf(ReconError);
+    expect(create).toHaveBeenCalledTimes(2);
   });
 
   it('reconRehearse=false skips the walk — no rehearsal field, no extra clicks/goto', async () => {

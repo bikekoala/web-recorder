@@ -62,30 +62,13 @@ export class LlmReconnoiterer implements IReconnoiterer {
       userContent.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${input.screenshot.toString('base64')}` } });
     }
 
-    let raw: string;
-    try {
-      const completion = await this.client.chat.completions.create({
-        model: this.model,
-        messages: [
-          { role: 'system', content: reconnoitererSystemPrompt },
-          { role: 'user', content: userContent },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.2,
-        max_tokens: 4000,
-      });
-      raw = completion.choices[0]?.message?.content ?? '';
-    } catch (err) {
-      throw new ReconError('recon LLM call failed', err);
-    }
-    if (!raw) throw new ReconError('recon returned empty content');
-
-    let parsedRaw: { prompt?: unknown; durationMs?: unknown; steps?: unknown; totalEstimatedMs?: unknown; rationale?: unknown };
-    try {
-      parsedRaw = JSON.parse(stripCodeFence(raw));
-    } catch (err) {
-      throw new ReconError(`recon JSON parse failed: ${raw.slice(0, 200)}`, err);
-    }
+    const parsedRaw = await this.callReconLlm(
+      [
+        { role: 'system', content: reconnoitererSystemPrompt },
+        { role: 'user', content: userContent },
+      ],
+      { allowRetry: true },
+    );
     if (!Array.isArray(parsedRaw.steps)) throw new ReconError('recon output has no steps array');
     const promptStr = typeof parsedRaw.prompt === 'string' ? parsedRaw.prompt : input.prompt;
 
@@ -136,8 +119,18 @@ export class LlmReconnoiterer implements IReconnoiterer {
         try {
           parsed = JSON.parse(stripCodeFence(raw2));
         } catch {
-          this.logger.warn('reconverge JSON parse failed');
-          return [];
+          const extracted = extractFirstJsonObject(raw2);
+          if (!extracted) {
+            this.logger.warn({ rawPreview: raw2.slice(0, 120) }, 'reconverge JSON parse failed');
+            return [];
+          }
+          try {
+            parsed = JSON.parse(extracted);
+          } catch {
+            this.logger.warn({ rawPreview: raw2.slice(0, 120) }, 'reconverge JSON parse failed');
+            return [];
+          }
+          this.logger.warn({ rawPreview: raw2.slice(0, 120) }, 'reconverge response had non-JSON wrapper; recovered the JSON object');
         }
         if (!Array.isArray(parsed.steps)) return [];
         return this.resolveSteps(parsed.steps as Array<Record<string, unknown>>, ctx.session);
@@ -211,6 +204,73 @@ export class LlmReconnoiterer implements IReconnoiterer {
     }
     return resolved;
   }
+
+  /**
+   * Make the recon chat call and parse a single JSON object out of the
+   * response — even if the model (e.g. an Anthropic model via OpenRouter,
+   * where `response_format: json_object` isn't reliably enforced) wraps it in
+   * prose or markdown. On a hard parse failure / empty content, retries ONCE
+   * with an emphatic JSON-only reminder appended; if the retry also fails,
+   * throws {@link ReconError}.
+   */
+  private async callReconLlm(
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    opts: { allowRetry: boolean },
+  ): Promise<{ prompt?: unknown; durationMs?: unknown; steps?: unknown; totalEstimatedMs?: unknown; rationale?: unknown }> {
+    let raw: string;
+    try {
+      const completion = await this.client.chat.completions.create({
+        model: this.model,
+        messages,
+        response_format: { type: 'json_object' },
+        temperature: 0.2,
+        max_tokens: 4000,
+      });
+      raw = completion.choices[0]?.message?.content ?? '';
+    } catch (err) {
+      throw new ReconError('recon LLM call failed', err);
+    }
+
+    const retryWithReminder = (): ReturnType<LlmReconnoiterer['callReconLlm']> =>
+      this.callReconLlm(
+        [
+          ...messages,
+          {
+            role: 'user',
+            content:
+              'REMINDER: your previous response was not valid JSON. Respond with ONLY a single JSON object — no prose, no markdown, nothing before or after it.',
+          },
+        ],
+        { allowRetry: false },
+      );
+
+    if (!raw) {
+      if (opts.allowRetry) return retryWithReminder();
+      throw new ReconError('recon returned empty content');
+    }
+
+    // Fast path: the whole response is JSON (possibly fenced).
+    try {
+      return JSON.parse(stripCodeFence(raw)) as Record<string, unknown>;
+    } catch {
+      // fall through to wrapper recovery
+    }
+
+    // Recovery: pull the first balanced {...} out of a prose wrapper.
+    const extracted = extractFirstJsonObject(raw);
+    if (extracted) {
+      try {
+        const parsed = JSON.parse(extracted) as Record<string, unknown>;
+        this.logger.warn({ rawPreview: raw.slice(0, 120) }, 'recon response had non-JSON wrapper; recovered the JSON object');
+        return parsed;
+      } catch {
+        // fall through to retry / throw
+      }
+    }
+
+    if (opts.allowRetry) return retryWithReminder();
+    throw new ReconError(`recon JSON parse failed (after retry): ${raw.slice(0, 200)}`);
+  }
 }
 
 function sumDurations(steps: PerformanceStep[]): number {
@@ -233,4 +293,35 @@ function stripCodeFence(s: string): string {
   const t = s.trim();
   if (t.startsWith('```')) return t.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
   return t;
+}
+
+/**
+ * Scan `s` for the first `{`, then walk forward tracking brace depth — being
+ * string-literal aware (braces inside `"..."` don't count, and `\"` escapes
+ * are handled) — until depth returns to 0. Returns that balanced `{...}`
+ * substring, or `null` if there's no `{` or no balanced object. Lets us
+ * recover JSON wrapped in prose, e.g. `Here's the plan: { ... } Hope it helps!`
+ */
+export function extractFirstJsonObject(s: string): string | null {
+  const start = s.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i]!;
+    if (escapeNext) { escapeNext = false; continue; }
+    if (inString) {
+      if (ch === '\\') escapeNext = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return s.slice(start, i + 1);
+    }
+  }
+  return null;
 }
