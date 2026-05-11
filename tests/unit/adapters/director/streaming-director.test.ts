@@ -352,6 +352,33 @@ describe('StreamingDirector — click verifier (§0027)', () => {
   });
 });
 
+describe('StreamingDirector — scroll tail micro-pause (A6, §0031)', () => {
+  it('appends a wait in [scrollTailMin, scrollTailMax] after every scroll', async () => {
+    const decider = new FakeFastDecider([
+      {
+        response: {
+          actions: [{ kind: 'scroll', deltaPx: 400, speed: 'normal', reasoning: 'go' }],
+        },
+      },
+      { response: { actions: [{ kind: 'done', reasoning: 'ok' }] } },
+    ]);
+    const session = new FakePageSession();
+    const director = new StreamingDirector({ decider });
+    await director.run(briefing(), session);
+
+    // Find scroll event then assert the very next event is a wait in 120-280ms.
+    const scrollIdx = session.events.findIndex((e) => e.kind === 'scroll');
+    expect(scrollIdx).toBeGreaterThanOrEqual(0);
+    const tailWait = session.events
+      .slice(scrollIdx + 1)
+      .find((e) => e.kind === 'wait');
+    expect(tailWait).toBeTruthy();
+    const ms = tailWait!.payload as number;
+    expect(ms).toBeGreaterThanOrEqual(120);
+    expect(ms).toBeLessThanOrEqual(280);
+  });
+});
+
 describe('StreamingDirector — opening hold (C4)', () => {
   it('waits 200-500ms right after beginRecording before any action', async () => {
     const decider = new FakeFastDecider([

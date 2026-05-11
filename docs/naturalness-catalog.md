@@ -20,7 +20,7 @@ Status legend:
 | A3 | Distance-adaptive choreography | ✅ | short / medium / long bands |
 | A4 | Two-stage long scroll (fling → micro-pause → slow approach) | ✅ | for distances > 2500px |
 | A5 | Reading-pace exploration scrolls (≤ 350 px/s) | ⚠️ | planner-driven; no executor enforcement |
-| A6 | Inter-scroll micro-pause (50-200ms between consecutive scrolls) | ❌ | currently back-to-back |
+| A6 | Inter-scroll micro-pause (50-200ms between consecutive scrolls) | ✅ | 120-280ms tail wait appended in StreamingDirector after every scroll (§0031) |
 | A7 | Inertia / momentum after a fling (decay-then-stop motion) | ❌ | the easing approximates this; no real inertia model |
 | A8 | Overshoot + correction (rare scroll-too-far + scroll-back) | ❌ | very natural touch but easily abused; behind a feature flag when added |
 | A9 | Direction-mixed scrolls (look back up after scrolling down) | ❌ | depends on planner generating reversal steps |
@@ -83,7 +83,7 @@ Status legend:
 | ID | Behavior | Status |
 |---|---|---|
 | F1 | Tab between fields (not click) | ❌ |
-| F2 | Variable typing speed (50-300ms between keys) | ❌ |
+| F2 | Variable typing speed (50-300ms between keys) | ✅ partial — pre-typing 200-400ms pause + per-call 60-140ms keystroke delay (§0031) |
 | F3 | Occasional typo + backspace | ❌ |
 | F4 | Pause at punctuation / sentence ends | ❌ |
 

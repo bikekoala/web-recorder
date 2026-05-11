@@ -110,6 +110,33 @@ const Schema = z.object({
   openingHoldMinMs: z.number().int().min(0).max(2000).default(200),
   openingHoldMaxMs: z.number().int().min(0).max(2000).default(500),
 
+  /**
+   * Typing rendering (catalog F2 + the gmaps "text appears instantly" finding).
+   * - `typingPreMs`: pause AFTER focusing the input, BEFORE first keystroke.
+   *   Real users glance at the empty field for a beat before starting.
+   * - `typingKeystrokeMs`: inter-keystroke delay range. Each `session.type`
+   *   call picks one value in this range and passes it to Playwright's
+   *   `keyboard.type({ delay })`. Higher than the historic 40-90 ms
+   *   because the judge flagged short queries as "instant" at that pace.
+   * Both are pure rendering parameters per goals.md #6 carve-out.
+   */
+  typingPreMinMs: z.number().int().min(0).max(2000).default(200),
+  typingPreMaxMs: z.number().int().min(0).max(2000).default(400),
+  typingKeystrokeMinMs: z.number().int().min(0).max(500).default(60),
+  typingKeystrokeMaxMs: z.number().int().min(0).max(500).default(140),
+
+  /**
+   * Inter-scroll micro-pause (catalog A6). After every scroll completes,
+   * insert a brief pause before the NEXT action begins — emulates "I
+   * scrolled, let me look at what's there". Applied at the Director
+   * level (only between two consecutive scrolls or after the final scroll
+   * before a decision settles), not inside session.scroll, because
+   * discovery clicks already build their own anticipation pause and we
+   * don't want to double-tail.
+   */
+  scrollTailMinMs: z.number().int().min(0).max(2000).default(120),
+  scrollTailMaxMs: z.number().int().min(0).max(2000).default(280),
+
   // Browser / recording defaults. These are baseline values; specific jobs
   // may override per-session in the future (e.g. mobile viewports).
   viewport: z.object({
@@ -169,6 +196,24 @@ const raw = {
     : undefined,
   openingHoldMaxMs: process.env.OPENING_HOLD_MAX_MS
     ? Number(process.env.OPENING_HOLD_MAX_MS)
+    : undefined,
+  typingPreMinMs: process.env.TYPING_PRE_MIN_MS
+    ? Number(process.env.TYPING_PRE_MIN_MS)
+    : undefined,
+  typingPreMaxMs: process.env.TYPING_PRE_MAX_MS
+    ? Number(process.env.TYPING_PRE_MAX_MS)
+    : undefined,
+  typingKeystrokeMinMs: process.env.TYPING_KEYSTROKE_MIN_MS
+    ? Number(process.env.TYPING_KEYSTROKE_MIN_MS)
+    : undefined,
+  typingKeystrokeMaxMs: process.env.TYPING_KEYSTROKE_MAX_MS
+    ? Number(process.env.TYPING_KEYSTROKE_MAX_MS)
+    : undefined,
+  scrollTailMinMs: process.env.SCROLL_TAIL_MIN_MS
+    ? Number(process.env.SCROLL_TAIL_MIN_MS)
+    : undefined,
+  scrollTailMaxMs: process.env.SCROLL_TAIL_MAX_MS
+    ? Number(process.env.SCROLL_TAIL_MAX_MS)
     : undefined,
   viewport: {
     width: process.env.VIEWPORT_WIDTH ? Number(process.env.VIEWPORT_WIDTH) : undefined,

@@ -1022,9 +1022,18 @@ export class StagehandPageSession implements IPageSession {
   }
 
   /**
-   * Type into the focused element with human-paced per-keystroke delay
-   * (40-90 ms randomised per char). Caller must focus the field first
-   * via clickSelector / clickByDescription on the input.
+   * Type into the focused element with human-paced rendering. Two parts:
+   *   1. A pre-typing "look at field" pause (`typingPreMs` range) — without
+   *      this, short strings (≤3 chars) appear within ~2-3 frames at 30fps
+   *      and read as "script-injected" to a viewer. The judge flagged this
+   *      twice on gmaps (see docs/findings/2026-05-11-judge-first-batch.md
+   *      §P2).
+   *   2. Per-keystroke delay (`typingKeystrokeMs` range) via Playwright's
+   *      `keyboard.type({ delay })`. One delay value per call — randomising
+   *      per-char would need split `.press()` calls and the realism gain is
+   *      marginal compared to the pre-typing pause above.
+   *
+   * Caller must focus the field first via clickSelector / clickByDescription.
    */
   async type(text: string): Promise<void> {
     const page = this.requirePage();
@@ -1032,11 +1041,11 @@ export class StagehandPageSession implements IPageSession {
     const t0 = this.elapsed();
     const startedAtWall = Date.now();
 
-    // Use Playwright's keyboard.type with `delay`. The delay is a CONSTANT
-    // per call; randomising per-keystroke would require splitting into single
-    // .press() calls and we don't need that level of realism — most humans
-    // are fairly steady once they start typing.
-    const delay = 40 + Math.floor(Math.random() * 50); // 40-90ms
+    const preMs = randInRange(config.typingPreMinMs, config.typingPreMaxMs);
+    if (preMs > 0) {
+      await page.waitForTimeout(preMs);
+    }
+    const delay = randInRange(config.typingKeystrokeMinMs, config.typingKeystrokeMaxMs);
     await page.keyboard.type(text, { delay });
 
     this.recordEntry({
@@ -1449,4 +1458,10 @@ export class StagehandPageSession implements IPageSession {
       });
     }
   }
+}
+
+/** Inclusive random int helper for randomized rendering parameters. */
+function randInRange(min: number, max: number): number {
+  if (max <= min) return min;
+  return min + Math.floor(Math.random() * (max - min + 1));
 }

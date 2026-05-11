@@ -446,6 +446,16 @@ export class StreamingDirector implements IDirector {
         const scrollYBefore = await safeScrollY(session);
         await session.scroll(action.deltaPx, { durationMs, easing: profile.easing });
         const scrollYAfter = await safeScrollY(session);
+        // Naturalness A6 — inter-scroll micro-pause. Every scroll tails with
+        // 120-280 ms (configurable) of stillness so consecutive scrolls don't
+        // jam together and so the viewer's eye has a beat to register what
+        // landed in view before the next action fires. The judge flagged
+        // back-to-back scrolls as "teleport" (P3 in the first-batch findings).
+        const tailMin = config.scrollTailMinMs;
+        const tailMax = config.scrollTailMaxMs;
+        if (tailMax > 0 && tailMax >= tailMin) {
+          await session.wait(tailMin + Math.floor(Math.random() * (tailMax - tailMin + 1)));
+        }
         const evidence: ActionEvidence = {
           kind: 'scroll',
           scrollYBefore, scrollYAfter,

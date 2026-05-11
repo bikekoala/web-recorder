@@ -1073,6 +1073,55 @@ This is exactly the disagreement we built the judge to surface.
 
 ---
 
+## 0031 · Naturalness rendering bundle — typing, scroll-tail, anti-idle (Class 1 fixes)
+
+**Date**: 2026-05-11
+
+**Context**: The §0030 video judge's first batch surfaced THREE distinct motion-pacing failures across the 6 regression recordings (see [`docs/findings/2026-05-11-judge-first-batch.md`](./findings/2026-05-11-judge-first-batch.md)):
+
+- **P2 — Instant text injection** (2/6 runs): the judge said `text appears instantaneously, suggesting script-based text injection`. The session's `type()` was already using Playwright `keyboard.type({ delay })` with a 40-90ms range, but for short queries (`纽约` = 2 chars) that's ~80-180ms total, ~3-5 frames at 30fps — well below the human-perceptible "watching someone type" threshold.
+- **P3 — Teleport scrolls** (1/6 runs): back-to-back scrolls with no settling beat read as "instant teleport" to the judge.
+- **P4 — Trailing idle / dead air** (2/6 runs): after the agent completed the prompt's first verbs and hit budget exhaustion on later targets, the recording was left with 10-15 seconds of completely still page until trim.
+
+These are three distinct symptoms of one class: **the recording lacks human-paced rendering of motion and absence-of-motion**. Cursor synth (B1-B11) is the eventual structural answer but is deferred. This ADR ships the cheap, AI-first rendering polish that closes the gap on the three specific symptoms now.
+
+**Choice — three minimal interventions, one ADR**:
+
+1. **Pre-typing pause (`typingPreMinMs/MaxMs`, default 200/400 ms)** — added to `StagehandPageSession.type()`. After the input field is focused and BEFORE `keyboard.type` fires, the session waits a randomized 200-400 ms. This gives the viewer a beat to see the empty field with the cursor before characters start appearing. Closes P2 even for short strings.
+
+2. **Slower per-keystroke delay (`typingKeystrokeMinMs/MaxMs`, default 60/140 ms, was 40-90)** — same `keyboard.type({ delay })` call, just a slightly slower range. One delay value per `type` call, randomized in `[min, max]`.
+
+3. **Inter-scroll micro-pause (`scrollTailMinMs/MaxMs`, default 120/280 ms)** — added to the `case 'scroll'` arm of `StreamingDirector.executeAction`. After `session.scroll()` resolves, the Director awaits `session.wait(rand(min, max))` before returning. Applies to ALL scrolls, not only between two consecutive scrolls — the same beat helps before the next click decision too. Catalog row A6 promoted from ❌ → ✅.
+
+4. **Anti-idle decider prompt rule** — added to `deciderSystemPrompt` under "ANTI-IDLE". When the decider has addressed every explicit verb in the user's prompt BUT >25% of the recording window remains, it MUST continue with natural browsing (slow/normal scroll + occasional dwell) rather than output `done`. This is the AI-first piece — we tell the decider WHY it shouldn't go idle ("ends on a still page" is one of the most obvious automation tells), and let it pick the right browsing actions for the page it ended up on.
+
+**Why pre-typing pause and not per-keystroke randomization?** Playwright's `keyboard.type({ delay })` is per-call, not per-char. Splitting into individual `.press()` calls to get per-char variance would add code complexity for marginal viewer benefit — the much bigger fix is the leading pause that gives ANY visible duration to short strings. We left the per-keystroke value randomized-per-call so two consecutive `type` actions don't share the exact same cadence.
+
+**Why scroll-tail wait on ALL scrolls (not just consecutive)?** Naturalness-catalog A6 originally said "between consecutive scrolls" but the underlying intent is "a beat after scrolling for the eye to land". That beat is valuable before ANY next action — including a click. Putting it inside the scroll arm makes it unconditional, easier to reason about, and consistent with how the opening hold works (always there, even if the LLM didn't ask).
+
+**Why the anti-idle rule lives in the prompt, not in code?** Two reasons:
+- Goals.md #6 (AI-first, not magic-numbers). A code rule like "if remainingMs > 25% and queue empty, force a scroll" would be brittle and lossy — what's "browsing" varies by page (scroll on a README, slow tilt-pan would-be on a map, watch a video player, ...). The decider already has the screenshot and knows what page it's on; it's the best judge.
+- The 25% threshold is a soft suggestion in the prompt, not a hard gate. The LLM can override (e.g. on a blank page where there really is nothing to look at) by outputting `done`. A code gate would have no such escape.
+
+**Consequences**:
+
+- Recording wall-clock per case grows by ~0.4-1.5 s for typing-heavy runs (pre-pause + slower keystrokes) and ~0.2-0.5 s per scroll. On a 10 s recording with 1 scroll and 1 short type that's ~+1 s. Trim still hits target (hard cap remains `durationMs × 1.2`).
+- New unit test: scroll-tail wait timing. Total unit 73 → 74.
+- All 73 existing tests pass without modification — the changes append-only on existing flows.
+- New config knobs: `TYPING_PRE_MIN_MS`, `TYPING_PRE_MAX_MS`, `TYPING_KEYSTROKE_MIN_MS`, `TYPING_KEYSTROKE_MAX_MS`, `SCROLL_TAIL_MIN_MS`, `SCROLL_TAIL_MAX_MS`. All have safe defaults.
+- Naturalness-catalog: A6 ✅, F2 ✅-partial, C7-style "decision pauses" partially addressed via anti-idle rule.
+
+**Validation plan**: re-run the §0030 judge on a fresh regression batch after this ships. Expectations:
+- gmaps cases (both): pacing/visualCoherence "instant text" should drop to pass.
+- github cases: trailing idle should reduce (anti-idle prompt).
+- All: motionQuality should stay ✅; the scroll-tail wait is small enough not to be perceptible as a stutter.
+
+**Preserves**: §0019-§0030. Goals.md non-negotiables #1 (looks human: closes three specific tells), #2 (no visible stalls: the inter-scroll micro-pause counts as a "natural pause" #2 explicitly carves out), #6 (rendering parameters + AI-first prompt rule, no thresholds).
+
+**Future hook**: when cursor synth (B1-B11) lands, all four of these still apply — the cursor renders motion DURING the type pause, the scroll tail, and the natural browsing the anti-idle rule produces. The bundle is forward-compatible.
+
+---
+
 ## Template for new entries
 
 ```
