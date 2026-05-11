@@ -84,11 +84,27 @@ export const PerformanceStepSchema = z.discriminatedUnion('kind', [
 ]);
 export type PerformanceStep = z.infer<typeof PerformanceStepSchema>;
 
+/**
+ * Health summary of the off-camera rehearsal walk (see ADR §0034 / the
+ * rehearsing-reconnoiterer spec). The operator canary: high `divergences` /
+ * `truncated: true` means the LLM's first-draft planning is weak for that site.
+ */
+export const RehearsalTraceSchema = z.object({
+  walkedSteps: z.number().int().nonnegative(),
+  divergences: z.number().int().nonnegative(),
+  reconverges: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  timedOut: z.boolean(),
+});
+export type RehearsalTrace = z.infer<typeof RehearsalTraceSchema>;
+
 export const PerformanceSchema = z.object({
   prompt: z.string().min(1),
   durationMs: z.number().int().positive(),
   steps: z.array(PerformanceStepSchema).min(1),
   totalEstimatedMs: z.number().int().nonnegative(),
   rationale: z.string().min(1),
+  /** Present iff the recon ran a rehearsal walk (config.reconRehearse). */
+  rehearsal: RehearsalTraceSchema.optional(),
 });
 export type Performance = z.infer<typeof PerformanceSchema>;

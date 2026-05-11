@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PerformanceSchema, PerformanceStepSchema } from '../../../src/domain/performance.js';
+import { PerformanceSchema, PerformanceStepSchema, RehearsalTraceSchema } from '../../../src/domain/performance.js';
 
 const validClickStep = {
   kind: 'click' as const,
@@ -45,5 +45,20 @@ describe('Performance schema', () => {
   });
   it('rejects a Performance with an empty steps array', () => {
     expect(() => PerformanceSchema.parse({ ...validPerformance, steps: [] })).toThrow();
+  });
+});
+
+describe('RehearsalTrace + Performance.rehearsal', () => {
+  it('RehearsalTraceSchema accepts a well-formed trace', () => {
+    const t = { walkedSteps: 5, divergences: 1, reconverges: 1, truncated: false, timedOut: false };
+    expect(RehearsalTraceSchema.parse(t)).toEqual(t);
+  });
+  it('Performance.rehearsal is optional — absent is valid', () => {
+    const perf = { prompt: 'x', durationMs: 10000, totalEstimatedMs: 9000, rationale: 'r', steps: [{ kind: 'dwell', durationMs: 300, reasoning: 'open' }] };
+    expect(PerformanceSchema.parse(perf).rehearsal).toBeUndefined();
+  });
+  it('Performance.rehearsal round-trips when present', () => {
+    const perf = { prompt: 'x', durationMs: 10000, totalEstimatedMs: 9000, rationale: 'r', steps: [{ kind: 'dwell', durationMs: 300, reasoning: 'open' }], rehearsal: { walkedSteps: 3, divergences: 0, reconverges: 0, truncated: false, timedOut: false } };
+    expect(PerformanceSchema.parse(perf).rehearsal).toEqual(perf.rehearsal);
   });
 });
