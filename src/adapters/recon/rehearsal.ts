@@ -87,7 +87,8 @@ export async function rehearse(
 
     // Acting step: click | type | key | back.
     const urlBefore = await safeCurrentUrl(session);
-    const sigBefore = await observeSignature(session);
+    const diagBefore = await session.pageDiagnostic().catch(() => null);
+    const sigBefore = pageSignature(diagBefore);
 
     let threw = false;
     try {
@@ -99,7 +100,7 @@ export async function rehearse(
 
     const urlAfter = await safeCurrentUrl(session);
     const diag = await session.pageDiagnostic().catch(() => null);
-    const sigAfter = await observeSignature(session);
+    const sigAfter = pageSignature(diag);
 
     const ea = stepExpectAfter(step);
     const eaSatisfied = ea ? await expectAfterSatisfied(ea, urlAfter, session) : true;
@@ -200,9 +201,17 @@ async function safeCurrentUrl(session: IPageSession): Promise<string> {
   }
 }
 
-async function observeSignature(session: IPageSession): Promise<string> {
-  const els = await session.observeAll().catch(() => []);
-  return `${els.length}:${els.map((e) => e.selector).join('|')}`;
+/**
+ * A noise-tolerant fingerprint of "what's on the page", from a PageDiagnostic.
+ * We deliberately do NOT use observeAll() selectors here — React apps churn
+ * dynamic element ids/selectors between calls, which would make the "did the
+ * click change anything?" check fire false-negatives (we'd think a dead click
+ * "worked" because the selector list shifted). The interactive-element COUNT,
+ * the page title, and the first few headings are far more stable signals.
+ */
+function pageSignature(diag: PageDiagnostic | null): string {
+  if (!diag) return '';
+  return `${diag.interactiveElementCount}:${diag.title}:${diag.visibleHeadings.join('|')}`;
 }
 
 function stepExpectAfter(step: PerformanceStep): ExpectAfter | null {
