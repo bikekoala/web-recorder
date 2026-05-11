@@ -1,6 +1,6 @@
 import { config } from '../../infra/config.js';
 import { logger as rootLogger } from '../../infra/logger.js';
-import type { ExpectAfter, Performance, PerformanceStep } from '../../domain/performance.js';
+import type { ExpectAfter, Performance, PerformanceStep, ResolvedTarget } from '../../domain/performance.js';
 import type { IDirector, DirectorReport } from '../../ports/director.js';
 import type { IPageSession } from '../../ports/page-session.js';
 import type { IReconnoiterer } from '../../ports/reconnoiterer.js';
@@ -131,22 +131,55 @@ export class PerformanceDirector implements IDirector {
         return;
       case 'click':
         if (step.anticipationMs > 0) await session.wait(step.anticipationMs);
-        await session.clickSelector(step.target.selector, { description: step.target.description });
+        await this.clickTarget(step.target, session);
+        await this.settle(session);
         return;
       case 'type':
-        await session.clickSelector(step.target.selector, { description: step.target.description });
+        await this.clickTarget(step.target, session);
         if (step.preMs > 0) await session.wait(step.preMs);
         await session.type(step.text, { preMs: 0, keystrokeMs: step.keystrokeMs });
         return;
       case 'key':
         await session.pressKey(step.key);
+        await this.settle(session);
         return;
       case 'back':
         await session.goBack();
+        await this.settle(session);
         return;
       case 'done':
         return;
     }
+  }
+
+  /**
+   * Click a resolved target. Prefers coordinate-clicking (robust to React
+   * re-renders that stale the XPath): the bbox is page-absolute (recon
+   * resolved it at scrollY 0), so the viewport position now is bbox.y -
+   * currentScrollY. If that lands inside the viewport, click the pixel;
+   * otherwise the plan's scrolls didn't position the element as expected —
+   * fall back to the selector (Playwright scrolls it into view).
+   */
+  private async clickTarget(target: ResolvedTarget, session: IPageSession): Promise<void> {
+    const scrollY = await session.scrollY().catch(() => 0);
+    const vp = session.viewport;
+    const cx = target.bbox.x + target.bbox.width / 2;
+    const cy = target.bbox.y - scrollY + target.bbox.height / 2;
+    const inViewport = cx >= 0 && cx < vp.width && cy >= 0 && cy < vp.height;
+    if (inViewport) {
+      try {
+        await session.clickAt(cx, cy, { description: target.description });
+        return;
+      } catch (err) {
+        this.logger.debug({ err, target: target.description }, 'coord click failed — falling back to selector');
+      }
+    }
+    await session.clickSelector(target.selector, { description: target.description });
+  }
+
+  /** Let the page settle after a navigation-capable action before the expectAfter check. */
+  private async settle(session: IPageSession): Promise<void> {
+    await session.waitForVisualStability({ maxMs: 2500 }).catch(() => {});
   }
 
   private async satisfiesExpectAfter(ea: ExpectAfter, session: IPageSession): Promise<boolean> {

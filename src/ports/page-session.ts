@@ -215,6 +215,14 @@ export interface IPageSession {
   clickSelector(selector: string, opts?: { description?: string }): Promise<void>;
 
   /**
+   * Click at a viewport pixel (CSS px from the viewport top-left). Used when
+   * we have a resolved bbox and prefer coordinate-clicking over a (possibly
+   * stale) selector. Logged as a `click` entry with a synthetic `coord(...)`
+   * selector. `opts.description` is carried into the log for grep-ability.
+   */
+  clickAt(x: number, y: number, opts?: { description?: string }): Promise<void>;
+
+  /**
    * Click an element by natural-language description, using the search loop
    * if needed. Throws `ElementNotFoundError` if the target cannot be located
    * even after scroll-searching up to `searchBudgetPx`.

@@ -872,6 +872,34 @@ export class StagehandPageSession implements IPageSession {
     }
   }
 
+  async clickAt(
+    x: number,
+    y: number,
+    opts: { description?: string } = {},
+  ): Promise<void> {
+    const page = this.requirePage();
+    this.logger.debug({ x, y, description: opts.description }, 'clickAt');
+
+    const scrollY = await this.readScrollY();
+    const urlBefore = page.url();
+
+    await page.mouse.click(x, y);
+    await page.waitForLoadState('domcontentloaded', { timeout: 1500 }).catch(() => {});
+    const urlAfter = page.url();
+
+    this.recordEntry({
+      t: this.elapsed(),
+      type: 'click',
+      selector: `coord(${Math.round(x)},${Math.round(y)})`,
+      ...(opts.description ? { description: opts.description } : {}),
+      bbox: { x, y, width: 0, height: 0 },
+      scrollY,
+      viewport: this.cfg.viewport,
+      urlBefore,
+      urlAfter,
+    });
+  }
+
   async beginRecording(): Promise<void> {
     if (this.recordingStartedAtMs !== null) {
       return; // idempotent
