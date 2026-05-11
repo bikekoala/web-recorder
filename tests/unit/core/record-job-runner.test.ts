@@ -184,7 +184,10 @@ const scrollStep = (): Performance['steps'][number] => ({
 describe('RecordJobRunner — prophet wiring', () => {
   it('runs recon → director → stop and surfaces the Performance + metrics', async () => {
     const session = new FakePageSession();
-    const performance = perf([clickStep('the 简体中文 link'), scrollStep(), { kind: 'done', reasoning: 'finished' }]);
+    const performance: Performance = {
+      ...perf([clickStep('the 简体中文 link'), scrollStep(), { kind: 'done', reasoning: 'finished' }]),
+      rehearsal: { walkedSteps: 4, divergences: 1, reconverges: 1, truncated: false, timedOut: false },
+    };
     const recon = new FakeReconnoiterer([performance]);
     const director = new StubDirector({ totalMs: 8123, stepsExecuted: 3, replanCount: 1, endReason: 'done' });
 
@@ -216,6 +219,8 @@ describe('RecordJobRunner — prophet wiring', () => {
     // target planned, 0 executed → unmet.
     expect(result.metrics.intentSatisfaction.hintsResolvedPreRecording).toBe(1);
     expect(result.metrics.intentSatisfaction.level).toBe('unmet');
+    // Rehearsal trace surfaced verbatim.
+    expect(result.metrics.rehearsal).toEqual({ walkedSteps: 4, divergences: 1, reconverges: 1, truncated: false, timedOut: false });
 
     // Session lifecycle: started, navigated, stopped.
     const kinds = session.events.map((e) => e.kind);
@@ -237,5 +242,7 @@ describe('RecordJobRunner — prophet wiring', () => {
     });
     expect(result.metrics.plannedSteps).toBe(1);
     expect(result.directorReport.endReason).toBe('done');
+    // No rehearsal walk on this Performance → metrics.rehearsal is null.
+    expect(result.metrics.rehearsal).toBeNull();
   });
 });

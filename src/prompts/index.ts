@@ -28,4 +28,4 @@
  */
 
 export { recordingJudgeSystemPrompt, buildRecordingJudgeUserText } from './recording-judge.js';
-export { reconnoitererSystemPrompt, buildReconUserText } from './reconnoiterer.js';
+export { reconnoitererSystemPrompt, buildReconUserText, buildReconvergeUserText } from './reconnoiterer.js';

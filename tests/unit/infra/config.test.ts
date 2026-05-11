@@ -80,4 +80,37 @@ describe('config — BROWSER_RETURN_FOCUS / BROWSER_RETURN_FOCUS_TO', () => {
     const config = await loadConfig({ BROWSER_RETURN_FOCUS_TO: 'iTerm2' });
     expect(config.browserReturnFocusToApp).toBe('iTerm2');
   });
+
+  it('browserReturnFocusBundleId is $__CFBundleIdentifier when set', async () => {
+    const config = await loadConfig({ __CFBundleIdentifier: 'com.test.term' });
+    expect(config.browserReturnFocusBundleId).toBe('com.test.term');
+  });
+
+  it('browserReturnFocusBundleId is undefined when unset', async () => {
+    const config = await loadConfig({ __CFBundleIdentifier: undefined });
+    expect(config.browserReturnFocusBundleId).toBeUndefined();
+  });
+});
+
+describe('rehearsal config knobs', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('reconRehearse defaults to true', async () => {
+    const config = await loadConfig({ RECON_REHEARSE: undefined });
+    expect(config.reconRehearse).toBe(true);
+  });
+
+  it('RECON_REHEARSE=false disables it', async () => {
+    const config = await loadConfig({ RECON_REHEARSE: 'false' });
+    expect(config.reconRehearse).toBe(false);
+  });
+
+  it('reconRehearsalBudgetMs / reconReconvergeMax have sensible defaults', async () => {
+    const config = await loadConfig({ RECON_REHEARSAL_BUDGET_MS: undefined, RECON_RECONVERGE_MAX: undefined });
+    expect(config.reconRehearsalBudgetMs).toBe(90000);
+    expect(config.reconReconvergeMax).toBe(2);
+  });
 });

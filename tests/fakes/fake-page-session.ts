@@ -125,8 +125,19 @@ export class FakePageSession implements IPageSession {
   async screenshot(): Promise<Buffer> { return this.screenshotBytes; }
   async observeAll(): Promise<ObservedElement[]> { return this.observeResults; }
   async resolveTarget(): Promise<ObservedElement | null> { return this.resolveTargetResult; }
+  /**
+   * Optional test hook — if set, called by `clickSelector` AFTER recording the
+   * event. Use it to simulate the click's effect (e.g. mutate `this.url` /
+   * `this.observeResults` / `this.pageDiagnosticImpl` to model a navigation),
+   * or to throw (e.g. `() => { throw new ElementNotFoundError('gone'); }`) to
+   * model a click that failed.
+   */
+  clickSelectorImpl: ((selector: string, opts?: { description?: string }) => Promise<void> | void) | null = null;
   async clickSelector(selector: string, opts?: { description?: string }) {
     this.record('click', { selector, description: opts?.description });
+    if (this.clickSelectorImpl) {
+      await this.clickSelectorImpl(selector, opts);
+    }
     await new Promise((r) => setTimeout(r, 50));
   }
   /**

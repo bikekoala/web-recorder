@@ -73,6 +73,19 @@ const Schema = z.object({
   replanMinRemainingMs: z.number().int().min(0).default(60000),
 
   /**
+   * Rehearsing reconnoiterer (Task #21): the recon walks its draft against the
+   * live page off-camera before recording, verifying targets and rewriting
+   * expectAfter to observed state. `reconRehearse` is the master switch (off ⇒
+   * recon falls back to plan-and-resolve, no walk). `reconRehearsalBudgetMs`
+   * caps the whole walk's wall-clock; `reconReconvergeMax` caps the LLM
+   * reconverge calls during a walk. Both overruns ⇒ truncate the walk + a
+   * graceful tail. See the rehearsing-reconnoiterer spec.
+   */
+  reconRehearse: z.enum(['true', 'false', '1', '0']).transform((v) => v === 'true' || v === '1').default('true'),
+  reconRehearsalBudgetMs: z.coerce.number().int().min(0).default(90000),
+  reconReconvergeMax: z.coerce.number().int().min(0).max(10).default(2),
+
+  /**
    * Recording-judge model — used ONCE per finished recording to grade
    * naturalness against the 5-dimension rubric (§0030). Needs native
    * VIDEO input support (not just images), so the default is Gemini
@@ -172,10 +185,17 @@ const Schema = z.object({
    * LOCAL DEV ONLY — macOS + `headless: false` only. Master on/off for the
    * "return keyboard focus after Chromium launches" behaviour. Default ON.
    * When on (and on macOS, and not headless), right after the window
-   * appears we hand focus back to whatever app was frontmost before — via
-   * a single Cmd+Tab (`osascript ... key code 48 using command down`) if
-   * `browserReturnFocusToApp` is unset, or by `activate`-ing that named
-   * app if it is. Set `BROWSER_RETURN_FOCUS=false` to disable entirely.
+   * appears we hand focus back to your terminal, via a 3-tier strategy:
+   *   1. `browserReturnFocusToApp` set → `activate` that named app.
+   *   2. else `browserReturnFocusBundleId` set (i.e. `$__CFBundleIdentifier`
+   *      was present in the env) → `tell application id "<bundle-id>" to
+   *      activate`. This is the no-permission default for most setups —
+   *      macOS sets `$__CFBundleIdentifier` to the launching GUI app's
+   *      bundle id (your terminal) for it and all descendants, and
+   *      `activate` needs no special permission.
+   *   3. else → a single Cmd+Tab (`osascript ... key code 48 using command
+   *      down`) — needs macOS Accessibility permission; last resort.
+   * Set `BROWSER_RETURN_FOCUS=false` to disable entirely.
    */
   browserReturnFocus: z
     .enum(['true', 'false', '1', '0'])
@@ -183,18 +203,25 @@ const Schema = z.object({
     .default('true'),
 
   /**
-   * LOCAL DEV ONLY — macOS + `headless: false` only. Optional: name of a
-   * macOS application (your terminal) to re-activate after Chromium
-   * launches, so keyboard focus returns to you. There is no reliable
-   * Chromium flag for "launch without stealing focus"; an
-   * `osascript ... activate` is the pragmatic mitigation — and naming the
-   * app makes it reliable and needs no special permission (the Cmd+Tab
-   * fallback used when this is unset needs macOS Accessibility permission
-   * for your terminal). Set `BROWSER_RETURN_FOCUS_TO="iTerm2"` (or
-   * `"Terminal"` / `"Ghostty"` / ...). Purely opt-in — no default, not
-   * derived from anything.
+   * LOCAL DEV ONLY — macOS + `headless: false` only. Optional explicit
+   * override: name of a macOS application (your terminal) to re-activate
+   * after Chromium launches, so keyboard focus returns to you. Takes
+   * priority over `browserReturnFocusBundleId`. Set
+   * `BROWSER_RETURN_FOCUS_TO="iTerm2"` (or `"Terminal"` / `"Ghostty"` /
+   * ...). Purely opt-in — no default, not derived from anything.
    */
   browserReturnFocusToApp: z.string().min(1).optional(),
+
+  /**
+   * LOCAL DEV ONLY — macOS only. Not user-set: this is `$__CFBundleIdentifier`
+   * from the environment, which macOS populates with the bundle id of the GUI
+   * app that launched the process tree (i.e. your terminal:
+   * `com.googlecode.iterm2`, `com.apple.Terminal`, `com.mitchellh.ghostty`, …).
+   * When `browserReturnFocusToApp` is unset, this is used as tier 2 of the
+   * focus-return strategy (`tell application id "<bundle-id>" to activate`) —
+   * the no-permission default for most terminal setups.
+   */
+  browserReturnFocusBundleId: z.string().min(1).optional(),
 });
 
 const raw = {
@@ -210,6 +237,9 @@ const raw = {
   replanMinRemainingMs: process.env.REPLAN_MIN_REMAINING_MS
     ? Number(process.env.REPLAN_MIN_REMAINING_MS)
     : undefined,
+  reconRehearse: process.env.RECON_REHEARSE || undefined,
+  reconRehearsalBudgetMs: process.env.RECON_REHEARSAL_BUDGET_MS,
+  reconReconvergeMax: process.env.RECON_RECONVERGE_MAX,
   llmJudgeModel: process.env.LLM_JUDGE_MODEL,
   directorHardBudgetMult: process.env.DIRECTOR_HARD_BUDGET_MULT
     ? Number(process.env.DIRECTOR_HARD_BUDGET_MULT)
@@ -241,6 +271,7 @@ const raw = {
   browserWindowPosition: process.env.BROWSER_WINDOW_POSITION,
   browserReturnFocus: process.env.BROWSER_RETURN_FOCUS || undefined,
   browserReturnFocusToApp: process.env.BROWSER_RETURN_FOCUS_TO,
+  browserReturnFocusBundleId: process.env.__CFBundleIdentifier || undefined,
 };
 
 const parsed = Schema.safeParse(raw);

@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 import type { ActionLogEntry, RecordingWindow } from '../domain/action-log.js';
 import { countMatchedHints } from '../domain/intent-matching.js';
-import type { Performance, PerformanceStep } from '../domain/performance.js';
+import type { Performance, PerformanceStep, RehearsalTrace } from '../domain/performance.js';
 import { trimVideo, videoDurationMs } from '../infra/ffmpeg.js';
 import { logger as rootLogger } from '../infra/logger.js';
 import type { DirectorReport, IDirector } from '../ports/director.js';
@@ -89,6 +89,13 @@ export interface RunMetrics {
    * this is a digest.
    */
   intentSatisfaction: IntentSatisfaction;
+  /**
+   * Off-camera rehearsal walk health (the §0034 rehearsing-reconnoiterer
+   * canary), or `null` if recon ran without a rehearsal walk
+   * (`config.reconRehearse === false`). High `divergences` / `truncated`
+   * means the planner's first-draft is weak for that site.
+   */
+  rehearsal: RehearsalTrace | null;
 }
 
 export interface IntentSatisfaction {
@@ -192,6 +199,7 @@ export class RecordJobRunner {
       plannedSteps: performance.steps.length,
       replanCount: directorReport.replanCount,
       intentSatisfaction,
+      rehearsal: performance.rehearsal ?? null,
     };
 
     if (intentSatisfaction.level === 'unmet' || intentSatisfaction.level === 'partial') {
