@@ -46,7 +46,12 @@ export class PerformanceDirector implements IDirector {
       }
       stepsExecuted += 1;
 
-      // Reality check — only on steps that carry an expectAfter.
+      // §0034 re-plan checkpoint — only on steps that carry an expectAfter.
+      // When reality diverges from the plan (wrong URL, expected text absent),
+      // we call the reconnoiterer again with the REMAINING budget and a summary
+      // of the steps already executed. The new Performance replaces the tail of
+      // the working step list so playback continues from the current page state.
+      // Capped at config.maxReplans to prevent infinite re-plan loops.
       const ea = stepExpectAfter(step);
       if (ea && !(await this.satisfiesExpectAfter(ea, session))) {
         if (replanCount >= config.maxReplans) {
