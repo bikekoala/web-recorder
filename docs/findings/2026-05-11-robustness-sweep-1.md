@@ -108,7 +108,35 @@ change is an unambiguous divergence regardless of element-count noise.
    description (strip "Link to", "the … link", quotes) and a scroll-scan of the
    page. Only LLM-reconverge if that misses too.
 
+## After fixes 1+2+3+5 (commits `6d4f3bb`, config change)
+
+Shipped fix 1 (`bboxOfSelector` rejects 0×0; `resolveTarget` walks the match
+list), fix 2 (when rehearsing, `resolveSteps` doesn't eagerly `observe()` —
+sentinel everything, walk resolves once), fix 3 (`expectAfter.urlContains` set +
+URL literally unchanged ⇒ unambiguous divergence). Also lowered
+`reconRehearsalBudgetMs` 90 s → 45 s and `reconReconvergeMax` 2 → 1 to bound the
+walk's worst case (fix 5, partial).
+
+Re-ran:
+
+| Site | before | after |
+|---|---|---|
+| Recordly canonical | complete, recon ~49 s, clean | complete, clean — `rehearsal {8,0,0,false,false}`. (recon time that run was a wild ~5 min — an OpenRouter/Sonnet latency spike, not the code; correctness unchanged. recon is provider-latency-dominated; `RECON_REHEARSE=false` is the escape hatch.) |
+| Hacker News | "complete" but the click was **dead**; recon 143 s; walk missed it (`div 0`) | **complete, the click works**; recon **70 s** (halved); walk catches the bad first resolution (`div 1`) → reconverges once → recovers (`recv 1, trunc false`); 14 s/15 s recording. ✓ |
+| The Guardian | unknown (no click); recon 196 s; `trunc true, timeout false` | still unknown (no click); recon 261 s; `trunc true, timeout true`. ✗ — **root cause: the cookie-consent overlay**: the recon plans a click on "the first headline" but never plans an *accept-cookies* step first, so every click lands on the overlay and doesn't navigate → divergence → reconverge picks another headline (still behind the overlay) → re-fails → truncate. This needs **Task #20 (blocker dismissal)** — dismiss the consent banner before the plan runs. (The 45 s budget cap will at least bound the wasted time on the *next* run; this one was before that config change landed.) |
+
+Net: fixes 1–3 fixed the dead-click class (HN) and roughly halved recon on a
+mid-weight site. The Guardian-class failure (a consent/region overlay swallowing
+every click) is **Task #20** — not a recon-quality bug, a missing capability.
+The Wikipedia-class failure (click a target above the post-scroll position) is
+finding 6 above — still open.
+
 ## Next
 
-Start with **fix 1** (validate resolutions — highest confidence, smallest
-blast radius), then **fix 2** (speed). Re-run the sweep after each.
+- **Task #20 — pre-recording blocker dismissal** (the Guardian failure). Detect
+  + dismiss cookie/consent/region overlays off-camera, before the `Performance`
+  plays, with an independent LLM client. This is the biggest remaining
+  robustness gap the sweep found.
+- Fix 4 (don't let `intentSatisfaction` over-credit a click that ran but didn't
+  change the page — use the walk's observed effect).
+- Re-run the full sweep after Task #20.

@@ -73,7 +73,7 @@ describe('rehearsal config knobs', () => {
 
   it('reconRehearsalBudgetMs / reconReconvergeMax have sensible defaults', async () => {
     const config = await loadConfig({ RECON_REHEARSAL_BUDGET_MS: undefined, RECON_RECONVERGE_MAX: undefined });
-    expect(config.reconRehearsalBudgetMs).toBe(90000);
-    expect(config.reconReconvergeMax).toBe(2);
+    expect(config.reconRehearsalBudgetMs).toBe(45000);
+    expect(config.reconReconvergeMax).toBe(1);
   });
 });

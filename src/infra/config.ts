@@ -82,8 +82,16 @@ const Schema = z.object({
    * graceful tail. See the rehearsing-reconnoiterer spec.
    */
   reconRehearse: z.enum(['true', 'false', '1', '0']).transform((v) => v === 'true' || v === '1').default('true'),
-  reconRehearsalBudgetMs: z.coerce.number().int().min(0).default(90000),
-  reconReconvergeMax: z.coerce.number().int().min(0).max(10).default(2),
+  // 45 s cap on the walk's wall-clock. The walk runs off-camera, but it still
+  // counts against the project's ~60 s total-wall-clock target (goals.md #5) —
+  // a 90 s walk on a heavy page (the sweep saw Guardian burn 90 s and still
+  // truncate) is more than the whole budget. Truncate at 45 s instead.
+  reconRehearsalBudgetMs: z.coerce.number().int().min(0).default(45000),
+  // 1 reconverge per walk. A 2nd reconverge rarely succeeds when the 1st
+  // didn't (it's handed the same hard-to-reach target), and each one is a full
+  // vision LLM call (~30-50 s) — two of them alone blow the 45 s walk budget.
+  // The §0034 on-camera gated re-plan + graceful degradation is the backstop.
+  reconReconvergeMax: z.coerce.number().int().min(0).max(10).default(1),
 
   /**
    * Recording-judge model — used ONCE per finished recording to grade
