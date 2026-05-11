@@ -106,7 +106,10 @@ export class LlmVisionJudge implements IRecordingJudge {
       ],
       response_format: { type: 'json_object' },
       temperature: 0.1,
-      max_tokens: 2000,
+      // Generous — the rubric asks for per-dimension evidence lists which
+      // can run long on a messy recording. 2000 truncated mid-JSON on a
+      // robotic case; 4000 leaves comfortable headroom.
+      max_tokens: 4000,
     };
 
     this.logger.info(
