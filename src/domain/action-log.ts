@@ -280,8 +280,27 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
     scrollY: z.number(),
     viewport: Viewport,
   }),
+  /**
+   * `replan` — the PerformanceDirector hit a step whose `expectAfter` did
+   * not match reality and called the reconnoiterer to re-plan the remaining
+   * steps. `fromStepIndex` is the index (in the working step list) of the
+   * step that diverged. See ADR §0034.
+   */
+  z.object({
+    t: z.number().nonnegative(),
+    type: z.literal('replan'),
+    fromStepIndex: z.number().int().nonnegative(),
+    reason: z.enum(['expect_after_mismatch', 'about_blank', 'target_vanished']),
+    details: z.string(),
+    scrollY: z.number(),
+    viewport: Viewport,
+  }),
 ]);
 export type ActionLogEntry = z.infer<typeof ActionLogEntry>;
+
+/** Standalone schema alias — same union, exported under the `Schema` suffix
+ *  for callers that prefer the conventional naming pattern. */
+export const ActionLogEntrySchema = ActionLogEntry;
 
 /**
  * Recording window meta. Both timestamps are ms relative to the session start
