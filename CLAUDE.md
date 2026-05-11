@@ -104,7 +104,7 @@ cp .env.example .env
 
 Local dev tip — if Playwright's bundled Chromium download is flaky, set `BROWSER_CHANNEL=chrome` to use the system Google Chrome ([`docs/decisions.md`](./docs/decisions.md) §0007).
 
-Local dev tip (`headless: false` on macOS, multi-monitor) — `BROWSER_WINDOW_POSITION="x,y"` places the Chromium window on a specific display, and `BROWSER_RETURN_FOCUS_TO="iTerm2"` (or `Terminal`/`Ghostty`) re-focuses your terminal after launch so it stops stealing focus. Both opt-in, no-op when headless or unset — see `.env.example` for details.
+Local dev tip (`headless: false` on macOS) — `BROWSER_WINDOW_POSITION="x,y"` places the Chromium window on a specific display; `BROWSER_RETURN_FOCUS` (default on) re-focuses whatever app was frontmost before Chromium launched, via a Cmd+Tab osascript — no hardcoded terminal detection; `BROWSER_RETURN_FOCUS_TO="iTerm2"` (or `Terminal`/`Ghostty`) is an optional explicit override (more reliable, no Accessibility permission needed). All no-op when headless or off-macOS — see `.env.example` for details.
 
 ## Important context for future iterations
 

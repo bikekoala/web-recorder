@@ -276,9 +276,9 @@ export class StagehandPageSession implements IPageSession {
 
       // Local-dev only: launching a headless:false Chromium on macOS steals
       // keyboard focus, and there's no reliable Chromium flag to prevent it.
-      // Best-effort `osascript ... activate` hands focus back to the user's
-      // terminal. Never throws — a failed osascript must not break the session.
-      await this.returnFocusToTerminalIfRequested();
+      // Best-effort osascript hands focus back to whatever app was frontmost.
+      // Never throws — a failed osascript must not break the session.
+      await this.returnFocusAfterLaunchIfEnabled();
     } catch (err) {
       await this.cleanupPartial();
       throw new SessionStartError('Failed to launch Playwright Chromium', err);
@@ -1150,25 +1150,44 @@ export class StagehandPageSession implements IPageSession {
   }
 
   /**
-   * LOCAL DEV ONLY — macOS + headless:false. If `BROWSER_RETURN_FOCUS_TO`
-   * (or a TERM_PROGRAM-derived default) names an app, re-activate it so the
-   * just-launched Chromium window doesn't keep stealing keyboard focus.
-   * There's no reliable Chromium flag for "launch without stealing focus";
-   * this AppleScript `activate` is the pragmatic mitigation. Best-effort:
-   * any failure is logged at debug level and swallowed.
+   * LOCAL DEV ONLY — macOS + headless:false. Launching a visible Chromium
+   * on macOS steals keyboard focus and there is no reliable Chromium flag
+   * for "launch without stealing focus", so this osascript is the
+   * workaround. It's a no-op off macOS, when headless, or when
+   * `BROWSER_RETURN_FOCUS=false`.
+   *
+   * Two paths, both best-effort (never throw — a failed osascript must not
+   * break the session, just logs at debug level):
+   *   - `BROWSER_RETURN_FOCUS_TO=<app>` set → `activate` that app by name.
+   *     Reliable, needs no special permission, but you must name it.
+   *   - otherwise → a single Cmd+Tab (`key code 48` = Tab), i.e. "go back
+   *     to the app I was in" — no app name, no hardcoded terminal logic.
+   *     NOTE: this path needs macOS Accessibility permission for the
+   *     controlling process (your terminal); if it isn't granted, osascript
+   *     errors and we fall through harmlessly — set BROWSER_RETURN_FOCUS_TO
+   *     to avoid needing that permission.
    */
-  private async returnFocusToTerminalIfRequested(): Promise<void> {
-    const app = config.browserReturnFocusToApp;
-    if (!app) return;
+  private async returnFocusAfterLaunchIfEnabled(): Promise<void> {
+    if (!config.browserReturnFocus) return;
     if (process.platform !== 'darwin') return;
     if (this.cfg.headless) return;
+
+    const app = config.browserReturnFocusToApp;
     try {
-      // execFile with an args array — never a shell string — so the app name
-      // (semi-trusted, from config) can't be used for shell injection.
-      await execFileAsync('osascript', ['-e', `tell application "${app}" to activate`]);
-      this.logger.debug({ app }, 'returned focus to terminal app');
+      if (app) {
+        // execFile with an args array — never a shell string — so the app
+        // name (semi-trusted, from config) can't be used for shell injection.
+        await execFileAsync('osascript', ['-e', `tell application "${app}" to activate`]);
+        this.logger.debug({ app }, 'returned focus to named app');
+      } else {
+        await execFileAsync('osascript', [
+          '-e',
+          'tell application "System Events" to key code 48 using command down',
+        ]);
+        this.logger.debug('returned focus via Cmd+Tab');
+      }
     } catch (err) {
-      this.logger.debug({ err, app }, 'osascript activate failed; leaving focus as-is');
+      this.logger.debug({ err, app }, 'osascript focus-return failed; leaving focus as-is');
     }
   }
 
