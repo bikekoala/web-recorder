@@ -141,3 +141,75 @@ absorbed by graceful degradation. A re-plan only happens on long recordings
 (≳ 75 s) where a ~30–50 s recon can fit. That's the right trade until the
 rehearsing recon (Task #21) makes divergences rare enough that re-plan can be
 re-enabled more aggressively.
+
+## Update — after the rehearsing reconnoiterer (Task #21, 2026-05-11)
+
+The rehearsing reconnoiterer landed: `recon()` now walks its draft `Performance`
+against the live page **off-camera** (instant scrolls, skipped dwells), executes
+each click/type/key/back, re-resolves each click/type target at the actual
+scroll position it runs in, rewrites each acting step's `expectAfter` to the
+*observed* post-state, reconverges (capped 2) where the draft diverges, then
+re-navigates to the start URL and returns the verified plan. Plus: the recon
+prompt grew a **PRIORITY #1 — accomplish the goal** mandate (extract every
+requested action, each must be a step, re-check before emitting) and
+**scroll-to-target discipline** (think in viewport-heights, no overshoot, no
+scroll-past-then-back, "slow scroll" = a few moderate scrolls + dwells); the
+reconverge prompt now says "the failed step's GOAL still matters — reach the
+same outcome a *different* way, don't blindly re-issue the exact same action";
+unresolvable click/type steps are no longer eagerly dropped (kept with a
+sentinel, re-resolved during the walk, divergence → reconverge if still
+unresolvable).
+
+Re-ran the canonical scenario (GitHub Recordly README, "click 简体中文, slow
+scroll", 10 s):
+
+| | after B | after Task #21 |
+|---|---|---|
+| Verdict | probably_synthetic | **LOOKS_HUMAN** |
+| `motionQuality` | fail ("fast & linear scroll") | **pass** |
+| `pacing` | partial | **pass** |
+| `intentExecution` | partial ("requested slow scroll, executed fast") | **pass** |
+| `recovery` / `visualCoherence` | pass | pass |
+| `intentSatisfaction` | partial (wrong 简体中文 target) | **complete** (1 click, 3 scrolls) |
+| `replanCount` (on-camera) | 0 | 0 |
+| `rehearsal` | — | `{walkedSteps: 8, divergences: 0, reconverges: 0, truncated: false}` |
+| Trimmed video | 6.9 s (under) | 10.6 s (target 10 s, +6.4%) |
+| `reconMs` (off-camera, incl. the walk) | ~31 s | ~49 s |
+| Total wall-clock | 53 s | 72 s |
+
+Judge summary on the Task #21 run: *"The recording perfectly executes the
+user's prompt with natural-looking behavior. The scrolling is smooth, and the
+pacing between locating the target link, clicking it, and scrolling the
+subsequent page feels entirely human."* — the canonical complaint ("页面打开后等
+了好久突然跳到简中页面然后开始滑动 — 这不像人") is resolved: no dead air, the click is
+verified off-camera so it lands first try, the scroll is paced and smooth.
+
+Cost: the off-camera walk adds ~15–20 s to recon (≈49 s vs ≈31 s) and ~20 s to
+total wall-clock — off-camera, so it doesn't touch the deliverable; slows dev
+iteration only. `RECON_REHEARSE=false` is the escape hatch.
+
+### Known remaining gap — multi-screenful "scroll then click X" (Wikipedia "Cat → Felidae")
+
+Tried a harder probe — `PROTOTYPE_URL=…/wiki/Cat`,
+`PROTOTYPE_PROMPT="慢慢向下滚动浏览这篇关于猫的文章，然后点击 Felidae 链接"`, 12 s. The
+recon planned scroll-down ~1900 px then `click "Felidae link"` *without
+scrolling back* to where the link is (the taxobox "Family: Felidae" is at the
+top-right and scrolls away; inline body "Felidae" links are further down) → the
+rehearsal walk's re-resolve of "Felidae link" at scrollY ≈ 1900 returned
+nothing → divergence → 2 reconverges (both also failed to land a working
+Felidae click) → truncated + graceful tail → final `Performance` had no click
+step → `intentSatisfaction: unknown`. Two contributing weaknesses:
+
+1. **Recon plan quality** — the LLM doesn't reason about *where the target will
+   be after the scrolls it just planned*; it plans "scroll down, then click X"
+   even when X is above the scroll position. (The scroll-to-target discipline
+   prompt rule helps for "scroll *to* X" but not for "scroll past, then click an
+   earlier X".)
+2. **`resolveTarget` ambiguity** — a long article has several "Felidae" links
+   (taxobox, body text, navboxes); Stagehand `observe("Felidae link")` on that
+   state didn't pin one. Possibly chunking, possibly the ambiguity.
+
+Not blocking the canonical scenario, but the next recon-plan-quality lever:
+either teach the recon to scroll the target back into view before clicking it
+(or to click it *before* scrolling away), or make `resolveTarget` scroll-aware
+and disambiguate. Tracked as a follow-up, not yet scheduled.

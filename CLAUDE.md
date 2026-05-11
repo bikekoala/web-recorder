@@ -26,6 +26,8 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `IPageSession` + Stagehand adapter | ✅ |
 | Playwright video recording + ffmpeg trim | ✅ |
 | `IReconnoiterer` + LlmReconnoiterer (recon → `Performance`; reused as re-planner) | ✅ |
+| Rehearsing reconnoiterer — `recon()` walks its draft against the live page off-camera, re-resolves targets at the right scroll position, rewrites `expectAfter` to observed state, reconverges on divergence, resets to start URL (`RECON_REHEARSE`, default on; §0034 / Task #21) | ✅ |
+| Recon prompt: PRIORITY #1 (a step per requested action, re-check before emit) + scroll-to-target discipline; reconverge keeps the goal (different path, not blind retry) | ✅ |
 | `IDirector` + PerformanceDirector (deterministic `Performance` playback + re-plan checkpoint, §0034) | ✅ |
 | PerformanceDirector graceful degradation — drops stale tail + gentle closing scroll when an `expectAfter` mismatch can't be re-planned (§0034) | ✅ |
 | `replanMinRemainingMs` gate (default 60s) — mid-recording re-plan only when enough budget remains; short recordings degrade instead (§0034) | ✅ |
@@ -52,21 +54,22 @@ The **naturalness catalog** in [`docs/naturalness-catalog.md`](./docs/naturalnes
 
 ### Measured performance (Recordly README, "click 简中, slow scroll, 10s")
 
-Post-§0034 (prophet pipeline, after the "B" graceful-degradation fix), single integration run on macOS + OpenRouter, `npm run prototype:stagehand` + `npm run judge`:
+Post-§0034 (prophet pipeline) **after Task #21 (rehearsing reconnoiterer)**, single integration run on macOS + OpenRouter (recon on `anthropic/claude-sonnet-4.6`), `npm run prototype:stagehand` + `npm run judge`:
 
 | Metric | Value |
 |---|---|
-| Pipeline | Prophet (§0034): off-camera recon → deterministic paced playback |
-| Trimmed video duration | 6.9 s (target 10 s — recon's plan diverged early, graceful degradation closed it) |
-| Reconnaissance (off-camera) | ~40 s — `observeAll()` + vision LLM + per-target `resolveTarget()` |
-| On-camera recording | 6.9 s — no dead air |
-| Re-plans | 0 |
-| Director end reason | `done` (via graceful degradation after an `expectAfter` mismatch on the click target) |
-| `intentSatisfaction` | partial — "1/2 unique target(s) actually clicked" (recon resolved a wrong "简体中文" target → Task #21) |
-| Video judge verdict (Gemini 3.1 Pro) | `probably_synthetic` — pacing partial, motionQuality fail ("scroll fast & linear"), intentExecution partial |
-| Total wall-clock | ~53 s |
+| Pipeline | Prophet (§0034 + Task #21): off-camera recon → off-camera rehearsal walk → deterministic paced playback |
+| Trimmed video duration | 10.6 s (target 10 s, +6.4%) |
+| Reconnaissance (off-camera, incl. the rehearsal walk) | ~49 s — `observeAll()` + vision LLM + per-target resolve + walking the draft against the live page |
+| Rehearsal trace | `{walkedSteps: 8, divergences: 0, reconverges: 0, truncated: false, timedOut: false}` |
+| On-camera recording | 10.6 s — no dead air |
+| Re-plans (on-camera) | 0 |
+| Director end reason | `budget` (steps consumed the window) |
+| `intentSatisfaction` | **complete** — 1 click (简体中文, verified off-camera) + 3 scrolls |
+| Video judge verdict (Gemini 3.1 Pro) | **`LOOKS_HUMAN`** — motionQuality / pacing / intentExecution / recovery / visualCoherence all `pass` |
+| Total wall-clock | ~72 s (the rehearsal walk adds ~20 s, all off-camera) |
 
-Recon-plan-quality gaps (wrong target resolution, scroll pacing) are tracked in Task #21 (rehearsing reconnoiterer). See [`docs/findings/2026-05-11-prophet-first-integration.md`](./docs/findings/2026-05-11-prophet-first-integration.md).
+Known remaining recon-plan-quality gap: multi-screenful "scroll down then click X" where X is *above* the scroll position (e.g. Wikipedia "Cat → Felidae" — taxobox link scrolls away) — the recon doesn't scroll the target back into view first, and a long page has several same-text links `resolveTarget` can't disambiguate. See [`docs/findings/2026-05-11-prophet-first-integration.md`](./docs/findings/2026-05-11-prophet-first-integration.md). `RECON_REHEARSE=false` skips the walk (fast dev iteration).
 
 ## Common commands
 

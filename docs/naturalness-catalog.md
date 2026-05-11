@@ -19,7 +19,7 @@ Status legend:
 | A2 | Easing curve options | ✅ | `inOutQuad / outQuart / outExpo / linear`; recon picks per `scroll` step (§0034) |
 | A3 | Distance-adaptive choreography | ✅ | short / medium / long bands |
 | A4 | Two-stage long scroll (fling → micro-pause → slow approach) | ✅ | for distances > 2500px |
-| A5 | Reading-pace exploration scrolls (≤ 350 px/s) | ⚠️ | recon-emitted `scroll.durationPx`/`durationMs` decide pace; no executor enforcement, and §0034's first run shows recon ignores pacing adjectives ("slow scroll" → 2.4s/600px·s⁻¹) — Task #21 |
+| A5 | Reading-pace exploration scrolls (≤ 350 px/s) | ✅ | recon-emitted `scroll.durationMs`/`deltaPx` decide pace; the §0034 scroll-to-target-discipline prompt rule turns "slow scroll" into a few moderate ~600-900 px / 1.8-2 s scrolls + brief dwells (Task #21) — the canonical-scenario judge run now rates motionQuality & pacing `pass`. Still no executor floor on px/s. |
 | A6 | Inter-scroll micro-pause (50-200ms between consecutive scrolls) | ✅ | `dwellAfterMs` field on each recon-emitted `scroll` `PerformanceStep` (§0034; was a StreamingDirector tail wait in §0031). `StagehandPageSession.scroll()` still applies the `SCROLL_TAIL_*` config range as a default; the per-step value overrides it. |
 | A7 | Inertia / momentum after a fling (decay-then-stop motion) | ❌ | the easing approximates this; no real inertia model |
 | A8 | Overshoot + correction (rare scroll-too-far + scroll-back) | ❌ | very natural touch but easily abused; behind a feature flag when added |
