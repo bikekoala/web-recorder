@@ -66,6 +66,17 @@ export class StreamingDirector implements IDirector {
      * — preventing the "click the same hint 3 times" loop.
      */
     const fulfilledHints = new Set<string>();
+    /**
+     * Per-run rejection tally for click targets — keyed by `action.target`
+     * (the LLM's exact phrasing). Incremented every time a click for that
+     * description fails (Playwright throw OR verifier `matched=false`).
+     * Once any entry hits `config.directorClickRejectionLimit`, the
+     * Director treats that target as unreachable for the rest of the run:
+     * filtered out of briefingHints (by fuzzy descriptionsMatch) and
+     * surfaced as `state.unreachableTargets` to the decider so it picks a
+     * different element. See ADR §0028.
+     */
+    const rejectedClickTargets = new Map<string, number>();
     let decisionCount = 0;
     let implicitDwellCount = 0;
     let expectAfterMismatchCount = 0;
@@ -102,7 +113,7 @@ export class StreamingDirector implements IDirector {
       };
     } else {
       // No draft sequence and no pre-fire: fall back to the original cold start.
-      const state = await this.observeState(briefing, session, recentActions, briefing.durationMs, fulfilledHints);
+      const state = await this.observeState(briefing, session, recentActions, briefing.durationMs, fulfilledHints, rejectedClickTargets);
       pending = track(this.decider.decide(state));
       decisionCount += 1;
       pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
@@ -114,7 +125,7 @@ export class StreamingDirector implements IDirector {
       // Top up the queue if empty.
       if (actionQueue.length === 0) {
         if (!pending) {
-          const state = await this.observeState(briefing, session, recentActions, remainingMs, fulfilledHints);
+          const state = await this.observeState(briefing, session, recentActions, remainingMs, fulfilledHints, rejectedClickTargets);
           pending = track(this.decider.decide(state));
           decisionCount += 1;
           pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
@@ -179,7 +190,7 @@ export class StreamingDirector implements IDirector {
       //      in exchange for accurate post-action observation. (§0026)
       const stateChanging = isStateChangingActionKind(action.kind);
       if (action.kind !== 'done' && pending === null && expectAfter === null && !stateChanging) {
-        const state = await this.observeState(briefing, session, recentActions, remainingMs, fulfilledHints);
+        const state = await this.observeState(briefing, session, recentActions, remainingMs, fulfilledHints, rejectedClickTargets);
         pending = track(this.decider.decide(state));
         decisionCount += 1;
         pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
@@ -221,11 +232,24 @@ export class StreamingDirector implements IDirector {
           ? `wrong target — ${summary.evidence.aiReason}`
           : summary.brief;
         this.logFailure(session, pendingMeta, 'click_failed', failureDetail);
+        // §0028: tally per-target rejections. After
+        // `directorClickRejectionLimit` failures on the SAME description,
+        // observeState will filter this hint and surface it as
+        // unreachable so the LLM stops re-picking it.
+        const previousCount = rejectedClickTargets.get(action.target) ?? 0;
+        const newCount = previousCount + 1;
+        rejectedClickTargets.set(action.target, newCount);
+        if (newCount === config.directorClickRejectionLimit) {
+          this.logger.info(
+            { target: action.target, rejections: newCount },
+            'click target hit rejection limit — marking unreachable',
+          );
+        }
         actionQueue = [];
         pending = null;
         pendingMeta = null;
         const remainingAfter = Math.max(0, hardDeadlineAt - Date.now());
-        const state = await this.observeState(briefing, session, recentActions, remainingAfter, fulfilledHints);
+        const state = await this.observeState(briefing, session, recentActions, remainingAfter, fulfilledHints, rejectedClickTargets);
         const stateWithFailure: DirectorState = {
           ...state,
           lastActionFailure: `click on '${action.target}' did not land: ${failureDetail}`,
@@ -252,7 +276,7 @@ export class StreamingDirector implements IDirector {
         // force a fresh call with the failure context.
         pending = null;
         pendingMeta = null;
-        const state = await this.observeState(briefing, session, recentActions, Math.max(0, hardDeadlineAt - Date.now()), fulfilledHints);
+        const state = await this.observeState(briefing, session, recentActions, Math.max(0, hardDeadlineAt - Date.now()), fulfilledHints, rejectedClickTargets);
         const stateWithFailure: DirectorState = { ...state, lastActionFailure: 'expectAfter mismatch' };
         pending = track(this.decider.decide(stateWithFailure));
         decisionCount += 1;
@@ -310,14 +334,32 @@ export class StreamingDirector implements IDirector {
     recentActions: ActionSummary[],
     remainingMs: number,
     fulfilledHints: ReadonlySet<string> = new Set(),
+    rejectedClickTargets: ReadonlyMap<string, number> = new Map(),
   ): Promise<DirectorState> {
     const screenshot = await session.screenshot();
     const scrollY = await this.readScrollY(session);
     const viewport = viewportFrom(session);
-    // Filter out hints whose description matches a successful click in
-    // recentActions — the LLM should not be re-shown intent it has already
-    // achieved. See §0025 for why this matters in practice.
-    const remainingHints = briefing.hints.filter((h) => !fulfilledHints.has(h.description));
+    // §0028: a target is "unreachable" when its rejection count hit the
+    // configured cap. Use the LLM's exact phrasing as the user-visible
+    // label — that's what it will recognise in the next decision.
+    const unreachableTargets: string[] = [];
+    for (const [target, count] of rejectedClickTargets) {
+      if (count >= config.directorClickRejectionLimit) {
+        unreachableTargets.push(target);
+      }
+    }
+    // Filter out hints whose description matches:
+    //   - a successful click (§0025 fulfilled hints), or
+    //   - an unreachable target (§0028) — fuzzy match so e.g. the
+    //     planner's "the 简体中文 link" hint stops being shown after the
+    //     LLM's "the simplified Chinese link" click hit the rejection cap.
+    const remainingHints = briefing.hints.filter((h) => {
+      if (fulfilledHints.has(h.description)) return false;
+      for (const t of unreachableTargets) {
+        if (descriptionsMatch(h.description, t)) return false;
+      }
+      return true;
+    });
     return {
       prompt: briefing.prompt,
       remainingMs,
@@ -326,6 +368,7 @@ export class StreamingDirector implements IDirector {
       screenshot,
       briefingHints: enrichHints(remainingHints, scrollY, viewport),
       recentActions: [...recentActions],
+      ...(unreachableTargets.length > 0 ? { unreachableTargets } : {}),
     };
   }
 

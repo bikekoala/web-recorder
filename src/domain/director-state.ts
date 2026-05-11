@@ -50,6 +50,13 @@ export interface DirectorState {
   recentActions: ActionSummary[];
   /** Set when the previous action errored, surfaces context to the LLM. */
   lastActionFailure?: string;
+  /**
+   * Click-target descriptions the Director has tried this run and judged
+   * unreachable (failed N≥`directorClickRejectionLimit` times via verifier
+   * rejection or Playwright throw). Surfaced verbatim to the LLM so it
+   * stops re-picking the same target. See §0028.
+   */
+  unreachableTargets?: string[];
 }
 
 export interface ActionSummary {

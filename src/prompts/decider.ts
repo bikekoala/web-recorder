@@ -81,7 +81,8 @@ QUALITY RULES:
 - Output 1-3 actions per response. Lookahead is for buffering, not committing to a long plan. Search workflow ([click search, type query, key Enter]) is a natural 3-action use of the budget.
 - Don't repeat the SAME action three times in a row — alternate scroll lengths or insert a dwell.
 - If your previous TWO recent actions were both dwells, your next action MUST be click / scroll / type / back — never a third dwell unless you are explicitly waiting for a video / animation / load you have already initiated.
-- ANTI-REPETITION (load-bearing): if your last TWO recent actions are both "click" on essentially the same target description (the descriptions are identical or near-identical), the next action MUST be different. Re-clicking the same input field repeatedly does NOTHING — to enter a search, you need to click ONCE then "type" your query. To dismiss something that didn't go away on first click, try a different target (e.g. an explicit close/cancel button, or "key Escape").
+- ANTI-REPETITION (load-bearing): if your last TWO recent actions are both "click" on essentially the same target description (the descriptions are identical or near-identical), the next action MUST be different. Re-clicking the same input field repeatedly does NOTHING — to enter a search, you need to know that the target either does not exist on this page, or your description does not match it well enough for the executor's fuzzy-find to resolve. Pick a different element entirely (e.g. an explicit close/cancel button, or "key Escape"), or scroll to look for an alternative.
+- UNREACHABLE TARGETS: if the user-message lists targets under "UNREACHABLE", the Director has already tried each of them N times and the click was rejected (either Playwright couldn't find them, or an AI verifier judged the click hit the wrong thing). DO NOT pick any of them again — your description will be matched fuzzily and the rejection still applies. Pick a different element (look at the screenshot for alternatives) or, if no path forward, output "done" so we can salvage the recording with transparent partial intent.
 - "expectAfter.urlContains" should be a SUBSTRING expected in URL after these actions complete (e.g. "zh-CN" after a language switch to a multi-page site). OMIT if you suspect SPA / turbo-frame / hash routing — those swap content without changing URL. The recent-actions evidence will already show "title: changed (SPA-style content swap)" when this happens; trust it. Setting urlContains on an SPA page guarantees a false mismatch and wastes a re-decision.
 - "expectAfter.visibleText" should be 1-3 short strings expected to be visible after these actions. Use this for SPA pages where URL won't change. Omit if uncertain.
 - If lastActionFailure is set, address it explicitly in your reasoning.
@@ -123,6 +124,15 @@ export function buildDeciderUserText(s: DirectorState): string {
           })
           .join('\n');
 
+  const unreachable =
+    s.unreachableTargets && s.unreachableTargets.length > 0
+      ? [
+          '',
+          'UNREACHABLE targets (already tried and FAILED multiple times — do NOT pick these again, the next attempt will also fail; choose a different element or "done"):',
+          ...s.unreachableTargets.map((t) => `  - ${t}`),
+        ].join('\n')
+      : '';
+
   return [
     `User intent: ${s.prompt}`,
     `Time remaining (ms): ${s.remainingMs}`,
@@ -131,6 +141,7 @@ export function buildDeciderUserText(s: DirectorState): string {
     '',
     'Briefing hints (intended click targets, ALL of them, with current position):',
     hints,
+    unreachable,
     '',
     'Recent actions (oldest→newest) WITH EVIDENCE — read these carefully before deciding the next action; they tell you what your last actions ACTUALLY did to the page, not just what you intended:',
     `  ${recent}`,

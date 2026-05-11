@@ -349,3 +349,130 @@ describe('StreamingDirector — click verifier (§0027)', () => {
     expect(failureEntries).toHaveLength(0);
   });
 });
+
+describe('StreamingDirector — retry cap (§0028)', () => {
+  it('surfaces unreachableTargets to decider once a target hits the rejection limit', async () => {
+    // Decider keeps picking the same wrong target. The verifier always
+    // rejects. After 2 rejections (the default limit) the target should
+    // appear in state.unreachableTargets and the briefingHint matching
+    // it should be filtered out.
+    const decider = new FakeFastDecider([
+      { response: { actions: [{ kind: 'click', target: 'the simplified Chinese link', reasoning: 'try' }] } },
+      { response: { actions: [{ kind: 'click', target: 'the simplified Chinese link', reasoning: 'retry' }] } },
+      { response: { actions: [{ kind: 'click', target: 'something else entirely', reasoning: 'pivot' }] } },
+      { response: { actions: [{ kind: 'done', reasoning: 'ok' }] } },
+    ]);
+    const session = new FakePageSession();
+    const verifier = {
+      modelId: 'fake/verifier',
+      verify: async (input: { targetDescription: string }) => {
+        // Reject ONLY the Chinese-link clicks; accept anything else.
+        if (input.targetDescription.includes('Chinese')) {
+          return { matched: false, reason: 'page is still in English', latencyMs: 5 };
+        }
+        return { matched: true, reason: 'looks right', latencyMs: 5 };
+      },
+    };
+
+    const director = new StreamingDirector({ decider, clickVerifier: verifier });
+    await director.run(
+      {
+        prompt: 'click the 简体中文 link, then browse',
+        durationMs: 30_000,
+        hints: [
+          { description: 'the 简体中文 link', bboxAtRest: { x: 0, y: 0, width: 100, height: 30 } },
+        ],
+        rationale: 'test',
+      },
+      session,
+    );
+
+    // The cap is 2 — populates on the call AFTER the 2nd rejection.
+    // 1st call: 0 rejections so far → unreachable undefined.
+    // 2nd call: 1 rejection → still undefined (under cap).
+    // 3rd call: 2 rejections → unreachable populated.
+    expect(decider.decisions.length).toBeGreaterThanOrEqual(3);
+    expect(decider.decisions[0]!.state.unreachableTargets).toBeUndefined();
+    expect(decider.decisions[1]!.state.unreachableTargets).toBeUndefined();
+    expect(decider.decisions[2]!.state.unreachableTargets).toEqual([
+      'the simplified Chinese link',
+    ]);
+  });
+
+  it('filters a briefing hint when its description fuzzy-matches an unreachable target', async () => {
+    // Hint and LLM target share content tokens — once the rejection
+    // limit hits, the hint should be removed from briefingHints.
+    const decider = new FakeFastDecider([
+      { response: { actions: [{ kind: 'click', target: 'the build folder link', reasoning: 'try' }] } },
+      { response: { actions: [{ kind: 'click', target: 'the build folder link', reasoning: 'retry' }] } },
+      { response: { actions: [{ kind: 'done', reasoning: 'give up' }] } },
+    ]);
+    const session = new FakePageSession();
+    const verifier = {
+      modelId: 'fake/verifier',
+      verify: async () => ({ matched: false, reason: 'turbo-frame did not load', latencyMs: 5 }),
+    };
+
+    const director = new StreamingDirector({ decider, clickVerifier: verifier });
+    await director.run(
+      {
+        prompt: 'open the build folder',
+        durationMs: 30_000,
+        hints: [
+          { description: 'the build directory folder link', bboxAtRest: { x: 0, y: 0, width: 100, height: 30 } },
+        ],
+        rationale: 'test',
+      },
+      session,
+    );
+
+    // 3rd call sees unreachable populated AND the matching hint filtered.
+    expect(decider.decisions.length).toBeGreaterThanOrEqual(3);
+    expect(decider.decisions[2]!.state.unreachableTargets).toEqual([
+      'the build folder link',
+    ]);
+    expect(decider.decisions[2]!.state.briefingHints).toHaveLength(0);
+  });
+
+  it('keeps two different rejected targets independent in the tally', async () => {
+    const decider = new FakeFastDecider([
+      { response: { actions: [{ kind: 'click', target: 'target A', reasoning: 'try A' }] } },
+      { response: { actions: [{ kind: 'click', target: 'target B', reasoning: 'try B' }] } },
+      { response: { actions: [{ kind: 'click', target: 'target A', reasoning: 'retry A' }] } },
+      { response: { actions: [{ kind: 'done', reasoning: 'ok' }] } },
+    ]);
+    const session = new FakePageSession();
+    const verifier = {
+      modelId: 'fake/verifier',
+      verify: async () => ({ matched: false, reason: 'no', latencyMs: 5 }),
+    };
+
+    const director = new StreamingDirector({ decider, clickVerifier: verifier });
+    await director.run(briefing(30_000), session);
+
+    // After: A rejected twice (hits cap), B rejected once (doesn't).
+    // 4th call: unreachable should ONLY contain target A.
+    expect(decider.decisions.length).toBeGreaterThanOrEqual(4);
+    expect(decider.decisions[3]!.state.unreachableTargets).toEqual(['target A']);
+  });
+
+  it('counts Playwright-thrown clicks toward the rejection cap (no verifier needed)', async () => {
+    const decider = new FakeFastDecider([
+      { response: { actions: [{ kind: 'click', target: 'ghost element', reasoning: 'try' }] } },
+      { response: { actions: [{ kind: 'click', target: 'ghost element', reasoning: 'retry' }] } },
+      { response: { actions: [{ kind: 'done', reasoning: 'pivot' }] } },
+    ]);
+    const session = new FakePageSession();
+    // Playwright throws on every clickByDescription. No verifier needed —
+    // the rejection counter must still tick on Playwright-side failures.
+    session.clickByDescriptionImpl = () => {
+      throw new Error('Stagehand could not find target');
+    };
+
+    const director = new StreamingDirector({ decider }); // no verifier
+    await director.run(briefing(30_000), session);
+
+    expect(decider.decisions.length).toBeGreaterThanOrEqual(3);
+    expect(decider.decisions[2]!.state.unreachableTargets).toEqual(['ghost element']);
+  });
+});

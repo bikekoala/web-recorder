@@ -903,6 +903,48 @@ Fix candidate: track verifier-rejected click targets per run; after 2 rejections
 
 ---
 
+## 0028 · Retry cap for verifier-rejected click targets
+
+**Date**: 2026-05-11
+
+**Context**: §0027's AI click verifier closes the "wrong click looked successful" gap, but watching the regression videos surfaced a follow-on failure: when the verifier flags a click and the Director re-decides, the LLM **often picks the same target description again** (and fails again). One github case attempted "the simplified Chinese link" three times in a row before pivoting. Each retry burns ~3-5s of the budget on a guaranteed-to-fail click, plus the verifier call and the recovery decision. By the time the agent finally tried a different element, the recording was already over budget.
+
+The verifier's `lastActionFailure` message ("page is still in English") is rich, but the LLM has no anchor telling it "this specific target description has been categorically refuted — don't reach for it again". The screenshot still shows the same plausible candidate; the briefing hints still list it.
+
+**Choice — per-target rejection counter + unreachable-targets surface**:
+
+The Director maintains `rejectedClickTargets: Map<string, number>` for the run, keyed by the LLM's exact `action.target` phrasing. Every click failure (Playwright throw OR verifier `matched=false`) increments the count. When any entry reaches `config.directorClickRejectionLimit` (default 2):
+
+1. The target is filtered out of `briefingHints` by fuzzy `descriptionsMatch` (same helper §0025 uses for fulfilled hints) — so any planner hint phrased similarly stops being repeated in the prompt.
+2. The target is surfaced in `DirectorState.unreachableTargets` (new optional field), rendered as a dedicated section in the decider user-message under the heading "UNREACHABLE targets … do NOT pick these again".
+3. The system prompt is updated with an explicit "UNREACHABLE TARGETS" rule directing the LLM to pick a different element or output `done`.
+
+The cap defaults to 2 (one retry, then give up), tunable via `DIRECTOR_CLICK_REJECTION_LIMIT`. We count BOTH Playwright throws and verifier rejections — both signal "this description does not reliably resolve to a clickable element"; conflating them is simpler than two parallel counters with different semantics.
+
+**Why not also seed the *planner* with rejection feedback?**
+
+The planner only runs once per job (`brief()`), before the recording window. Rejection signal is intra-recording. The decider is the right place to act on it.
+
+**Why fuzzy filtering not exact?**
+
+The LLM and the planner often phrase the same target differently ("the simplified Chinese link" ↔ "the 简体中文 link"). Exact-match would leave the planner's hint repeatedly surfacing the target the LLM has already declared unreachable. The `descriptionsMatch` helper covers ASCII words + CJK 2-char n-grams; the same helper is already trusted for §0025's fulfilled-hints filter, so we're not introducing new matching surface area.
+
+**Rationale**:
+- Mirrors §0025 (`fulfilledHints` filter for the success direction) — both close repetition loops by removing already-resolved targets from the prompt.
+- Cheap and bounded: one Map per run, O(N hints × M unreachable) per `observeState` call; both numbers are tiny.
+- Visible: the LLM SEES the unreachable list, not just an absence of hints. This works better than silent filtering when the LLM might infer "still visible on screen → still a candidate".
+- Honest about partial intent: when the only briefing hint becomes unreachable, the LLM is steered toward `done` rather than thrashing — and `intentSatisfaction` then transparently reports `partial`/`unmet` per goals.md #3.
+
+**Consequences**:
+- New unit tests: 4 covering (a) population after exactly 2 rejections, (b) fuzzy hint filtering, (c) independent counts per target, (d) Playwright-throw clicks also tick the counter. Total unit 62 → 66.
+- New config knob `DIRECTOR_CLICK_REJECTION_LIMIT` (default 2) exposed for one-off tuning during evals.
+- No prompt-token cost for runs without rejections — the unreachable section is only rendered when non-empty.
+- Open observation: the cap is per-run, not cross-run. If a site has a structurally unclickable hint (e.g. a 简体中文 link that the planner extracts but is actually a hover-only tooltip), every run still wastes 2 attempts before giving up. Could be addressed later with a per-site cache, but YAGNI for now — observability first.
+
+**Preserves**: §0025 fulfilledHints filter, §0027 verifier verdict, all evidence capture. Adds a memory of failures the verifier (or Playwright) has already adjudicated.
+
+---
+
 ## Template for new entries
 
 ```

@@ -76,6 +76,16 @@ const Schema = z.object({
    */
   directorHardBudgetMult: z.number().min(1.0).max(2.0).default(1.2),
 
+  /**
+   * Per-run cap on how many times the Director will tolerate a single
+   * click-target description failing (Playwright throw OR verifier
+   * rejection) before declaring the target unreachable for the rest of
+   * the run. Filtered out of briefing hints; surfaced to the decider so
+   * it tries a different element. Default 2 — i.e. one retry, then give
+   * up. See ADR §0028.
+   */
+  directorClickRejectionLimit: z.number().int().min(1).max(5).default(2),
+
   // Browser / recording defaults. These are baseline values; specific jobs
   // may override per-session in the future (e.g. mobile viewports).
   viewport: z.object({
@@ -125,6 +135,9 @@ const raw = {
     : undefined,
   directorHardBudgetMult: process.env.DIRECTOR_HARD_BUDGET_MULT
     ? Number(process.env.DIRECTOR_HARD_BUDGET_MULT)
+    : undefined,
+  directorClickRejectionLimit: process.env.DIRECTOR_CLICK_REJECTION_LIMIT
+    ? Number(process.env.DIRECTOR_CLICK_REJECTION_LIMIT)
     : undefined,
   viewport: {
     width: process.env.VIEWPORT_WIDTH ? Number(process.env.VIEWPORT_WIDTH) : undefined,
