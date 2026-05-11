@@ -169,36 +169,33 @@ const Schema = z.object({
     .optional(),
 
   /**
-   * LOCAL DEV ONLY — macOS + `headless: false` only. Name of a macOS
-   * application (your terminal) to re-activate after Chromium launches,
-   * so keyboard focus returns to you. There is no reliable Chromium flag
-   * for "launch without stealing focus"; an `osascript ... activate` is
-   * the pragmatic mitigation. Set `BROWSER_RETURN_FOCUS_TO="iTerm2"`
-   * (or `"Terminal"` / `"Ghostty"` / ...). If unset, we derive it from
-   * `TERM_PROGRAM` when we can map it cleanly (see below).
+   * LOCAL DEV ONLY — macOS + `headless: false` only. Master on/off for the
+   * "return keyboard focus after Chromium launches" behaviour. Default ON.
+   * When on (and on macOS, and not headless), right after the window
+   * appears we hand focus back to whatever app was frontmost before — via
+   * a single Cmd+Tab (`osascript ... key code 48 using command down`) if
+   * `browserReturnFocusToApp` is unset, or by `activate`-ing that named
+   * app if it is. Set `BROWSER_RETURN_FOCUS=false` to disable entirely.
+   */
+  browserReturnFocus: z
+    .enum(['true', 'false', '1', '0'])
+    .transform((v) => v === 'true' || v === '1')
+    .default('true'),
+
+  /**
+   * LOCAL DEV ONLY — macOS + `headless: false` only. Optional: name of a
+   * macOS application (your terminal) to re-activate after Chromium
+   * launches, so keyboard focus returns to you. There is no reliable
+   * Chromium flag for "launch without stealing focus"; an
+   * `osascript ... activate` is the pragmatic mitigation — and naming the
+   * app makes it reliable and needs no special permission (the Cmd+Tab
+   * fallback used when this is unset needs macOS Accessibility permission
+   * for your terminal). Set `BROWSER_RETURN_FOCUS_TO="iTerm2"` (or
+   * `"Terminal"` / `"Ghostty"` / ...). Purely opt-in — no default, not
+   * derived from anything.
    */
   browserReturnFocusToApp: z.string().min(1).optional(),
 });
-
-/**
- * Best-effort mapping from the `TERM_PROGRAM` env var (set by most macOS
- * terminals) to the application name AppleScript's `activate` expects.
- * Only return a value for terminals we can map confidently; otherwise the
- * user must set `BROWSER_RETURN_FOCUS_TO` explicitly.
- */
-function appNameFromTermProgram(termProgram: string | undefined): string | undefined {
-  switch (termProgram) {
-    case 'iTerm.app':
-      return 'iTerm2';
-    case 'Apple_Terminal':
-      return 'Terminal';
-    case 'ghostty':
-    case 'Ghostty':
-      return 'Ghostty';
-    default:
-      return undefined;
-  }
-}
 
 const raw = {
   nodeEnv: process.env.NODE_ENV,
@@ -242,9 +239,8 @@ const raw = {
   browserChannel: process.env.BROWSER_CHANNEL,
   storageStatePath: process.env.STORAGE_STATE_PATH,
   browserWindowPosition: process.env.BROWSER_WINDOW_POSITION,
-  // Explicit env var wins; otherwise try to derive from TERM_PROGRAM.
-  browserReturnFocusToApp:
-    process.env.BROWSER_RETURN_FOCUS_TO ?? appNameFromTermProgram(process.env.TERM_PROGRAM),
+  browserReturnFocus: process.env.BROWSER_RETURN_FOCUS || undefined,
+  browserReturnFocusToApp: process.env.BROWSER_RETURN_FOCUS_TO,
 };
 
 const parsed = Schema.safeParse(raw);
