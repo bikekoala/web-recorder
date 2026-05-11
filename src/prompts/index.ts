@@ -32,3 +32,4 @@ export { deciderSystemPrompt, buildDeciderUserText } from './decider.js';
 export { buildPreludeUserPrompt } from './prelude.js';
 export { clickVerifierSystemPrompt, buildClickVerifierUserText } from './click-verifier.js';
 export { recordingJudgeSystemPrompt, buildRecordingJudgeUserText } from './recording-judge.js';
+export { reconnoitererSystemPrompt, buildReconUserText } from './reconnoiterer.js';
