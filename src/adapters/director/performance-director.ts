@@ -48,35 +48,71 @@ export class PerformanceDirector implements IDirector {
 
       // §0034 re-plan checkpoint — only on steps that carry an expectAfter.
       // When reality diverges from the plan (wrong URL, expected text absent),
-      // we call the reconnoiterer again with the REMAINING budget and a summary
-      // of the steps already executed. The new Performance replaces the tail of
-      // the working step list so playback continues from the current page state.
-      // Capped at config.maxReplans to prevent infinite re-plan loops.
+      // we *would* call the reconnoiterer again with the REMAINING budget and a
+      // summary of the steps already executed, replacing the tail of the working
+      // step list so playback continues from the current page state.
+      //
+      // BUT: recon() is a heavyweight call (~30–50 s) that freezes the recording
+      // frame for its duration — catastrophic on short recordings. So we only do
+      // it when there's plenty of budget left (>= config.replanMinRemainingMs)
+      // AND we haven't hit config.maxReplans. Otherwise we degrade gracefully:
+      // log a decision_failure, drop the now-stale remaining steps, append a
+      // short gentle closing scroll + dwell so the video ends with motion rather
+      // than a freeze, and let the loop run out (even if the task is incomplete).
       const ea = stepExpectAfter(step);
       if (ea && !(await this.satisfiesExpectAfter(ea, session))) {
-        if (replanCount >= config.maxReplans) {
-          this.logger.warn({ replanCount }, 'maxReplans reached — playing out remaining steps without re-planning');
+        const remainingMs = hardDeadlineAt - Date.now();
+        if (replanCount < config.maxReplans && remainingMs >= config.replanMinRemainingMs) {
+          replanCount += 1;
+          const currentUrl = await safeUrl(session);
+          const screenshot = await session.screenshot().catch(() => null);
+          const reconBudgetMs = Math.max(1000, remainingMs);
+          const priorSteps = workingSteps.slice(0, i + 1).map((s) => ({ kind: s.kind, reasoning: s.reasoning }));
+          this.logger.info({ fromStepIndex: i, expected: ea, replanCount, remainingMs }, 'expectAfter mismatch — re-planning');
+          this.appendReplanEntry(session, i, 'expect_after_mismatch', `expected ${JSON.stringify(ea)}; URL was ${currentUrl}`);
+          let newPerf;
+          try {
+            newPerf = await this.replanner.recon(
+              { url: currentUrl, prompt: performance.prompt, durationMs: reconBudgetMs, viewport: viewportFrom(session), screenshot, priorSteps },
+              session,
+            );
+          } catch (err) {
+            this.logger.warn({ err }, 're-plan failed — stopping');
+            return { totalMs: Date.now() - startedAt, stepsExecuted, replanCount, endReason: 'error' };
+          }
+          workingSteps = [...workingSteps.slice(0, i + 1), ...newPerf.steps];
           i += 1;
           continue;
         }
-        replanCount += 1;
-        const currentUrl = await safeUrl(session);
-        const screenshot = await session.screenshot().catch(() => null);
-        const remainingMs = Math.max(1000, hardDeadlineAt - Date.now());
-        const priorSteps = workingSteps.slice(0, i + 1).map((s) => ({ kind: s.kind, reasoning: s.reasoning }));
-        this.logger.info({ fromStepIndex: i, expected: ea, replanCount }, 'expectAfter mismatch — re-planning');
-        this.appendReplanEntry(session, i, 'expect_after_mismatch', `expected ${JSON.stringify(ea)}; URL was ${currentUrl}`);
-        let newPerf;
-        try {
-          newPerf = await this.replanner.recon(
-            { url: currentUrl, prompt: performance.prompt, durationMs: remainingMs, viewport: viewportFrom(session), screenshot, priorSteps },
-            session,
-          );
-        } catch (err) {
-          this.logger.warn({ err }, 're-plan failed — stopping');
-          return { totalMs: Date.now() - startedAt, stepsExecuted, replanCount, endReason: 'error' };
+
+        // Graceful degradation — no on-camera recon.
+        const exhausted = replanCount >= config.maxReplans;
+        this.logger.warn(
+          { fromStepIndex: i, expected: ea, replanCount, remainingMs },
+          'expectAfter mismatch — not re-planning (budget too low or replans exhausted); degrading gracefully',
+        );
+        this.appendDecisionFailure(
+          session,
+          'expect_after_mismatch',
+          `mismatch at step ${i} (${step.kind}); skipped re-plan: ${exhausted ? 'replans exhausted' : 'insufficient budget'}`,
+        );
+        workingSteps = workingSteps.slice(0, i + 1);
+        if (remainingMs > 800) {
+          const fillerScrollMs = Math.min(1800, Math.max(600, remainingMs - 600));
+          workingSteps.push({
+            kind: 'scroll',
+            reasoning: 'graceful tail: gentle scroll to close the recording smoothly after a plan divergence',
+            deltaPx: 320,
+            durationMs: fillerScrollMs,
+            easing: 'inOutQuad',
+            dwellAfterMs: 0,
+          });
+          workingSteps.push({
+            kind: 'dwell',
+            reasoning: 'graceful tail: brief settle before the recording ends',
+            durationMs: 700,
+          });
         }
-        workingSteps = [...workingSteps.slice(0, i + 1), ...newPerf.steps];
         i += 1;
         continue;
       }
@@ -148,6 +184,30 @@ export class PerformanceDirector implements IDirector {
       });
     } catch (err) {
       this.logger.debug({ err }, 'appendReplanEntry failed');
+    }
+  }
+
+  /**
+   * Audit entry for the graceful-degradation path: an `expectAfter` mismatch
+   * we deliberately did NOT re-plan (budget too low / replans exhausted).
+   * Distinct from a `replan` entry, which means "we actually re-planned".
+   */
+  private appendDecisionFailure(
+    session: IPageSession,
+    reason: 'expect_after_mismatch',
+    details: string,
+  ): void {
+    try {
+      session.appendEntry({
+        t: session.nowMs(),
+        type: 'decision_failure',
+        reason,
+        details: details.slice(0, 500),
+        scrollY: 0,
+        viewport: viewportFrom(session),
+      });
+    } catch (err) {
+      this.logger.debug({ err }, 'appendDecisionFailure failed');
     }
   }
 }

@@ -7,9 +7,14 @@ import type { ActionLogEntry } from '../../../../src/domain/action-log.js';
 
 const target = (sel: string) => ({ selector: sel, bbox: { x: 0, y: 0, width: 10, height: 10 }, description: sel });
 
-const perf = (steps: Performance['steps']): Performance => ({
-  prompt: 'do the thing', durationMs: 20000, steps, totalEstimatedMs: 5000, rationale: 'test',
+const perf = (steps: Performance['steps'], durationMs = 20000): Performance => ({
+  prompt: 'do the thing', durationMs, steps, totalEstimatedMs: 5000, rationale: 'test',
 });
+
+// Long enough that `hardDeadlineAt - Date.now()` (≈ durationMs * directorHardBudgetMult)
+// stays well above config.replanMinRemainingMs (60 s) — so the heavyweight
+// re-plan branch fires instead of graceful degradation.
+const REPLAN_OK_MS = 120_000;
 
 describe('PerformanceDirector — deterministic playback', () => {
   it('calls beginRecording once and stops on a done step', async () => {
@@ -88,7 +93,7 @@ describe('PerformanceDirector — re-plan checkpoint', () => {
     const report = await director.run(perf([
       { kind: 'click', target: target('text=build'), anticipationMs: 100, reasoning: 'open build', expectAfter: { urlContains: '/build' } },
       { kind: 'done', reasoning: 'fin' },
-    ]), session);
+    ], REPLAN_OK_MS), session);
     expect(report.replanCount).toBe(1);
     expect(replan.calls).toHaveLength(1);
     expect(replan.calls[0]!.priorSteps?.[0]).toMatchObject({ kind: 'click' });
@@ -113,14 +118,40 @@ describe('PerformanceDirector — re-plan checkpoint', () => {
   it('stops re-planning after maxReplans (config default 3)', async () => {
     const session = new FakePageSession();
     session.url = 'https://x.test/start'; // never satisfies /build
-    const loopStep = () => perf([{ kind: 'click', target: target('text=build'), anticipationMs: 10, reasoning: 'retry', expectAfter: { urlContains: '/build' } }, { kind: 'done', reasoning: 'fin' }]);
+    const loopStep = () => perf([{ kind: 'click', target: target('text=build'), anticipationMs: 10, reasoning: 'retry', expectAfter: { urlContains: '/build' } }, { kind: 'done', reasoning: 'fin' }], REPLAN_OK_MS);
     const replan = new FakeReconnoiterer([loopStep(), loopStep(), loopStep(), loopStep(), loopStep()]);
     const director = new PerformanceDirector({ replanner: replan });
     const report = await director.run(perf([
       { kind: 'click', target: target('text=build'), anticipationMs: 10, reasoning: 'open build', expectAfter: { urlContains: '/build' } },
       { kind: 'done', reasoning: 'fin' },
-    ]), session);
+    ], REPLAN_OK_MS), session);
     expect(report.replanCount).toBeLessThanOrEqual(3);
+  });
+
+  it('degrades gracefully when budget is below replanMinRemainingMs', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x.test/start'; // never satisfies /build
+    const replan = new FakeReconnoiterer(); // empty queue — would throw if recon() were called
+    const director = new PerformanceDirector({ replanner: replan });
+    // durationMs 8000 ⇒ hardDeadline ≈ +9.6 s ≪ 60 s ⇒ no on-camera re-plan.
+    const report = await director.run(perf([
+      { kind: 'click', target: target('text=build'), anticipationMs: 10, reasoning: 'open build', expectAfter: { urlContains: '/build' } },
+      { kind: 'click', target: target('text=stale'), anticipationMs: 10, reasoning: 'stale tail step that should be dropped' },
+      { kind: 'done', reasoning: 'fin' },
+    ], 8000), session);
+
+    expect(report.replanCount).toBe(0);
+    expect(report.endReason).toBe('done');
+    expect(replan.calls).toHaveLength(0); // heavyweight recon NOT invoked
+    expect(session.appendedEntries.some(
+      (e: ActionLogEntry) => e.type === 'decision_failure' && e.reason === 'expect_after_mismatch',
+    )).toBe(true);
+    // The stale tail click was dropped; the filler scroll + dwell were rendered instead.
+    expect(session.events.some((e) => e.kind === 'click' && (e.payload as { selector: string }).selector === 'text=stale')).toBe(false);
+    const failedClickIdx = session.events.findIndex((e) => e.kind === 'click' && (e.payload as { selector: string }).selector === 'text=build');
+    expect(failedClickIdx).toBeGreaterThanOrEqual(0);
+    expect(session.events.slice(failedClickIdx + 1).some((e) => e.kind === 'scroll')).toBe(true);
+    expect(session.events.slice(failedClickIdx + 1).some((e) => e.kind === 'wait' && e.payload === 700)).toBe(true);
   });
 
   it('stops gracefully (endReason "error") if a re-plan call throws', async () => {
@@ -131,7 +162,7 @@ describe('PerformanceDirector — re-plan checkpoint', () => {
     const report = await director.run(perf([
       { kind: 'click', target: target('text=build'), anticipationMs: 10, reasoning: 'open build', expectAfter: { urlContains: '/build' } },
       { kind: 'done', reasoning: 'fin' },
-    ]), session);
+    ], REPLAN_OK_MS), session);
     expect(report.endReason).toBe('error');
   });
 });

@@ -35,26 +35,16 @@ const Schema = z.object({
   llmModel: z.string().min(1).default('openai/gpt-4o-mini'),
 
   /**
-   * Planner model — used once per job for the brief() vision call. Needs
-   * strong visual reasoning to extract click hints from a screenshot.
-   * Defaults to `LLM_MODEL` for backwards compatibility, but you SHOULD
-   * set `LLM_PLANNER_MODEL` explicitly for production. Suggested: a
-   * stronger vision model like `google/gemini-3.1-pro-preview` or
-   * `anthropic/claude-sonnet-4.6`.
+   * Fallback model for `llmReconModelResolved`. The recon model is resolved
+   * as: `llmReconModel` (LLM_RECON_MODEL) if set, else this
+   * (LLM_PLANNER_MODEL), else `llmModel` (LLM_MODEL). In other words, set
+   * this to a strong vision+planning model (e.g. `google/gemini-3.1-pro-preview`
+   * or `anthropic/claude-sonnet-4.6`) to use it for reconnaissance when
+   * `LLM_RECON_MODEL` isn't set. Optional. (Vestigial name — it fed the
+   * old streaming planner's brief() call; that's gone, only the recon
+   * fallback role remains.)
    */
   llmPlannerModel: z.string().min(1).optional(),
-
-  /**
-   * FastDecider model — used by the Director's per-action decision calls.
-   * Optimized for low latency + cost.
-   *
-   * Default `openai/gpt-4o-mini` — empirically faster (~0.6-1.0s p95) than
-   * `google/gemini-3.1-flash-lite` on OpenRouter today (preview, ~1.5s p95).
-   * Revisit when 3.1 Flash Lite goes GA (non-preview).
-   *
-   * Override with LLM_DECIDER_MODEL.
-   */
-  llmDeciderModel: z.string().min(1).default('openai/gpt-4o-mini'),
 
   /**
    * Reconnaissance model — used once per recording (and again per re-plan)
@@ -70,6 +60,17 @@ const Schema = z.object({
    * behaviour threshold (goals.md #6 carve-out). Override with MAX_REPLANS.
    */
   maxReplans: z.number().int().min(0).max(10).default(3),
+
+  /**
+   * Mid-recording re-plan (a full recon call, ~30–50 s) is only worth doing
+   * when at least this much recording budget remains. Below it,
+   * PerformanceDirector degrades gracefully (drops the stale tail, appends a
+   * short filler scroll, ends) rather than freezing the frame for the
+   * duration of a recon call. Default 60 s ⇒ effectively no mid-recording
+   * re-plan for recordings shorter than ~1 min. Override with
+   * REPLAN_MIN_REMAINING_MS.
+   */
+  replanMinRemainingMs: z.number().int().min(0).default(60000),
 
   /**
    * Recording-judge model — used ONCE per finished recording to grade
@@ -157,9 +158,11 @@ const raw = {
   openrouterBaseUrl: process.env.OPENROUTER_BASE_URL,
   llmModel: process.env.LLM_MODEL,
   llmPlannerModel: process.env.LLM_PLANNER_MODEL,
-  llmDeciderModel: process.env.LLM_DECIDER_MODEL,
   llmReconModel: process.env.LLM_RECON_MODEL,
   maxReplans: process.env.MAX_REPLANS ? Number(process.env.MAX_REPLANS) : undefined,
+  replanMinRemainingMs: process.env.REPLAN_MIN_REMAINING_MS
+    ? Number(process.env.REPLAN_MIN_REMAINING_MS)
+    : undefined,
   llmJudgeModel: process.env.LLM_JUDGE_MODEL,
   directorHardBudgetMult: process.env.DIRECTOR_HARD_BUDGET_MULT
     ? Number(process.env.DIRECTOR_HARD_BUDGET_MULT)
