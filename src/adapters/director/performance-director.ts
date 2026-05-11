@@ -1,7 +1,6 @@
 import { config } from '../../infra/config.js';
 import { logger as rootLogger } from '../../infra/logger.js';
 import type { ExpectAfter, Performance, PerformanceStep } from '../../domain/performance.js';
-import type { Viewport } from '../../domain/action-log.js';
 import type { IDirector, DirectorReport } from '../../ports/director.js';
 import type { IPageSession } from '../../ports/page-session.js';
 import type { IReconnoiterer } from '../../ports/reconnoiterer.js';
@@ -73,7 +72,7 @@ export class PerformanceDirector implements IDirector {
           let newPerf;
           try {
             newPerf = await this.replanner.recon(
-              { url: currentUrl, prompt: performance.prompt, durationMs: reconBudgetMs, viewport: viewportFrom(session), screenshot, priorSteps },
+              { url: currentUrl, prompt: performance.prompt, durationMs: reconBudgetMs, viewport: session.viewport, screenshot, priorSteps },
               session,
             );
           } catch (err) {
@@ -180,7 +179,7 @@ export class PerformanceDirector implements IDirector {
         reason,
         details: details.slice(0, 500),
         scrollY: 0,
-        viewport: viewportFrom(session),
+        viewport: session.viewport,
       });
     } catch (err) {
       this.logger.debug({ err }, 'appendReplanEntry failed');
@@ -204,7 +203,7 @@ export class PerformanceDirector implements IDirector {
         reason,
         details: details.slice(0, 500),
         scrollY: 0,
-        viewport: viewportFrom(session),
+        viewport: session.viewport,
       });
     } catch (err) {
       this.logger.debug({ err }, 'appendDecisionFailure failed');
@@ -222,9 +221,4 @@ function stepExpectAfter(step: PerformanceStep): ExpectAfter | null {
 
 async function safeUrl(session: IPageSession): Promise<string> {
   try { return await session.currentUrl(); } catch { return ''; }
-}
-
-function viewportFrom(session: IPageSession): Viewport {
-  const v = (session as unknown as { viewport?: Viewport }).viewport;
-  return v ?? { width: 1280, height: 720 };
 }

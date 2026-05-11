@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 
-import type { ActionLogEntry, RecordingWindow, Viewport } from '../domain/action-log.js';
+import type { ActionLogEntry, RecordingWindow } from '../domain/action-log.js';
 import { countMatchedHints } from '../domain/intent-matching.js';
 import type { Performance, PerformanceStep } from '../domain/performance.js';
 import { trimVideo, videoDurationMs } from '../infra/ffmpeg.js';
@@ -133,7 +133,7 @@ export class RecordJobRunner {
         url: req.url,
         prompt: req.prompt,
         durationMs: req.durationMs,
-        viewport: this.viewportFromSession(),
+        viewport: this.session.viewport,
         screenshot,
       },
       this.session,
@@ -213,17 +213,6 @@ export class RecordJobRunner {
     };
   }
 
-  // ----------------------------------------------------------- internals
-
-  private viewportFromSession(): Viewport {
-    // The session config currently isn't exposed via IPageSession; we read it
-    // via a fallback to a sensible default. Acceptable for now — see "future
-    // improvement" comment in IPageSession (no method for this yet).
-    const viewport = (this.session as unknown as {
-      cfg?: { viewport: Viewport };
-    }).cfg?.viewport;
-    return viewport ?? { width: 1280, height: 720 };
-  }
 }
 
 /**

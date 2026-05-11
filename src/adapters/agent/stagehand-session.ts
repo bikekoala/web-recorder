@@ -11,6 +11,7 @@ import {
   ActionLog,
   type ActionLogEntry,
   type PageDiagnostic,
+  type Viewport,
 } from '../../domain/action-log.js';
 import {
   ElementNotFoundError,
@@ -190,6 +191,11 @@ export class StagehandPageSession implements IPageSession {
       verbose: 1,
       ...cfg,
     };
+  }
+
+  /** The viewport this session renders at (px). Stable for the session's lifetime. */
+  get viewport(): Viewport {
+    return this.cfg.viewport;
   }
 
   // -------------------------------------------------------------------- lifecycle

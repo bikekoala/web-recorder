@@ -217,11 +217,16 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
     viewport: Viewport,
   }),
   /**
-   * `decision_failure` — LEGACY (streaming-era). Kept so old action logs
-   * still parse; the prophet pipeline (§0034) emits `replan` instead. The
-   * `reason` field was the audit hook — each value told the operator
-   * whether this was a system bug (`schema_validation`, `llm_call_failed`)
-   * or a page-vs-LLM mismatch (`expect_after_mismatch`, `click_failed`).
+   * `decision_failure` — originally a streaming-era entry; still emitted by
+   * the prophet pipeline (§0034) on the graceful-degradation path: when a
+   * step's `expectAfter` diverges but the Director degrades gracefully
+   * instead of re-planning (budget too low / replans exhausted) it logs a
+   * `decision_failure` (reason `expect_after_mismatch`); when it actually
+   * re-plans it logs a `replan` entry instead. Kept broad so old logs still
+   * parse. The `reason` field is the audit hook — each value tells the
+   * operator whether this was a system bug (`schema_validation`,
+   * `llm_call_failed`) or a page-vs-plan mismatch (`expect_after_mismatch`,
+   * `click_failed`).
    */
   z.object({
     t: z.number().nonnegative(),

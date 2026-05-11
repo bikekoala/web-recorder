@@ -33,6 +33,9 @@ export type ScrollEasing = 'inOutQuad' | 'outQuart' | 'outExpo' | 'linear';
  * - Final video composition (that is IComposer — not yet defined)
  */
 export interface IPageSession {
+  /** The viewport this session is rendering at (px). Stable for the session's lifetime. */
+  readonly viewport: Viewport;
+
   /** Launch browser, open page, begin recording. Idempotent: safe to call once. */
   start(): Promise<void>;
 

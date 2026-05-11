@@ -30,14 +30,19 @@ import { REGRESSION_CASES } from './cases.js';
  * Each (case × prompt) pair runs as its own `it()` so individual ones can
  * be filtered (e.g. `npx vitest -t youtube-creator-natural`).
  *
- * Per-test timeout: durationMs × 2 + 30s (covers setup + recon + recording
- * + trim + slack). Sequential by default — parallel would launch N browsers.
+ * Per-test timeout: recon (~40-60s off-camera: observeAll + vision LLM +
+ * per-target resolveTarget) + recording (durationMs) + setup + trim + slack.
+ * The prophet pipeline (§0034) front-loads a lot of wall-clock before the
+ * camera opens — see docs/decisions.md §0034. Sequential by default —
+ * parallel would launch N browsers.
  */
+const RECON_BUDGET_MS = 120_000;
+
 describe('regression suite', () => {
   for (const c of REGRESSION_CASES) {
     for (const p of c.prompts) {
       const name = `[${c.id} · ${p.label}] ${c.description}`;
-      const timeoutMs = c.durationMs * 2 + 30_000;
+      const timeoutMs = RECON_BUDGET_MS + c.durationMs * 2 + 30_000;
 
       it(name, async () => {
         if (!process.env.OPENROUTER_API_KEY) {
