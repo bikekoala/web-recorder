@@ -57,6 +57,21 @@ const Schema = z.object({
   llmDeciderModel: z.string().min(1).default('openai/gpt-4o-mini'),
 
   /**
+   * Reconnaissance model — used once per recording (and again per re-plan)
+   * to build the Performance. Needs strong vision + planning. Defaults to
+   * the resolved planner model. Override with LLM_RECON_MODEL.
+   */
+  llmReconModel: z.string().min(1).optional(),
+
+  /**
+   * Per-recording cap on re-plan checkpoints. After this many, the
+   * PerformanceDirector stops re-planning and plays out remaining steps
+   * as-is (reality checks become advisory). Test/eval infra, not a
+   * behaviour threshold (goals.md #6 carve-out). Override with MAX_REPLANS.
+   */
+  maxReplans: z.number().int().min(0).max(10).default(3),
+
+  /**
    * Recording-judge model — used ONCE per finished recording to grade
    * naturalness against the 5-dimension rubric (§0030). Needs native
    * VIDEO input support (not just images), so the default is Gemini
@@ -178,6 +193,8 @@ const raw = {
   llmModel: process.env.LLM_MODEL,
   llmPlannerModel: process.env.LLM_PLANNER_MODEL,
   llmDeciderModel: process.env.LLM_DECIDER_MODEL,
+  llmReconModel: process.env.LLM_RECON_MODEL,
+  maxReplans: process.env.MAX_REPLANS ? Number(process.env.MAX_REPLANS) : undefined,
   llmJudgeModel: process.env.LLM_JUDGE_MODEL,
   directorLookaheadMax: process.env.DIRECTOR_LOOKAHEAD_MAX
     ? Number(process.env.DIRECTOR_LOOKAHEAD_MAX)
@@ -240,6 +257,7 @@ export const config = {
   // back to `LLM_MODEL` for backwards compat. Adapters should read
   // `config.llmPlannerModelResolved`, never `data.llmPlannerModel` directly.
   llmPlannerModelResolved: data.llmPlannerModel ?? data.llmModel,
+  llmReconModelResolved: data.llmReconModel ?? data.llmPlannerModel ?? data.llmModel,
   isDev: data.nodeEnv === 'development',
   isProd: data.nodeEnv === 'production',
 } as const;
