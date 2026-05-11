@@ -50,4 +50,12 @@ describe('reconnoitererSystemPrompt', () => {
     expect(lower).toContain('viewport-height');
     expect(lower).toContain('screenful');
   });
+
+  it('makes accomplishing the goal priority #1 (a step per requested action)', () => {
+    const lower = reconnoitererSystemPrompt.toLowerCase();
+    expect(lower).toContain('accomplish the goal');
+    expect(lower).toContain('priority #1');
+    // it should tell the planner to verify there's a step for each requested action
+    expect(lower).toMatch(/step for each requested action|click.*step.*names? x|re-read the user intent/);
+  });
 });
