@@ -104,3 +104,40 @@ Ship **B now** (small, contained, makes the canonical scenario *smooth* even if
 incomplete) + open a sub-project for **C** (the rehearsing recon — that's the
 actual answer to "make it look like a person *and* land the task"). Treat #3
 (scroll-teleport) as its own bug.
+
+## Update — after the "B" fix (commit `050d39d`, 2026-05-11)
+
+`PerformanceDirector` now only does the heavyweight on-camera re-plan when
+`remainingMs >= config.replanMinRemainingMs` (default 60 s); below that it logs
+a `decision_failure`, drops the stale step tail, appends a short gentle closing
+scroll + dwell, and ends. Re-ran the canonical scenario:
+
+| | before B | after B |
+|---|---|---|
+| Verdict | robotic | **probably_synthetic** |
+| `pacing` | fail ("33 s freeze") | partial ("~2 s between scroll and click feels slightly mechanical") |
+| `motionQuality` | fail | fail ("initial scroll extremely fast & linear") |
+| `intentExecution` | pass | partial ("requested 'slow scroll', executed fast") |
+| Trimmed video | 36.1 s (3.6× over) | 6.9 s (under) |
+| `replanCount` | 1 | 0 |
+| dead air | ~33 s frozen frame | none |
+| Total wall-clock | 97 s | 53 s |
+
+**The architecture-level problem (on-camera re-plan = dead air) is solved.** What
+remains is *recon plan quality*: (a) the recon resolved a wrong target for
+"简体中文" (clicked a deep `react-app` div, not the README's language link) → the
+click did nothing → graceful degradation kicked in (hence `intentSatisfaction:
+partial`, "1/2 targets clicked"); (b) it emitted one 2.4 s / 600 px·s⁻¹ scroll
+for a prompt that said "slow scroll" instead of slow/chunked scrolling;
+(c) the scroll still reads as "fast & linear" to the judge — possibly low video
+fps over a short scroll, possibly the `smoothScrollTo` easing, possibly lazy
+React content. All three are recon-plan-quality / rendering issues, not the
+recovery-architecture issue this doc opened on — tracked in Task #21
+(rehearsing reconnoiterer + the scroll-rendering investigation).
+
+`replanMinRemainingMs` default 60 s means: for the typical short (10–30 s)
+recording there is now effectively *no* mid-recording re-plan — a divergence is
+absorbed by graceful degradation. A re-plan only happens on long recordings
+(≳ 75 s) where a ~30–50 s recon can fit. That's the right trade until the
+rehearsing recon (Task #21) makes divergences rare enough that re-plan can be
+re-enabled more aggressively.

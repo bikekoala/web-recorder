@@ -27,12 +27,14 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Playwright video recording + ffmpeg trim | ✅ |
 | `IReconnoiterer` + LlmReconnoiterer (recon → `Performance`; reused as re-planner) | ✅ |
 | `IDirector` + PerformanceDirector (deterministic `Performance` playback + re-plan checkpoint, §0034) | ✅ |
+| PerformanceDirector graceful degradation — drops stale tail + gentle closing scroll when an `expectAfter` mismatch can't be re-planned (§0034) | ✅ |
+| `replanMinRemainingMs` gate (default 60s) — mid-recording re-plan only when enough budget remains; short recordings degrade instead (§0034) | ✅ |
 | `Performance` domain type (pre-resolved, paced action sequence) | ✅ |
 | Centralized prompts in `src/prompts/` — only `reconnoiterer` (+ `recording-judge`) remain | ✅ |
 | Two model knobs that matter: `LLM_MODEL` (Stagehand internals) / `LLM_RECON_MODEL` (recon+re-plan) | ✅ |
 | `RecordJobRunner` (orchestrates setup → recon → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (46 passing) | ✅ |
+| Vitest unit tests (47 passing) | ✅ |
 | Action vocabulary: 7 primitives (click / scroll / dwell / type / key / back / done) | ✅ |
 | `IRecordingJudge` + LlmVisionJudge — automated 5-dim rubric naturalness grading via Gemini 3.1 Pro (§0030) | ✅ |
 | Naturalness rendering bundle — pre-typing pause, slower keystroke delay, inter-scroll micro-pause (§0031) | ✅ |
@@ -50,18 +52,21 @@ The **naturalness catalog** in [`docs/naturalness-catalog.md`](./docs/naturalnes
 
 ### Measured performance (Recordly README, "click 简中, slow scroll, 10s")
 
-(Stale — pre-§0034. Refreshed after the next integration run.)
-
-After §0019 (streaming Director), single integration run on macOS + OpenRouter `openai/gpt-4o-mini`:
+Post-§0034 (prophet pipeline, after the "B" graceful-degradation fix), single integration run on macOS + OpenRouter, `npm run prototype:stagehand` + `npm run judge`:
 
 | Metric | Value |
 |---|---|
-| Trimmed video duration | 10640 ms (target 10000, +6.4%) |
-| Implicit dwells (LLM tail latency hidden as natural pauses) | 5 (~1.0s total) |
-| Resolved click hints | 1 (planner pre-resolved 简体中文) |
-| FastDecider calls during recording | 2 |
-| Director end reason | `budget` (hit 1.05× cap) |
-| Total wall-clock incl. setup + brief + trim | ~49s |
+| Pipeline | Prophet (§0034): off-camera recon → deterministic paced playback |
+| Trimmed video duration | 6.9 s (target 10 s — recon's plan diverged early, graceful degradation closed it) |
+| Reconnaissance (off-camera) | ~40 s — `observeAll()` + vision LLM + per-target `resolveTarget()` |
+| On-camera recording | 6.9 s — no dead air |
+| Re-plans | 0 |
+| Director end reason | `done` (via graceful degradation after an `expectAfter` mismatch on the click target) |
+| `intentSatisfaction` | partial — "1/2 unique target(s) actually clicked" (recon resolved a wrong "简体中文" target → Task #21) |
+| Video judge verdict (Gemini 3.1 Pro) | `probably_synthetic` — pacing partial, motionQuality fail ("scroll fast & linear"), intentExecution partial |
+| Total wall-clock | ~53 s |
+
+Recon-plan-quality gaps (wrong target resolution, scroll pacing) are tracked in Task #21 (rehearsing reconnoiterer). See [`docs/findings/2026-05-11-prophet-first-integration.md`](./docs/findings/2026-05-11-prophet-first-integration.md).
 
 ## Common commands
 
