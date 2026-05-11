@@ -4,6 +4,7 @@ import { DomainError } from '../../domain/errors.js';
 import {
   PerformanceSchema,
   ResolvedTargetSchema,
+  UNRESOLVED_SENTINEL,
   type Performance,
   type PerformanceStep,
   type RehearsalTrace,
@@ -72,8 +73,14 @@ export class LlmReconnoiterer implements IReconnoiterer {
     if (!Array.isArray(parsedRaw.steps)) throw new ReconError('recon output has no steps array');
     const promptStr = typeof parsedRaw.prompt === 'string' ? parsedRaw.prompt : input.prompt;
 
-    // Resolve targets; drop click/type steps that don't resolve.
-    const resolvedSteps = await this.resolveSteps(parsedRaw.steps as Array<Record<string, unknown>>, session);
+    // Resolve targets. When a rehearsal walk will follow (config.reconRehearse),
+    // a click/type step whose target won't resolve *here* (at scrollY 0, right
+    // after goto) is KEPT with a sentinel target — the walk re-resolves it at
+    // the actual page state it'll run in. Without a rehearsal walk there's no
+    // such retry, so an unresolvable step is dropped as before.
+    const resolvedSteps = await this.resolveSteps(parsedRaw.steps as Array<Record<string, unknown>>, session, {
+      keepUnresolvable: config.reconRehearse,
+    });
     if (resolvedSteps.length === 0) {
       throw new ReconError('recon produced zero usable steps after target resolution');
     }
@@ -133,7 +140,8 @@ export class LlmReconnoiterer implements IReconnoiterer {
           this.logger.warn({ rawPreview: raw2.slice(0, 120) }, 'reconverge response had non-JSON wrapper; recovered the JSON object');
         }
         if (!Array.isArray(parsed.steps)) return [];
-        return this.resolveSteps(parsed.steps as Array<Record<string, unknown>>, ctx.session);
+        // Reconverge output always feeds the walk → keep unresolvable steps.
+        return this.resolveSteps(parsed.steps as Array<Record<string, unknown>>, ctx.session, { keepUnresolvable: true });
       };
       let result: Awaited<ReturnType<typeof rehearse>>;
       try {
@@ -181,12 +189,18 @@ export class LlmReconnoiterer implements IReconnoiterer {
   /**
    * Turn raw step objects from the LLM into resolved {@link PerformanceStep}s:
    * click/type targets are resolved to a selector + bbox via
-   * `session.resolveTarget()`; steps whose target won't resolve are dropped
-   * (and logged). Other kinds pass through untouched.
+   * `session.resolveTarget()`. Other kinds pass through untouched.
+   *
+   * When `opts.keepUnresolvable` is true, a click/type step whose target won't
+   * resolve right now is kept with a sentinel target ({@link UNRESOLVED_SENTINEL}
+   * + zero bbox) — the rehearsal walk re-resolves it at the actual page state.
+   * When it's false (no rehearsal walk follows), or the step has no `target.description`
+   * at all, the step is dropped (and logged).
    */
   private async resolveSteps(
     rawSteps: Array<Record<string, unknown>>,
     session: IPageSession,
+    opts: { keepUnresolvable: boolean },
   ): Promise<PerformanceStep[]> {
     const resolved: PerformanceStep[] = [];
     for (const rawStep of rawSteps) {
@@ -195,7 +209,16 @@ export class LlmReconnoiterer implements IReconnoiterer {
         const desc = (rawStep.target as { description?: string } | undefined)?.description;
         if (!desc) { this.logger.debug({ rawStep }, 'recon step missing target description — dropped'); continue; }
         const r = await session.resolveTarget(desc).catch(() => null);
-        if (!r || !r.bbox) { this.logger.info({ desc }, 'recon target did not resolve — step dropped'); continue; }
+        if (!r || !r.bbox) {
+          if (opts.keepUnresolvable) {
+            this.logger.debug({ desc }, 'recon target unresolved eagerly — rehearsal walk will retry');
+            const target = ResolvedTargetSchema.parse({ selector: UNRESOLVED_SENTINEL, bbox: { x: 0, y: 0, width: 0, height: 0 }, description: desc });
+            resolved.push({ ...rawStep, target } as unknown as PerformanceStep);
+          } else {
+            this.logger.info({ desc }, 'recon target did not resolve — step dropped');
+          }
+          continue;
+        }
         const target = ResolvedTargetSchema.parse({ selector: r.selector, bbox: r.bbox, description: desc });
         resolved.push({ ...rawStep, target } as unknown as PerformanceStep);
       } else {

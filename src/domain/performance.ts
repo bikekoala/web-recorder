@@ -37,6 +37,17 @@ export const ResolvedTargetSchema = z.object({
 });
 export type ResolvedTarget = z.infer<typeof ResolvedTargetSchema>;
 
+/**
+ * Sentinel `selector` for a click/type target the recon couldn't resolve
+ * eagerly (at scrollY 0, right after `goto`). The rehearsal walk re-resolves
+ * such targets at the actual page state the step will run in — and if the
+ * re-resolve also fails, it's a divergence → reconverge. A target carrying
+ * this sentinel must never reach the on-camera Performance; the walk drops any
+ * survivor defensively. (`'__unresolved__'` is a valid non-empty `selector`,
+ * and a zero `Bbox` is valid, so a sentinel target Zod-validates fine.)
+ */
+export const UNRESOLVED_SENTINEL = '__unresolved__';
+
 export const PerformanceStepSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('click'),

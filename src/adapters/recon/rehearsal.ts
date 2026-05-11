@@ -1,4 +1,5 @@
 import type { ExpectAfter, PerformanceStep, RehearsalTrace } from '../../domain/performance.js';
+import { UNRESOLVED_SENTINEL } from '../../domain/performance.js';
 import type { PageDiagnostic } from '../../domain/action-log.js';
 import type { Logger } from '../../infra/logger.js';
 import type { IPageSession } from '../../ports/page-session.js';
@@ -54,6 +55,45 @@ export async function rehearse(
   let truncated = false;
   let timedOut = false;
 
+  // Shared divergence handling: bump the counter, try a (capped, deadline-gated)
+  // reconverge — on success replace the working list & restart the walk, on
+  // failure mark truncated. Returns what the loop should do next.
+  const handleDivergence = async (
+    atIndex: number,
+    divergedStep: PerformanceStep,
+    observedUrl: string,
+  ): Promise<'reconverged' | 'truncated'> => {
+    divergences++;
+    if (reconverges < opts.reconvergeMax && Date.now() < deadlineAt) {
+      let newSteps: PerformanceStep[] | null = null;
+      try {
+        newSteps = await opts.reconverge({
+          session,
+          divergedAtIndex: atIndex,
+          divergedStep,
+          intent: opts.intent,
+          observedUrl,
+        });
+      } catch (err) {
+        logger.warn({ err }, 'reconverge failed');
+        newSteps = null;
+      }
+      if (newSteps && newSteps.length > 0) {
+        // Drop the diverged step (it didn't work; not in `walked`), replace the
+        // whole remaining working list with the reconverged steps, restart the
+        // walk index. The new steps go through the same loop — same divergence
+        // checks, same divergences/reconverges/deadline caps.
+        reconverges++;
+        steps = [...newSteps];
+        i = 0;
+        return 'reconverged';
+      }
+      // reconverge gave nothing usable — fall through to truncate.
+    }
+    truncated = true;
+    return 'truncated';
+  };
+
   let i = 0;
   while (i < steps.length) {
     if (Date.now() >= deadlineAt) {
@@ -61,7 +101,7 @@ export async function rehearse(
       truncated = true;
       break;
     }
-    const step = steps[i]!;
+    let step = steps[i]!;
 
     if (step.kind === 'done') {
       walked.push(step);
@@ -86,6 +126,39 @@ export async function rehearse(
     }
 
     // Acting step: click | type | key | back.
+
+    // Re-resolve click/type targets against the LIVE page at the actual scroll
+    // position this step runs in — the recon's eager resolve happened at
+    // scrollY 0 and may have missed the element (or matched the wrong one). The
+    // returned bbox is viewport-relative at resolve time; the rest of the
+    // pipeline treats stored bboxes as page-absolute, so convert: y += scrollY.
+    if (step.kind === 'click' || step.kind === 'type') {
+      const scrollAtResolve = await session.scrollY().catch(() => 0);
+      const fresh = await session.resolveTarget(step.target.description).catch(() => null);
+      if (fresh && fresh.bbox) {
+        const freshTarget = {
+          selector: fresh.selector,
+          bbox: {
+            x: fresh.bbox.x,
+            y: fresh.bbox.y + scrollAtResolve,
+            width: fresh.bbox.width,
+            height: fresh.bbox.height,
+          },
+          description: step.target.description,
+        };
+        step = { ...step, target: freshTarget };
+        steps[i] = step;
+      } else {
+        // Re-resolve failed at the current page state — there's nothing to
+        // click. Treat as a divergence (the reconverge LLM is told it couldn't
+        // find '<desc>' here and can pick a different element / scroll more).
+        logger.info({ i, kind: step.kind, reason: 'target_unresolvable' }, 'rehearsal divergence — target did not resolve');
+        const result = await handleDivergence(i, step, await safeCurrentUrl(session));
+        if (result === 'reconverged') continue;
+        break;
+      }
+    }
+
     const urlBefore = await safeCurrentUrl(session);
     const diagBefore = await session.pageDiagnostic().catch(() => null);
     const sigBefore = pageSignature(diagBefore);
@@ -129,57 +202,40 @@ export async function rehearse(
       continue;
     }
 
-    divergences++;
     logger.info(
       { i, kind: step.kind, threw, aboutBlank, unchanged, eaSatisfied },
       'rehearsal divergence',
     );
-
-    if (reconverges < opts.reconvergeMax && Date.now() < deadlineAt) {
-      let newSteps: PerformanceStep[] | null = null;
-      try {
-        newSteps = await opts.reconverge({
-          session,
-          divergedAtIndex: i,
-          divergedStep: step,
-          intent: opts.intent,
-          observedUrl: urlAfter,
-        });
-      } catch (err) {
-        logger.warn({ err }, 'reconverge failed');
-        newSteps = null;
-      }
-      if (newSteps && newSteps.length > 0) {
-        // Drop the diverged step (it didn't work; it's not in `walked`),
-        // replace the whole remaining working list with the reconverged steps,
-        // restart the walk index. The new steps go through the same loop —
-        // same divergence checks, same divergences/reconverges/deadline caps.
-        reconverges++;
-        steps = [...newSteps];
-        i = 0;
-        continue;
-      }
-      // reconverge gave nothing usable — fall through to truncate.
-    }
-
-    truncated = true;
+    const result = await handleDivergence(i, step, urlAfter);
+    if (result === 'reconverged') continue;
     break;
   }
 
-  if (truncated) {
-    walked.push(...gracefulTail());
-  } else if (!walked.some((s) => s.kind === 'done')) {
-    walked.push({ kind: 'done', reasoning: 'rehearsal walk completed; nothing left to do' });
+  // Defensive: drop any click/type step that somehow still carries the
+  // unresolved sentinel (in practice the walk re-resolves it or diverges, so
+  // none should survive — but a sentinel target Zod-validates fine, so the
+  // adapter's final safeParse wouldn't catch it).
+  let finalWalked = walked.filter(
+    (s) => !((s.kind === 'click' || s.kind === 'type') && s.target.selector === UNRESOLVED_SENTINEL),
+  );
+  if (finalWalked.length !== walked.length) {
+    logger.warn({ dropped: walked.length - finalWalked.length }, 'rehearsal: dropped surviving unresolved-sentinel step(s)');
   }
-  if (walked.length === 0) {
+
+  if (truncated) {
+    finalWalked.push(...gracefulTail());
+  } else if (!finalWalked.some((s) => s.kind === 'done')) {
+    finalWalked.push({ kind: 'done', reasoning: 'rehearsal walk completed; nothing left to do' });
+  }
+  if (finalWalked.length === 0) {
     // Never return zero steps — PerformanceSchema requires steps.min(1).
-    walked.push(...gracefulTail());
+    finalWalked = [...gracefulTail()];
     truncated = true;
   }
 
   return {
-    steps: walked,
-    trace: { walkedSteps: walked.length, divergences, reconverges, truncated, timedOut },
+    steps: finalWalked,
+    trace: { walkedSteps: finalWalked.length, divergences, reconverges, truncated, timedOut },
   };
 }
 
