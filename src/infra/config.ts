@@ -73,6 +73,19 @@ const Schema = z.object({
   replanMinRemainingMs: z.number().int().min(0).default(60000),
 
   /**
+   * Rehearsing reconnoiterer (Task #21): the recon walks its draft against the
+   * live page off-camera before recording, verifying targets and rewriting
+   * expectAfter to observed state. `reconRehearse` is the master switch (off ⇒
+   * recon falls back to plan-and-resolve, no walk). `reconRehearsalBudgetMs`
+   * caps the whole walk's wall-clock; `reconReconvergeMax` caps the LLM
+   * reconverge calls during a walk. Both overruns ⇒ truncate the walk + a
+   * graceful tail. See the rehearsing-reconnoiterer spec.
+   */
+  reconRehearse: z.enum(['true', 'false', '1', '0']).transform((v) => v === 'true' || v === '1').default('true'),
+  reconRehearsalBudgetMs: z.coerce.number().int().min(0).default(30000),
+  reconReconvergeMax: z.coerce.number().int().min(0).max(10).default(2),
+
+  /**
    * Recording-judge model — used ONCE per finished recording to grade
    * naturalness against the 5-dimension rubric (§0030). Needs native
    * VIDEO input support (not just images), so the default is Gemini
@@ -210,6 +223,9 @@ const raw = {
   replanMinRemainingMs: process.env.REPLAN_MIN_REMAINING_MS
     ? Number(process.env.REPLAN_MIN_REMAINING_MS)
     : undefined,
+  reconRehearse: process.env.RECON_REHEARSE || undefined,
+  reconRehearsalBudgetMs: process.env.RECON_REHEARSAL_BUDGET_MS,
+  reconReconvergeMax: process.env.RECON_RECONVERGE_MAX,
   llmJudgeModel: process.env.LLM_JUDGE_MODEL,
   directorHardBudgetMult: process.env.DIRECTOR_HARD_BUDGET_MULT
     ? Number(process.env.DIRECTOR_HARD_BUDGET_MULT)
