@@ -274,11 +274,11 @@ export class StagehandPageSession implements IPageSession {
       // calls will resolve.
       await this.context.addInitScript({ content: RUNTIME_HELPERS_SCRIPT });
 
-      // Local-dev only: launching a headless:false Chromium on macOS steals
-      // keyboard focus, and there's no reliable Chromium flag to prevent it.
-      // Best-effort osascript hands focus back to whatever app was frontmost.
-      // Never throws — a failed osascript must not break the session.
-      await this.returnFocusAfterLaunchIfEnabled();
+      // Local-dev only: launching a headless:false Chromium/Chrome on macOS
+      // steals keyboard focus, and there's no reliable browser flag to
+      // prevent it. Best-effort osascript burst hands focus back to whatever
+      // app was frontmost (your terminal). Fire-and-forget, never throws.
+      this.returnFocusAfterLaunchIfEnabled();
     } catch (err) {
       await this.cleanupPartial();
       throw new SessionStartError('Failed to launch Playwright Chromium', err);
@@ -1178,14 +1178,22 @@ export class StagehandPageSession implements IPageSession {
   }
 
   /**
-   * LOCAL DEV ONLY — macOS + headless:false. Launching a visible Chromium
-   * on macOS steals keyboard focus and there is no reliable Chromium flag
-   * for "launch without stealing focus", so this osascript is the
+   * LOCAL DEV ONLY — macOS + headless:false. Launching a visible Chromium /
+   * Chrome on macOS steals keyboard focus and there is no reliable Chromium
+   * flag for "launch without stealing focus", so this osascript is the
    * workaround. It's a no-op off macOS, when headless, or when
    * `BROWSER_RETURN_FOCUS=false`.
    *
-   * Three tiers, all best-effort (never throw — a failed osascript must not
-   * break the session, just logs at debug level):
+   * IMPORTANT — it's a *burst*, not a single shot. `launchPersistentContext`
+   * resolves once the CDP socket is up, but the browser's window can be
+   * created / raised a beat *later* (especially `channel: 'chrome'` cold-
+   * starting a fresh temp profile) — so a single `activate` fired the instant
+   * launch resolves often loses the race: we activate the terminal, then the
+   * browser raises its window and re-steals. Firing the activate a handful of
+   * times over the first ~2 s reliably wins it. Each shot is best-effort
+   * (never throws — a failed osascript must not break the session).
+   *
+   * Three tiers (which command we fire):
    *   1. `BROWSER_RETURN_FOCUS_TO=<app>` set → `activate` that app by name.
    *      Explicit override; reliable; needs no special permission.
    *   2. else `$__CFBundleIdentifier` present (→ `config.browserReturnFocusBundleId`)
@@ -1198,38 +1206,46 @@ export class StagehandPageSession implements IPageSession {
    *      app I was in". NOTE: this path needs macOS Accessibility permission
    *      for the controlling process (your terminal); if it isn't granted,
    *      osascript errors and we fall through harmlessly.
+   *
+   * Returns immediately; the burst runs in the background (it's pure
+   * best-effort osascript — nothing depends on it, it self-terminates well
+   * within the session lifetime, so it needs no ownership/cleanup).
    */
-  private async returnFocusAfterLaunchIfEnabled(): Promise<void> {
+  private returnFocusAfterLaunchIfEnabled(): void {
     if (!config.browserReturnFocus) return;
     if (process.platform !== 'darwin') return;
     if (this.cfg.headless) return;
 
     const app = config.browserReturnFocusToApp;
     const bundleId = config.browserReturnFocusBundleId;
-    try {
-      if (app) {
-        // execFile with an args array — never a shell string — so the app
-        // name (semi-trusted, from config) can't be used for shell injection.
-        await execFileAsync('osascript', ['-e', `tell application "${app}" to activate`]);
-        this.logger.debug({ app }, 'returned focus to named app');
-      } else if (bundleId) {
-        // bundleId comes from $__CFBundleIdentifier (trusted env); still use
-        // the args-array form so it can never be a shell string.
-        await execFileAsync('osascript', [
-          '-e',
-          `tell application id "${bundleId}" to activate`,
-        ]);
-        this.logger.debug({ bundleId }, 'returned focus via $__CFBundleIdentifier');
-      } else {
-        await execFileAsync('osascript', [
-          '-e',
-          'tell application "System Events" to key code 48 using command down',
-        ]);
-        this.logger.debug('returned focus via Cmd+Tab');
+    // Which AppleScript line restores focus, given the tier in effect.
+    // execFile is always called with an args array (never a shell string), so
+    // the app name / bundle id can't be used for shell injection.
+    const script = app
+      ? `tell application "${app}" to activate`
+      : bundleId
+        ? `tell application id "${bundleId}" to activate`
+        : 'tell application "System Events" to key code 48 using command down';
+    const via = app ? 'named app' : bundleId ? '$__CFBundleIdentifier' : 'Cmd+Tab';
+
+    // Re-fire over the window-raise race. Delays in ms from launch-resolve.
+    const SHOT_DELAYS_MS = [0, 350, 800, 1500];
+    void (async () => {
+      let any = false;
+      for (const delay of SHOT_DELAYS_MS) {
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+        try {
+          await execFileAsync('osascript', ['-e', script]);
+          any = true;
+        } catch (err) {
+          // First failure is enough to know the tier doesn't work here
+          // (e.g. Cmd+Tab without Accessibility permission) — stop retrying.
+          this.logger.debug({ err, via }, 'osascript focus-return failed; leaving focus as-is');
+          return;
+        }
       }
-    } catch (err) {
-      this.logger.debug({ err, app, bundleId }, 'osascript focus-return failed; leaving focus as-is');
-    }
+      if (any) this.logger.debug({ via, shots: SHOT_DELAYS_MS.length }, 'returned focus to terminal');
+    })();
   }
 
   private requirePage(): Page {
