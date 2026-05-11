@@ -72,14 +72,19 @@ describe('LlmReconnoiterer', () => {
       .rejects.toBeInstanceOf(ReconError);
   });
 
-  it('drops a click step whose target will not resolve, keeping the rest', async () => {
+  it('unresolvable click → kept with a sentinel → walk re-resolves → still null → divergence → truncate; no click in the final Performance', async () => {
     const session = new FakePageSession();
-    session.resolveTargetResult = null; // nothing resolves
+    session.resolveTargetResult = null; // never resolves — eagerly OR in the walk
     const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(llmPerformanceJson) });
     const perf = await recon.recon({ url: 'u', prompt: 'p', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
-    // The click is dropped; dwell + dwell + done remain.
+    // recon keeps the click (sentinel) instead of dropping it eagerly, the
+    // rehearsal walk re-resolves at the live page, that also fails → divergence
+    // → reconverge (still unresolvable) → truncate + graceful tail. End result:
+    // no click step survives, but the Performance still has its graceful tail.
     expect(perf.steps.some((s) => s.kind === 'click')).toBe(false);
-    expect(perf.steps.length).toBeGreaterThanOrEqual(2);
+    expect(perf.steps.some((s) => s.kind === 'type')).toBe(false);
+    expect(perf.steps[perf.steps.length - 1].kind).toBe('done');
+    expect(perf.rehearsal?.truncated).toBe(true);
   });
 
   const goPlanJson = JSON.stringify({

@@ -19,6 +19,9 @@ describe('rehearse()', () => {
     const session = new FakePageSession();
     session.url = 'https://test.example/';
     session.observeResults = [{ selector: 'a#x', description: 'x' }] as any;
+    // The walk re-resolves the click target against the live page first; give
+    // it an in-viewport element so the re-resolve succeeds and it proceeds.
+    session.resolveTargetResult = { selector: 'sel:X', description: 'X', bbox: { x: 0, y: 0, width: 10, height: 10 } };
     // The walk now coord-clicks (bbox center in viewport at scrollY 0), but may
     // fall back to clickSelector — wire both hooks to the same navigation effect.
     const nav = () => {
@@ -44,6 +47,9 @@ describe('rehearse()', () => {
     const session = new FakePageSession();
     session.url = 'https://test.example/';
     session.observeResults = [{ selector: 'a#x', description: 'x' }] as any;
+    // Re-resolve succeeds (so the click is executable) but with no clickAtImpl
+    // wired it changes nothing → "dead element" divergence.
+    session.resolveTargetResult = { selector: 'sel:X', description: 'X', bbox: { x: 0, y: 0, width: 10, height: 10 } };
     const reconverged: PerformanceStep[] = [clickStep('the REAL link'), done];
     let reconvergeCalls = 0;
     const reconverge = async (ctx: ReconvergeContext): Promise<PerformanceStep[]> => {
@@ -65,6 +71,8 @@ describe('rehearse()', () => {
   it('reconverge cap hit → truncate at the divergence + graceful tail', async () => {
     const session = new FakePageSession();
     session.observeResults = [{ selector: 'a#x', description: 'x' }] as any;
+    // Re-resolve succeeds (executable) but every click is dead.
+    session.resolveTargetResult = { selector: 'sel:X', description: 'X', bbox: { x: 0, y: 0, width: 10, height: 10 } };
     const reconverge = async (_ctx: ReconvergeContext): Promise<PerformanceStep[]> => [clickStep('still dead'), done];
     const draft: PerformanceStep[] = [clickStep('a'), done];
     const { steps, trace } = await rehearse({ draftSteps: draft, session, intent: 'x', reconverge, rehearsalBudgetMs: 30000, reconvergeMax: 1, logger: log });
@@ -92,5 +100,51 @@ describe('rehearse()', () => {
     const { steps } = await rehearse({ draftSteps: draft, session, intent: 'x', reconverge, rehearsalBudgetMs: 30000, reconvergeMax: 2, logger: log });
     expect(steps.length).toBeGreaterThan(0);
     expect(steps[steps.length - 1].kind).toBe('done');
+  });
+
+  it('re-resolve failure → divergence → reconverge → working list replaced', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x/';
+    session.observeResults = [{ selector: 'a#x', description: 'x' }] as any;
+    session.resolveTargetResult = null; // re-resolve fails for the original target
+    let reconvergeCalls = 0;
+    let divergedDesc: string | undefined;
+    const reconverge = async (ctx: ReconvergeContext): Promise<PerformanceStep[]> => {
+      reconvergeCalls++;
+      divergedDesc = ctx.divergedStep.kind === 'click' ? ctx.divergedStep.target.description : undefined;
+      // The reconverged plan's click target DOES resolve, and clicking it navigates.
+      session.resolveTargetResult = { selector: 'sel:works', description: 'works', bbox: { x: 0, y: 0, width: 5, height: 5 } };
+      session.clickAtImpl = () => { session.url = 'https://x/done'; };
+      return [clickStep('the working link'), done];
+    };
+    const draft: PerformanceStep[] = [clickStep('the missing link'), done];
+    const { steps, trace } = await rehearse({ draftSteps: draft, session, intent: 'click the link', reconverge, rehearsalBudgetMs: 30000, reconvergeMax: 2, logger: log });
+    expect(reconvergeCalls).toBe(1);
+    expect(divergedDesc).toBe('the missing link');
+    expect(trace).toMatchObject({ divergences: 1, reconverges: 1, truncated: false, timedOut: false });
+    expect(steps.some((s) => s.kind === 'click' && s.target.description === 'the working link')).toBe(true);
+    expect(steps.some((s) => s.kind === 'click' && s.target.description === 'the missing link')).toBe(false);
+  });
+
+  it('re-resolve gives a fresh page-absolute bbox (viewport-relative + scrollY)', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x/';
+    session.observeResults = [{ selector: 'a#x', description: 'x' }] as any;
+    // resolveTarget returns a bbox viewport-relative at resolve time: y=200.
+    // The walk runs this click after a scroll(1000), so scrollY === 1000 →
+    // the stored (page-absolute) bbox.y must become 200 + 1000 = 1200.
+    session.resolveTargetResult = { selector: 'sel:t', description: 't', bbox: { x: 50, y: 200, width: 10, height: 10 } };
+    const clicks: Array<{ x: number; y: number }> = [];
+    // The click must produce a visible change or the walk flags it as a dead
+    // element (a divergence) — make it "navigate".
+    session.clickAtImpl = (x, y) => { clicks.push({ x, y }); session.url = 'https://x/landed'; };
+    const draft: PerformanceStep[] = [scroll(1000), clickStep('the target'), done];
+    const { steps, trace } = await rehearse({ draftSteps: draft, session, intent: 'x', reconverge: NEVER_RECONVERGE, rehearsalBudgetMs: 30000, reconvergeMax: 2, logger: log });
+    expect(trace.divergences).toBe(0);
+    const click = steps.find((s) => s.kind === 'click') as Extract<PerformanceStep, { kind: 'click' }>;
+    expect(click.target.bbox.y).toBe(1200);
+    // clickResolvedTarget: cy = 1200 - scrollY(1000) + height/2(5) = 205, in viewport → clickAt(55, 205).
+    expect(clicks).toHaveLength(1);
+    expect(clicks[0]!.y).toBe(205);
   });
 });
