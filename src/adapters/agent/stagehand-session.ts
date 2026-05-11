@@ -1364,6 +1364,14 @@ export class StagehandPageSession implements IPageSession {
     }
   }
 
+  async historyDepth(): Promise<number> {
+    try {
+      return await this.requirePage().evaluate(() => window.history.length);
+    } catch {
+      return 1;
+    }
+  }
+
   private async bboxOfSelector(
     selector: string,
   ): Promise<{ x: number; y: number; width: number; height: number } | null> {

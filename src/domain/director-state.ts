@@ -57,6 +57,12 @@ export interface DirectorState {
    * stops re-picking the same target. See §0028.
    */
   unreachableTargets?: string[];
+  /**
+   * Length of the browser history stack from JS (`window.history.length`).
+   * When this is 1, calling `back` lands on about:blank — surfaced to the
+   * decider so it skips `back` from a single-entry history. See §0032.
+   */
+  historyDepth?: number;
 }
 
 export interface ActionSummary {

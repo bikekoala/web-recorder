@@ -110,6 +110,17 @@ export interface IPageSession {
   currentUrl(): Promise<string>;
 
   /**
+   * Length of the browser history stack as seen from JS (`window.history.length`).
+   * Used by the Director to decide whether `back()` is safe — when depth is 1,
+   * the only entry is the initial page and `back()` will land on `about:blank`
+   * (the default blank tab page). Returns 1 if the session can't read history.
+   *
+   * Added in §0032 after the github white-screen finding showed `back()` from
+   * a single-entry history landing on about:blank and ruining the recording.
+   */
+  historyDepth(): Promise<number>;
+
+  /**
    * Current document scroll position in px. Read-only. Used by the
    * Director to capture before/after evidence for `scroll` actions.
    * Returns 0 if the session can't read scroll state.

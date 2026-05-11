@@ -81,6 +81,11 @@ export class StreamingDirector implements IDirector {
     let implicitDwellCount = 0;
     let expectAfterMismatchCount = 0;
 
+    // Capture the page's URL the moment the recording starts. Used as the
+    // recovery target if any action ever lands us on about:blank (§0032 —
+    // happens when `back()` pops past the only real entry in history).
+    const initialUrl = await safeUrl(session);
+
     await session.beginRecording();
 
     // Naturalness C4 — "opening hold". A real person opening a page spends
@@ -270,6 +275,47 @@ export class StreamingDirector implements IDirector {
         continue;
       }
 
+      // §0032 — about:blank trap recovery. When any navigation-causing
+      // action (click / back / key) leaves the page on `about:blank`, the
+      // viewer sees a white screen and every subsequent click fails (no
+      // DOM to resolve against). Auto-recover by re-navigating to the
+      // initial URL, log the recovery, and force a fresh decision with
+      // the failure reason so the decider knows to pick a different path.
+      // Surfaced by the §0030 video judge on the github-multistep run —
+      // back() from a single-entry history popped to about:blank and the
+      // recording was ruined.
+      const urlAfter = extractUrlAfter(summary);
+      if (urlAfter === 'about:blank' && initialUrl && initialUrl !== 'about:blank') {
+        this.logger.warn(
+          { kind: action.kind, recoveredTo: initialUrl },
+          'action landed on about:blank — recovering by re-navigating to initial URL',
+        );
+        this.logFailure(
+          session,
+          pendingMeta,
+          'about_blank_recovered',
+          `${action.kind} landed on about:blank; goto(${initialUrl})`,
+        );
+        try {
+          await session.goto(initialUrl);
+        } catch (err) {
+          this.logger.warn({ err }, 'about:blank recovery goto failed');
+        }
+        actionQueue = [];
+        pending = null;
+        pendingMeta = null;
+        const remainingAfter = Math.max(0, hardDeadlineAt - Date.now());
+        const state = await this.observeState(briefing, session, recentActions, remainingAfter, fulfilledHints, rejectedClickTargets);
+        const stateWithFailure: DirectorState = {
+          ...state,
+          lastActionFailure: `previous ${action.kind} action left the page on about:blank; recovered by reloading the initial URL — try a different approach (do NOT back from single-entry history)`,
+        };
+        pending = track(this.decider.decide(stateWithFailure));
+        decisionCount += 1;
+        pendingMeta = { id: decisionCount, firedAtMs: Date.now(), scrollY: state.currentScrollY };
+        continue;
+      }
+
       // expectAfter check — cheap text-based validation.
       if (expectAfter && !(await this.validateExpectAfter(expectAfter, session))) {
         expectAfterMismatchCount += 1;
@@ -368,6 +414,7 @@ export class StreamingDirector implements IDirector {
       }
       return true;
     });
+    const historyDepth = await safeHistoryDepth(session);
     return {
       prompt: briefing.prompt,
       remainingMs,
@@ -377,6 +424,7 @@ export class StreamingDirector implements IDirector {
       briefingHints: enrichHints(remainingHints, scrollY, viewport),
       recentActions: [...recentActions],
       ...(unreachableTargets.length > 0 ? { unreachableTargets } : {}),
+      historyDepth,
     };
   }
 
@@ -626,7 +674,8 @@ export class StreamingDirector implements IDirector {
       | 'expect_after_mismatch'
       | 'llm_call_failed'
       | 'click_failed'
-      | 'budget_exceeded',
+      | 'budget_exceeded'
+      | 'about_blank_recovered',
     details: string,
   ): void {
     try {
@@ -690,6 +739,25 @@ async function safeScrollY(session: IPageSession): Promise<number> {
 }
 async function safeFocusedValue(session: IPageSession): Promise<string | null> {
   try { return await session.focusedValue(); } catch { return null; }
+}
+async function safeHistoryDepth(session: IPageSession): Promise<number> {
+  try { return await session.historyDepth(); } catch { return 1; }
+}
+
+/**
+ * Pull `urlAfter` out of an action summary's evidence if the variant
+ * carries it. Used by §0032 about:blank trap detection.
+ */
+function extractUrlAfter(summary: ActionSummary): string | null {
+  const ev = summary.evidence;
+  switch (ev.kind) {
+    case 'click':
+    case 'key':
+    case 'back':
+      return ev.urlAfter;
+    default:
+      return null;
+  }
 }
 
 /**

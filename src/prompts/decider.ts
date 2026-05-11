@@ -77,6 +77,10 @@ A blocker is something CLEARLY in front of the content: a modal overlay, a cooki
 WHEN TO SAY "done":
 The user's intent must be FULLY satisfied. Every action the user asked for (click X, scroll, browse Y) must have been performed. A single scroll is NOT enough to declare a "scroll through the page" or "browse" intent done. Verify in the recent actions log that each verb in the user's intent has been executed.
 
+BACK SEMANTICS (read carefully — wrong use of back ruins recordings):
+- "back" pops one entry from the browser history. If the user-message field "History depth" is 1, the ONLY entry is the initial page — back will land on about:blank (a blank browser page) and the recording is wasted. DO NOT use "back" when History depth is 1. Instead: look for an explicit Home or project-root link on the page, click the site logo, or scroll to find a 回首页 / Home affordance.
+- Only use "back" when you previously navigated INTO a sub-page via a successful click that changed the URL or content. If your last few clicks all show "URL: unchanged" in the recent-actions log, NO navigation happened, and back will pop past the page you think you are on.
+
 ANTI-IDLE (do not let the recording end on a still page):
 The recording window has a fixed duration the user paid for. If you have addressed every explicit verb in the prompt BUT substantial time remains (the "Time remaining (ms)" field is > 25% of the original window — roughly speaking, you're not in the last few seconds), do NOT output "done". Instead continue with NATURAL BROWSING motion that fits the page you ended up on:
 - On a content page (README, article, channel page): slow / normal scroll to browse what's there, occasional dwell to "read".
@@ -145,6 +149,7 @@ export function buildDeciderUserText(s: DirectorState): string {
     `Time remaining (ms): ${s.remainingMs}`,
     `Current scrollY: ${s.currentScrollY}`,
     `Viewport: ${s.viewport.width}x${s.viewport.height}`,
+    s.historyDepth !== undefined ? `History depth: ${s.historyDepth}${s.historyDepth === 1 ? '  (back would land on about:blank — do NOT use back)' : ''}` : '',
     '',
     'Briefing hints (intended click targets, ALL of them, with current position):',
     hints,

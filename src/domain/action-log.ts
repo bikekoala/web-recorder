@@ -242,6 +242,7 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
       'llm_call_failed',
       'click_failed',
       'budget_exceeded',
+      'about_blank_recovered',
     ]),
     /** Free-form one-liner. Truncated to 500 chars on write to keep logs lean. */
     details: z.string(),

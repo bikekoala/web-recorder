@@ -352,6 +352,59 @@ describe('StreamingDirector — click verifier (§0027)', () => {
   });
 });
 
+describe('StreamingDirector — about:blank recovery (§0032)', () => {
+  it('recovers when back() lands on about:blank, then re-decides with failure context', async () => {
+    // Decision 1: click + back (mimics the github white-screen pattern).
+    // Recovery decision: a different action (here `done` for simplicity).
+    const decider = new FakeFastDecider([
+      {
+        response: {
+          actions: [
+            { kind: 'click', target: 'some link', reasoning: 'try' },
+            { kind: 'back', reasoning: 'go home' },
+          ],
+        },
+      },
+      { response: { actions: [{ kind: 'done', reasoning: 'recovered' }] } },
+    ]);
+    const session = new FakePageSession();
+    session.url = 'https://example.test/';
+    // After back(), the page lands on about:blank — simulate via goBack hook.
+    const originalBack = session.goBack.bind(session);
+    session.goBack = async () => {
+      await originalBack();
+      session.url = 'about:blank';
+    };
+
+    const director = new StreamingDirector({ decider });
+    const report = await director.run(briefing(), session);
+
+    // The Director should have called goto to recover.
+    const gotoEvents = session.events.filter((e) => e.kind === 'goto');
+    expect(gotoEvents.find((e) => e.payload === 'https://example.test/')).toBeTruthy();
+    // about_blank_recovered should be logged as a decision_failure entry.
+    const recoveries = session.appendedEntries.filter(
+      (e) => e.type === 'decision_failure' && e.reason === 'about_blank_recovered',
+    );
+    expect(recoveries.length).toBeGreaterThanOrEqual(1);
+    // The next decision after recovery should see lastActionFailure mentioning about:blank.
+    expect(decider.decisions.length).toBeGreaterThanOrEqual(2);
+    expect(decider.decisions[decider.decisions.length - 1]!.state.lastActionFailure).toContain('about:blank');
+    expect(report.endReason).toBe('done');
+  });
+
+  it('surfaces historyDepth to the decider state', async () => {
+    const decider = new FakeFastDecider([
+      { response: { actions: [{ kind: 'done', reasoning: 'ok' }] } },
+    ]);
+    const session = new FakePageSession();
+    session.historyDepthValue = 1;
+    const director = new StreamingDirector({ decider });
+    await director.run(briefing(), session);
+    expect(decider.decisions[0]!.state.historyDepth).toBe(1);
+  });
+});
+
 describe('StreamingDirector — scroll tail micro-pause (A6, §0031)', () => {
   it('appends a wait in [scrollTailMin, scrollTailMax] after every scroll', async () => {
     const decider = new FakeFastDecider([

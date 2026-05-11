@@ -111,10 +111,17 @@ export class FakePageSession implements IPageSession {
   /** Test-controllable evidence-probe state — set in tests as needed. */
   pageTitleValue = '';
   focusedValueResult: string | null = null;
+  /**
+   * History stack depth. Default 1 = only the initial page exists; back()
+   * would land on about:blank. Tests targeting back() recovery should set
+   * this to ≥ 2 for happy paths.
+   */
+  historyDepthValue = 1;
 
   async scrollY(): Promise<number> { return this.scrollYValue; }
   async pageTitle(): Promise<string> { return this.pageTitleValue; }
   async focusedValue(): Promise<string | null> { return this.focusedValueResult; }
+  async historyDepth(): Promise<number> { return this.historyDepthValue; }
   async screenshot(): Promise<Buffer> { return this.screenshotBytes; }
   async observeAll(): Promise<ObservedElement[]> { return this.observeResults; }
   async resolveTarget(): Promise<ObservedElement | null> { return this.resolveTargetResult; }

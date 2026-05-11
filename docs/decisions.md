@@ -1122,6 +1122,69 @@ These are three distinct symptoms of one class: **the recording lacks human-pace
 
 ---
 
+## 0032 · State awareness — history depth + about:blank auto-recovery (Class 2)
+
+**Date**: 2026-05-11
+
+**Context**: The §0030 video judge's first run on the github-multistep recording flagged `visualCoherence: fail @ 18.0s — screen turns completely white`. Investigation ([`docs/findings/2026-05-11-github-whitescreen.md`](./findings/2026-05-11-github-whitescreen.md)) traced this to a generic failure class, not a one-off bug:
+
+1. The LLM picked two clicks on what it thought was a "language link" — both resolved to the same `<p>` paragraph element. Neither click navigated.
+2. The LLM then output `back` to "return home". Browser history was `[about:blank, recordly]` (about:blank is the default fresh-tab page that `page.goto(url)` pushes onto). `back` popped to `about:blank`.
+3. From that point on, every subsequent click failed (no DOM to resolve), the recording ran until budget exhaustion, and the deliverable was 13 seconds of solid white at the tail.
+
+The class is: **the Director can issue actions whose side-effects render the page unusable, and has no awareness of the resulting state — it just continues firing actions into a broken environment**. `back` from a one-deep history is the most reproducible instance. Other instances of the same class exist (clicking a download link mid-recording would also break further interaction).
+
+**Choice — two-part fix: prevent + recover, both AI-first**:
+
+### Part A — History-depth awareness (prevent)
+
+New port method `IPageSession.historyDepth(): Promise<number>` reads `window.history.length`. Surfaced in `DirectorState` as the optional `historyDepth` field, and rendered in the decider's user-message as:
+
+```
+History depth: 1  (back would land on about:blank — do NOT use back)
+```
+
+System-prompt rule (new "BACK SEMANTICS" section): when History depth is 1, the LLM must NOT use `back`; it should look for an explicit Home link, click the site logo, or scroll for a 回首页 affordance. Also notes: if recent clicks all show `URL: unchanged`, no nav happened and `back` will pop past the page the LLM thinks it's on.
+
+This is the AI-first piece — we expose the FACT and the rule, then trust the decider to pick the right action. We do NOT silently block the `back` primitive; the LLM still owns the decision.
+
+### Part B — about:blank auto-recovery (recover)
+
+In `StreamingDirector.run()`:
+1. Capture `initialUrl` once via `session.currentUrl()` before `beginRecording()`.
+2. After every action's `executeAction` returns, inspect the summary's evidence. If the variant carries `urlAfter` (click / back / key) and it equals `about:blank` (and the initial URL wasn't itself blank), trigger recovery.
+3. Recovery: `session.goto(initialUrl)`, log a `decision_failure` entry with new reason `about_blank_recovered`, clear the action queue, force a fresh decider call with `lastActionFailure = "previous <kind> action left the page on about:blank; recovered by reloading the initial URL — try a different approach (do NOT back from single-entry history)"`.
+
+The recovery is unconditional (no AI in the loop) because the page being on about:blank means EVERY subsequent action would fail — there's no "decide" alternative. The AI is informed via `lastActionFailure` so the next decision avoids the trap.
+
+**Why not just gate `back` in code?** Two reasons:
+- Goals.md #6 (AI-first, not magic-numbers). A code gate `if (historyDepth === 1) { skip(); }` strips the decision from the LLM — and there are legitimate corner cases (rare site that has nothing useful and where back-to-blank is acceptable) where the LLM may want to override.
+- The LLM-side prompt rule is more pedagogical — it tells the LLM *why* not to back, so the lesson generalizes to "look at recent-action URL changes before deciding whether back makes sense", which transfers to other state-aware decisions.
+
+**Why couple Part A + Part B in one ADR?** They're complementary. A alone reduces but doesn't eliminate the bug — the LLM might still pick `back` if it misreads the prompt or if the history is 2-deep but the "previous" entry is itself bad. B alone catches every case but doesn't teach the LLM. Together: the LLM learns; the runtime is safe.
+
+**Why a new `decision_failure` reason (`about_blank_recovered`) instead of reusing `click_failed`?** Operational clarity. The two are distinct failure modes — one is "click missed", the other is "page went somewhere unusable". Separating them in the action log lets a reviewer grep for either independently. The Zod enum in `domain/action-log.ts` was extended; the regression test's reason-set assertion is unaffected (it checks Director endReason, not decision_failure reason).
+
+**Consequences**:
+
+- New port method `historyDepth()` + Stagehand impl + FakePageSession impl. No other port surface changes.
+- New `DirectorState.historyDepth?: number` (optional — backward-compatible with tests that don't set it).
+- New unit tests: (1) about:blank recovery wires goto + decision_failure + lastActionFailure context, (2) historyDepth is surfaced to decider state. Total unit 74 → 76.
+- New decision_failure reason `about_blank_recovered` in `domain/action-log.ts` Zod schema. No callers broke.
+- Decider prompt: one new "BACK SEMANTICS" section + a one-line History-depth tag in the user-message. Token cost negligible.
+
+**Validation plan**: re-run the github-multistep cases under the judge. Expectation: the white-screen pattern stops happening (LLM avoids `back` from depth=1; if it still picks it via prompt mis-read, recovery kicks in and the recording continues on the initial URL instead of white).
+
+**Preserves**: §0019-§0031. Goals.md non-negotiables #1 (looks human: no more 13s-of-white-screen recordings), #3 (intent satisfied or transparently not: recovery is logged, decider sees `lastActionFailure`), #6 (AI-first: the prevention is a prompt rule + state surface, not a code gate).
+
+**Open patterns this fix DOESN'T address yet** (could extend the same class fix to):
+- Clicking a `download.zip` link triggers a download instead of rendering. Same "page now broken for actions" pattern; same recovery shape would apply.
+- Cross-origin redirect to a page that won't load (auth wall). Recovery still works (back to initial URL); LLM gets the failure context.
+
+Both can layer onto the same recovery infrastructure later without re-architecting.
+
+---
+
 ## Template for new entries
 
 ```
