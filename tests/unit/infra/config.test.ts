@@ -77,3 +77,29 @@ describe('rehearsal config knobs', () => {
     expect(config.reconReconvergeMax).toBe(1);
   });
 });
+
+describe('blocker-dismiss config knobs', () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
+
+  it('blockerDismiss defaults to true', async () => {
+    const config = await loadConfig({ BLOCKER_DISMISS: undefined });
+    expect(config.blockerDismiss).toBe(true);
+  });
+  it('BLOCKER_DISMISS=false disables it', async () => {
+    const config = await loadConfig({ BLOCKER_DISMISS: 'false' });
+    expect(config.blockerDismiss).toBe(false);
+  });
+  it('blockerDismissMaxRounds / blockerDismissMaxMs have sensible defaults', async () => {
+    const config = await loadConfig({ BLOCKER_DISMISS_MAX_ROUNDS: undefined, BLOCKER_DISMISS_MAX_MS: undefined });
+    expect(config.blockerDismissMaxRounds).toBe(3);
+    expect(config.blockerDismissMaxMs).toBe(10000);
+  });
+  it('llmBlockerModelResolved falls back to llmModel', async () => {
+    const config = await loadConfig({ LLM_BLOCKER_MODEL: undefined, LLM_MODEL: 'test/mini' });
+    expect(config.llmBlockerModelResolved).toBe('test/mini');
+  });
+  it('llmBlockerModelResolved honours LLM_BLOCKER_MODEL', async () => {
+    const config = await loadConfig({ LLM_BLOCKER_MODEL: 'foo/vision' });
+    expect(config.llmBlockerModelResolved).toBe('foo/vision');
+  });
+});

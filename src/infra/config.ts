@@ -94,6 +94,24 @@ const Schema = z.object({
   reconReconvergeMax: z.coerce.number().int().min(0).max(10).default(1),
 
   /**
+   * Off-camera blocker dismisser (Task #20). `blockerDismiss` is the master
+   * switch (off ⇒ recon constructs no dismisser, behaviour as before).
+   * `blockerDismissMaxRounds` caps the detect→click iterations;
+   * `blockerDismissMaxMs` caps the whole dismiss() call's wall-clock.
+   */
+  blockerDismiss: z.enum(['true', 'false', '1', '0']).transform((v) => v === 'true' || v === '1').default('true'),
+  blockerDismissMaxRounds: z.coerce.number().int().min(0).default(3),
+  blockerDismissMaxMs: z.coerce.number().int().min(0).default(10000),
+
+  /**
+   * Model for the blocker dismisser's detect call. Needs vision (it's shown a
+   * screenshot) but the task is simple (yes/no + pick an element) — a fast
+   * cheap model. Defaults to `llmModel` (openai/gpt-4o-mini). Override with
+   * LLM_BLOCKER_MODEL. (Model names live in config — goals.md #6.)
+   */
+  llmBlockerModel: z.string().min(1).optional(),
+
+  /**
    * Recording-judge model — used ONCE per finished recording to grade
    * naturalness against the 5-dimension rubric (§0030). Needs native
    * VIDEO input support (not just images), so the default is Gemini
@@ -206,6 +224,10 @@ const raw = {
   reconRehearse: process.env.RECON_REHEARSE || undefined,
   reconRehearsalBudgetMs: process.env.RECON_REHEARSAL_BUDGET_MS,
   reconReconvergeMax: process.env.RECON_RECONVERGE_MAX,
+  blockerDismiss: process.env.BLOCKER_DISMISS || undefined,
+  blockerDismissMaxRounds: process.env.BLOCKER_DISMISS_MAX_ROUNDS,
+  blockerDismissMaxMs: process.env.BLOCKER_DISMISS_MAX_MS,
+  llmBlockerModel: process.env.LLM_BLOCKER_MODEL,
   llmJudgeModel: process.env.LLM_JUDGE_MODEL,
   directorHardBudgetMult: process.env.DIRECTOR_HARD_BUDGET_MULT
     ? Number(process.env.DIRECTOR_HARD_BUDGET_MULT)
@@ -255,6 +277,7 @@ export const config = {
   // `config.llmPlannerModelResolved`, never `data.llmPlannerModel` directly.
   llmPlannerModelResolved: data.llmPlannerModel ?? data.llmModel,
   llmReconModelResolved: data.llmReconModel ?? data.llmPlannerModel ?? data.llmModel,
+  llmBlockerModelResolved: data.llmBlockerModel ?? data.llmModel,
   isDev: data.nodeEnv === 'development',
   isProd: data.nodeEnv === 'production',
 } as const;
