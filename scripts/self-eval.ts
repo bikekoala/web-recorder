@@ -55,7 +55,7 @@ function assess(result: RunResult, judge: RecordingJudgeReport | { error: string
   // ── #2 Recording fidelity (bright-line) ────────────────────────────────────
   const trimmed = m.trimmedVideoMs;
   if (trimmed == null) {
-    rows.push({ status: 'fail', label: 'trimmed-video duration', value: 'n/a', note: 'could not measure — ffprobe failed?' });
+    rows.push({ status: 'fail', label: 'trimmed-video duration', value: 'n/a', note: 'could not probe — ffmpeg failed?' });
   } else {
     const lo = DURATION_MS * (1 - DURATION_TOLERANCE);
     const hi = DURATION_MS * (1 + DURATION_TOLERANCE);
@@ -63,6 +63,12 @@ function assess(result: RunResult, judge: RecordingJudgeReport | { error: string
     const pct = ((trimmed - DURATION_MS) / DURATION_MS) * 100;
     rows.push({ status: ok ? 'ok' : 'fail', label: 'trimmed-video duration', value: `${fmtMs(trimmed)} (target ${fmtMs(DURATION_MS)}, ${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%)`, note: ok ? undefined : `outside ±${DURATION_TOLERANCE * 100}% — goals.md eval #2` });
   }
+  // recording window (from action-log timestamps) vs the probed video length —
+  // a wide gap means the trim window is offset (recordVideo's frame clock lags
+  // the wall clock — see docs/findings/2026-05-12-recordvideo-clock-drift.md).
+  const winMs = result.directorReport.totalMs;
+  const gap = trimmed == null ? null : Math.abs(winMs - trimmed);
+  rows.push({ status: gap != null && gap > 1500 ? 'warn' : 'ok', label: 'recording window', value: `${fmtMs(winMs)} (director.run)${gap != null ? `, vs probed ${fmtMs(trimmed)} — Δ${fmtMs(gap)}` : ''}`, note: gap != null && gap > 1500 ? 'window ≠ probed video length → trim offset / recordVideo clock drift (docs/findings/2026-05-12-recordvideo-clock-drift.md)' : undefined });
 
   // intent verbs executed (#3 — transparent either way; flag non-complete)
   const sat = m.intentSatisfaction;
