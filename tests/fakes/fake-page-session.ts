@@ -37,6 +37,8 @@ export class FakePageSession implements IPageSession {
   quickFindOnPageResult: ObservedElement | null = null;
   /** If set, resolveTarget returns this. */
   resolveTargetResult: ObservedElement | null = null;
+  /** If set, resolveTargetCandidates returns this (decoupled from resolveTargetResult in the fake). */
+  resolveTargetCandidatesResult: ObservedElement[] = [];
   /** If set, observe(...) returns this. */
   observeResults: ObservedElement[] = [];
 
@@ -125,6 +127,7 @@ export class FakePageSession implements IPageSession {
   async screenshot(): Promise<Buffer> { return this.screenshotBytes; }
   async observeAll(): Promise<ObservedElement[]> { return this.observeResults; }
   async resolveTarget(): Promise<ObservedElement | null> { return this.resolveTargetResult; }
+  async resolveTargetCandidates(): Promise<ObservedElement[]> { return this.resolveTargetCandidatesResult; }
   /**
    * Optional test hook — if set, called by `clickSelector` AFTER recording the
    * event. Use it to simulate the click's effect (e.g. mutate `this.url` /

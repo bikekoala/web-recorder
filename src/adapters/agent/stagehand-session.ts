@@ -51,6 +51,32 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** One observe()-match candidate, before it's pared down to an ObservedElement. */
+export interface RankableCandidate {
+  selector: string;
+  description: string;
+  bbox: { x: number; y: number; width: number; height: number };
+  /** Is the element itself genuinely clickable (<a href>/<button>/[role=button|link]/…), vs a wrapper? */
+  interactive: boolean;
+}
+
+/**
+ * Rank observe()-match candidates best-first and de-dup by position:
+ * genuinely interactive elements ahead of wrappers, original order preserved
+ * within a group. Pure — exported for unit testing. (finding 6 / sweep-1.)
+ */
+export function rankCandidates(items: RankableCandidate[]): RankableCandidate[] {
+  const seen = new Set<string>();
+  const deduped = items.filter((c) => {
+    const key = `${Math.round(c.bbox.x)},${Math.round(c.bbox.y)},${Math.round(c.bbox.width)},${Math.round(c.bbox.height)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  // Stable partition: interactive first, then non-interactive, each keeping order.
+  return [...deduped.filter((c) => c.interactive), ...deduped.filter((c) => !c.interactive)];
+}
+
 export interface StagehandPageSessionConfig extends PageSessionConfig {
   /** Stagehand verbose level (0|1|2). 1 prints high-level steps. */
   verbose?: 0 | 1 | 2;
@@ -503,26 +529,35 @@ export class StagehandPageSession implements IPageSession {
   }
 
   async resolveTarget(target: string): Promise<ObservedElement | null> {
+    const candidates = await this.resolveTargetCandidates(target);
+    return candidates[0] ?? null;
+  }
+
+  async resolveTargetCandidates(target: string): Promise<ObservedElement[]> {
     const page = this.requirePage();
     const stagehand = this.requireStagehand();
 
+    let matches: { selector: string; description: string }[];
     try {
-      const matches = await stagehand.observe(target, { page });
-      // Walk the match list in order and take the FIRST one that has a real,
-      // sized bbox — `observe()` sometimes ranks a 0×0 wrapper element first,
-      // and a target without a clickable area is worse than no target (callers
-      // would emit a dead coordinate click on its origin). If none of the
-      // matches has a usable bbox, return null so the caller (the rehearsal
-      // walk) treats it as a divergence and reconverges. See sweep-1 P2.
-      for (const m of matches) {
-        const bbox = await this.bboxOfSelector(m.selector);
-        if (bbox) return { selector: m.selector, description: m.description, bbox };
-      }
-      return null;
+      matches = await stagehand.observe(target, { page });
     } catch (err) {
-      this.logger.warn({ err, target }, 'resolveTarget failed');
-      return null;
+      this.logger.warn({ err, target }, 'resolveTargetCandidates: observe failed');
+      return [];
     }
+
+    // Resolve each match to a real sized bbox + whether it's a genuinely
+    // interactive element. `observe()` sometimes ranks a 0×0 wrapper element —
+    // or a non-clickable <div>/<span> around the real link — first; a target
+    // without a clickable area (or a wrapper) is worse than no target (a coord
+    // click on its origin lands on nothing / on the wrapper). Drop 0×0,
+    // rank interactive-first, dedup by position. See sweep-1 P2 / finding 6.
+    const resolved: RankableCandidate[] = [];
+    for (const m of matches) {
+      const meta = await this.elementMetaOfSelector(m.selector);
+      if (!meta) continue; // unresolvable, 0×0, or detached
+      resolved.push({ selector: m.selector, description: m.description, bbox: meta.bbox, interactive: meta.interactive });
+    }
+    return rankCandidates(resolved).map(({ selector, description, bbox }) => ({ selector, description, bbox }));
   }
 
   async quickFindInViewport(description: string): Promise<ObservedElement | null> {
@@ -1437,6 +1472,40 @@ export class StagehandPageSession implements IPageSession {
       // emitting a dead coordinate click. See robustness-sweep-1 finding P2.
       if (!box || box.width < 1 || box.height < 1) return null;
       return { x: box.x, y: box.y, width: box.width, height: box.height };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * `bboxOfSelector` plus a cheap "is this element itself genuinely clickable
+   * (vs a non-interactive wrapper)?" probe. Only used by `resolveTargetCandidates`
+   * (a handful of calls per resolve) — `observeAll` keeps the plain
+   * `bboxOfSelector` so it doesn't pay the extra evaluate() per element.
+   */
+  private async elementMetaOfSelector(
+    selector: string,
+  ): Promise<{ bbox: { x: number; y: number; width: number; height: number }; interactive: boolean } | null> {
+    try {
+      const page = this.requirePage();
+      const handle = page.locator(selector).first();
+      const box = await handle.boundingBox({ timeout: 1000 });
+      if (!box || box.width < 1 || box.height < 1) return null;
+      const interactive = await handle
+        .evaluate((el) => {
+          const e = el as HTMLElement;
+          const tag = e.tagName.toLowerCase();
+          if (tag === 'a' && e.hasAttribute('href')) return true;
+          if (['button', 'input', 'select', 'textarea', 'summary'].includes(tag)) return true;
+          const role = e.getAttribute('role');
+          if (role && ['button', 'link', 'menuitem', 'tab', 'option', 'checkbox', 'radio', 'switch'].includes(role)) return true;
+          if (e.hasAttribute('onclick')) return true;
+          // A wrapper around the real clickable element — NOT itself the target.
+          if (e.querySelector('a[href], button, [role="button"], [role="link"]')) return false;
+          return false;
+        })
+        .catch(() => false);
+      return { bbox: { x: box.x, y: box.y, width: box.width, height: box.height }, interactive };
     } catch {
       return null;
     }

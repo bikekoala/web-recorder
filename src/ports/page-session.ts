@@ -177,6 +177,20 @@ export interface IPageSession {
   resolveTarget(target: string): Promise<ObservedElement | null>;
 
   /**
+   * Like `resolveTarget`, but returns ALL candidate matches that have a real
+   * sized bbox (not just the best one), ranked best-first: genuinely
+   * interactive elements (`<a href>`, `<button>`, `[role=link|button]`, …)
+   * ahead of bare wrappers, original observe order preserved within a group,
+   * de-duplicated by position. `resolveTarget` is `resolveTargetCandidates()[0]`.
+   *
+   * Used by the rehearsal walk: when a click on the best candidate turns out
+   * dead (the page didn't change), it re-tries the remaining candidates here
+   * before falling back to the (expensive) LLM reconverge. Empty array if
+   * nothing resolves. Never throws.
+   */
+  resolveTargetCandidates(target: string): Promise<ObservedElement[]>;
+
+  /**
    * Fast non-LLM element finder by natural-language description.
    *
    * Tries cheap Playwright matchers in order:
