@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { LlmReconnoiterer, ReconError } from '../../../../src/adapters/recon/llm-reconnoiterer.js';
 import { FakePageSession } from '../../../fakes/fake-page-session.js';
 import type { IBlockerDismisser, BlockerDismissalReport } from '../../../../src/ports/blocker-dismisser.js';
-import type { IPageSession } from '../../../../src/ports/page-session.js';
+import type { IPageSession, ObservedElement } from '../../../../src/ports/page-session.js';
 
 // Minimal fake OpenAI-shaped client.
 function fakeClient(content: string) {
@@ -26,12 +26,17 @@ function sequencedClient(...contents: string[]) {
   return { client, create, calls };
 }
 
-const llmPerformanceJson = JSON.stringify({
+const target = (selector: string, description: string): ObservedElement => ({
+  selector, description, bbox: { x: 10, y: 20, width: 80, height: 30 },
+});
+
+// A recon draft: click/type carry `ref` (not a target description) — ADR §0036.
+const llmDraftJson = JSON.stringify({
   prompt: 'click sign in then browse',
   durationMs: 10000,
   steps: [
     { kind: 'dwell', durationMs: 350, reasoning: 'absorbing the page' },
-    { kind: 'click', target: { description: 'the sign-in link' }, anticipationMs: 600, reasoning: 'user asked', expectAfter: { urlContains: '/login' } },
+    { kind: 'click', ref: 'e7', anticipationMs: 600, reasoning: 'user asked', expectAfter: { urlContains: '/login' } },
     { kind: 'dwell', durationMs: 2000, reasoning: 'reading the login form' },
     { kind: 'done', reasoning: 'done' },
   ],
@@ -40,23 +45,26 @@ const llmPerformanceJson = JSON.stringify({
 });
 
 describe('LlmReconnoiterer', () => {
-  it('parses the LLM output, resolves targets, returns a validated Performance', async () => {
+  it('takes an aria snapshot, parses the draft, resolves refs, returns a validated Performance', async () => {
     const session = new FakePageSession();
     session.url = 'https://x.test/';
-    session.resolveTargetResult = { selector: 'text=Sign in', description: 'the sign-in link', bbox: { x: 10, y: 20, width: 80, height: 30 } };
+    session.ariaSnapshotResult = '- link "Sign in" [ref=e7]';
+    session.resolveAriaRefResults = { e7: target('text=Sign in', 'Sign in') };
     // The rehearsal walk actually clicks (coord-click first, selector fallback);
     // model the click navigating to /login so it doesn't diverge — wire both paths.
     const goLogin = () => { session.url = 'https://x.test/login'; };
     session.clickAtImpl = goLogin;
     session.clickSelectorImpl = goLogin;
-    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(llmPerformanceJson) });
+    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(llmDraftJson) });
     const perf = await recon.recon(
       { url: 'https://x.test/', prompt: 'click sign in then browse', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: Buffer.from([0x89]) },
       session,
     );
+    expect(session.events.some((e) => e.kind === 'ariaSnapshot')).toBe(true);
+    expect(session.events.filter((e) => e.kind === 'resolveAriaRef').map((e) => e.payload)).toContain('e7');
     expect(perf.steps).toHaveLength(4);
     const clickStep = perf.steps.find((s) => s.kind === 'click')!;
-    expect(clickStep).toMatchObject({ kind: 'click', target: { selector: 'text=Sign in', description: 'the sign-in link' } });
+    expect(clickStep).toMatchObject({ kind: 'click', target: { selector: 'text=Sign in', description: 'Sign in' } });
     expect(recon.modelId).toBe('test/model');
   });
 
@@ -67,33 +75,50 @@ describe('LlmReconnoiterer', () => {
       .rejects.toBeInstanceOf(ReconError);
   });
 
-  it('throws ReconError when the LLM output fails the schema', async () => {
+  it('throws ReconError when the draft fails the schema (empty steps)', async () => {
     const session = new FakePageSession();
-    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(JSON.stringify({ prompt: 'p', durationMs: 1, steps: [], totalEstimatedMs: 0, rationale: 'x' })) });
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(JSON.stringify({ prompt: 'p', steps: [], totalEstimatedMs: 0, rationale: 'x' })) });
     await expect(recon.recon({ url: 'u', prompt: 'p', durationMs: 1000, viewport: { width: 1, height: 1 }, screenshot: null }, session))
       .rejects.toBeInstanceOf(ReconError);
   });
 
-  it('unresolvable click → kept with a sentinel → walk re-resolves → still null → divergence → truncate; no click in the final Performance', async () => {
+  it('throws ReconError when a click step has no ref', async () => {
     const session = new FakePageSession();
-    session.resolveTargetResult = null; // never resolves — eagerly OR in the walk
-    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(llmPerformanceJson) });
-    const perf = await recon.recon({ url: 'u', prompt: 'p', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
-    // recon keeps the click (sentinel) instead of dropping it eagerly, the
-    // rehearsal walk re-resolves at the live page, that also fails → divergence
-    // → reconverge (still unresolvable) → truncate + graceful tail. End result:
-    // no click step survives, but the Performance still has its graceful tail.
-    expect(perf.steps.some((s) => s.kind === 'click')).toBe(false);
-    expect(perf.steps.some((s) => s.kind === 'type')).toBe(false);
-    expect(perf.steps[perf.steps.length - 1].kind).toBe('done');
-    expect(perf.rehearsal?.truncated).toBe(true);
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(JSON.stringify({
+      prompt: 'p', steps: [{ kind: 'click', anticipationMs: 500, reasoning: 'x' }, { kind: 'done', reasoning: 'd' }], totalEstimatedMs: 0, rationale: 'x',
+    })) });
+    await expect(recon.recon({ url: 'u', prompt: 'p', durationMs: 1000, viewport: { width: 1, height: 1 }, screenshot: null }, session))
+      .rejects.toBeInstanceOf(ReconError);
   });
 
-  const goPlanJson = JSON.stringify({
+  it('a click whose ref will not resolve is dropped; surviving steps still form the Performance', async () => {
+    const session = new FakePageSession();
+    session.ariaSnapshotResult = '- generic [ref=e1]';
+    session.resolveAriaRefResults = {}; // e7 → null
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(llmDraftJson) });
+    const perf = await recon.recon({ url: 'u', prompt: 'p', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
+    expect(perf.steps.some((s) => s.kind === 'click')).toBe(false);
+    expect(perf.steps.some((s) => s.kind === 'type')).toBe(false);
+    // [dwell, <dropped click>, dwell, done] → walk over [dwell, dwell, done]
+    expect(perf.steps.map((s) => s.kind)).toContain('dwell');
+    expect(perf.steps[perf.steps.length - 1]!.kind).toBe('done');
+  });
+
+  it('throws ReconError when every step is a click whose ref will not resolve (zero usable steps)', async () => {
+    const session = new FakePageSession();
+    session.resolveAriaRefResults = {};
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(JSON.stringify({
+      prompt: 'p', steps: [{ kind: 'click', ref: 'eX', anticipationMs: 500, reasoning: 'x' }], totalEstimatedMs: 0, rationale: 'x',
+    })) });
+    await expect(recon.recon({ url: 'u', prompt: 'p', durationMs: 1000, viewport: { width: 1280, height: 720 }, screenshot: null }, session))
+      .rejects.toBeInstanceOf(ReconError);
+  });
+
+  const goDraftJson = JSON.stringify({
     prompt: 'go somewhere',
     durationMs: 10000,
     steps: [
-      { kind: 'click', target: { description: 'go' }, anticipationMs: 500, reasoning: 'navigate' },
+      { kind: 'click', ref: 'eGo', anticipationMs: 500, reasoning: 'navigate' },
       { kind: 'done', reasoning: 'done' },
     ],
     totalEstimatedMs: 900,
@@ -103,11 +128,12 @@ describe('LlmReconnoiterer', () => {
   it('runs the rehearsal walk by default and resets the page afterwards', async () => {
     const session = new FakePageSession();
     session.url = 'https://site.test/';
-    session.resolveTargetResult = { selector: 'a#go', description: 'go', bbox: { x: 0, y: 0, width: 1, height: 1 } };
+    session.ariaSnapshotResult = '- link "Go" [ref=eGo]';
+    session.resolveAriaRefResults = { eGo: { selector: 'a#go', description: 'Go', bbox: { x: 0, y: 0, width: 10, height: 10 } } };
     const goNext = () => { session.url = 'https://site.test/next'; };
     session.clickAtImpl = goNext;
     session.clickSelectorImpl = goNext;
-    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goPlanJson) });
+    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goDraftJson) });
     const perf = await recon.recon(
       { url: 'https://site.test/', prompt: 'go somewhere', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null },
       session,
@@ -122,7 +148,7 @@ describe('LlmReconnoiterer', () => {
     expect(session.events.some((e) => e.kind === 'click' || e.kind === 'clickAt')).toBe(true);
   });
 
-  const dwellOnlyPlan = JSON.stringify({
+  const dwellOnlyDraft = JSON.stringify({
     prompt: 'just look around',
     durationMs: 5000,
     steps: [
@@ -137,7 +163,7 @@ describe('LlmReconnoiterer', () => {
   it('recovers JSON wrapped in prose (no retry)', async () => {
     const session = new FakePageSession();
     session.url = 'https://x.test/';
-    const { client, create } = sequencedClient('Sure, here is the plan: ' + dwellOnlyPlan + ' Let me know if you need changes.');
+    const { client, create } = sequencedClient('Sure, here is the plan: ' + dwellOnlyDraft + ' Let me know if you need changes.');
     const recon = new LlmReconnoiterer({ model: 'test/model', client });
     const perf = await recon.recon(
       { url: 'https://x.test/', prompt: 'just look around', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
@@ -152,7 +178,7 @@ describe('LlmReconnoiterer', () => {
     session.url = 'https://x.test/';
     const { client, create, calls } = sequencedClient(
       "I can't see the target you mentioned, let me explain what I'd do instead...",
-      dwellOnlyPlan,
+      dwellOnlyDraft,
     );
     const recon = new LlmReconnoiterer({ model: 'test/model', client });
     const perf = await recon.recon(
@@ -184,22 +210,14 @@ describe('LlmReconnoiterer', () => {
     vi.stubEnv('OPENROUTER_API_KEY', 'sk-or-test');
     vi.stubEnv('RECON_REHEARSE', 'false');
     const { LlmReconnoiterer: FreshReconnoiterer } = await import('../../../../src/adapters/recon/llm-reconnoiterer.js');
-    const donePlanJson = JSON.stringify({
-      prompt: 'p',
-      durationMs: 10000,
-      steps: [
-        { kind: 'click', target: { description: 'go' }, anticipationMs: 500, reasoning: 'navigate' },
-        { kind: 'done', reasoning: 'done' },
-      ],
-      totalEstimatedMs: 900,
-      rationale: 'one click',
-    });
     const session = new FakePageSession();
-    session.resolveTargetResult = { selector: 'a#go', description: 'go', bbox: { x: 0, y: 0, width: 1, height: 1 } };
-    const fresh = new FreshReconnoiterer({ model: 'm', client: { chat: { completions: { create: async () => ({ choices: [{ message: { content: donePlanJson } }] }) } } } as unknown as ConstructorParameters<typeof FreshReconnoiterer>[0]['client'] });
+    session.ariaSnapshotResult = '- link "Go" [ref=eGo]';
+    session.resolveAriaRefResults = { eGo: { selector: 'a#go', description: 'Go', bbox: { x: 0, y: 0, width: 10, height: 10 } } };
+    const fresh = new FreshReconnoiterer({ model: 'm', client: { chat: { completions: { create: async () => ({ choices: [{ message: { content: goDraftJson } }] }) } } } as unknown as ConstructorParameters<typeof FreshReconnoiterer>[0]['client'] });
     const perf = await fresh.recon({ url: 'https://site.test/', prompt: 'p', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
     expect(perf.rehearsal).toBeUndefined();
-    expect(session.events.some((e) => e.kind === 'click')).toBe(false);
+    expect(perf.steps.some((s) => s.kind === 'click')).toBe(true); // the click step survives, unwalked
+    expect(session.events.some((e) => e.kind === 'click' || e.kind === 'clickAt')).toBe(false);
     expect(session.events.some((e) => e.kind === 'goto')).toBe(false);
     vi.unstubAllEnvs();
     vi.resetModules();
@@ -207,11 +225,11 @@ describe('LlmReconnoiterer', () => {
 });
 
 describe('LlmReconnoiterer + blockerDismisser', () => {
-  const goPlanJson = JSON.stringify({
+  const goDraftJson = JSON.stringify({
     prompt: 'go somewhere',
     durationMs: 10000,
     steps: [
-      { kind: 'click', target: { description: 'go' }, anticipationMs: 500, reasoning: 'navigate' },
+      { kind: 'click', ref: 'eGo', anticipationMs: 500, reasoning: 'navigate' },
       { kind: 'done', reasoning: 'done' },
     ],
     totalEstimatedMs: 900,
@@ -226,7 +244,8 @@ describe('LlmReconnoiterer + blockerDismisser', () => {
   function wireSession() {
     const session = new FakePageSession();
     session.url = 'https://site.test/';
-    session.resolveTargetResult = { selector: 'a#go', description: 'go', bbox: { x: 0, y: 0, width: 1, height: 1 } };
+    session.ariaSnapshotResult = '- link "Go" [ref=eGo]';
+    session.resolveAriaRefResults = { eGo: { selector: 'a#go', description: 'Go', bbox: { x: 0, y: 0, width: 10, height: 10 } } };
     const goNext = () => { session.url = 'https://site.test/next'; };
     session.clickAtImpl = goNext;
     session.clickSelectorImpl = goNext;
@@ -237,7 +256,7 @@ describe('LlmReconnoiterer + blockerDismisser', () => {
   it('calls dismiss() and surfaces the report on Performance.blockerDismissal', async () => {
     const session = wireSession();
     const dismisser = new SpyDismisser();
-    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goPlanJson), blockerDismisser: dismisser });
+    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goDraftJson), blockerDismisser: dismisser });
     const perf = await recon.recon(reconInput, session);
     expect(dismisser.calls).toBeGreaterThanOrEqual(1); // recon-start call (+ one more from the walk reset)
     expect(perf.blockerDismissal).toEqual({ rounds: 1, dismissed: ['Accept all cookies'], stillBlocked: false });
@@ -245,7 +264,7 @@ describe('LlmReconnoiterer + blockerDismisser', () => {
 
   it('without a dismisser, Performance.blockerDismissal is undefined', async () => {
     const session = wireSession();
-    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goPlanJson) });
+    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goDraftJson) });
     const perf = await recon.recon(reconInput, session);
     expect(perf.blockerDismissal).toBeUndefined();
   });
@@ -253,7 +272,7 @@ describe('LlmReconnoiterer + blockerDismisser', () => {
   it('a dismiss() that throws does not fail recon — report is stillBlocked', async () => {
     const session = wireSession();
     const throwing: IBlockerDismisser = { dismiss: async () => { throw new Error('boom'); } };
-    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goPlanJson), blockerDismisser: throwing });
+    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goDraftJson), blockerDismisser: throwing });
     const perf = await recon.recon(reconInput, session);
     expect(perf.blockerDismissal).toEqual({ rounds: 0, dismissed: [], stillBlocked: true });
   });

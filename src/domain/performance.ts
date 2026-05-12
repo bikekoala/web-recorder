@@ -7,9 +7,11 @@ import { Bbox } from './action-log.js';
  * action sequence the PerformanceDirector plays back deterministically.
  * The "prophet recording" core type — see ADR §0034.
  *
- * Schema-first (CLAUDE.md hard rule #2): the recon LLM emits JSON matching
- * this exactly; LlmReconnoiterer parses + validates and throws ReconError
- * on mismatch.
+ * Schema-first (CLAUDE.md hard rule #2): the recon LLM emits a *draft*
+ * ({@link ReconDraftStep} — `src/domain/recon-draft.ts`) where click/type
+ * carry a `ref` into the page's aria snapshot; LlmReconnoiterer parses that,
+ * resolves each ref to a {@link ResolvedTarget}, and assembles a Performance
+ * matching this schema — Zod-validated, ReconError on mismatch.
  */
 
 /** Scroll velocity profiles — same set the IPageSession.scroll() port uses. */
@@ -38,15 +40,40 @@ export const ResolvedTargetSchema = z.object({
 export type ResolvedTarget = z.infer<typeof ResolvedTargetSchema>;
 
 /**
- * Sentinel `selector` for a click/type target the recon couldn't resolve
- * eagerly (at scrollY 0, right after `goto`). The rehearsal walk re-resolves
- * such targets at the actual page state the step will run in — and if the
- * re-resolve also fails, it's a divergence → reconverge. A target carrying
- * this sentinel must never reach the on-camera Performance; the walk drops any
- * survivor defensively. (`'__unresolved__'` is a valid non-empty `selector`,
- * and a zero `Bbox` is valid, so a sentinel target Zod-validates fine.)
+ * The step kinds identical in a recon *draft* ({@link ReconDraftStep}) and a
+ * resolved {@link Performance} (PerformanceStep): they carry no target, so
+ * there's nothing to resolve. Shared between the two discriminated unions so
+ * they can never drift. (click/type differ — the draft carries a `ref` into the
+ * aria snapshot; the Performance carries a resolved {@link ResolvedTarget}.)
  */
-export const UNRESOLVED_SENTINEL = '__unresolved__';
+export const ScrollStepSchema = z.object({
+  kind: z.literal('scroll'),
+  deltaPx: z.number().int().refine((n) => Math.abs(n) >= 50 && Math.abs(n) <= 4000, 'deltaPx magnitude must be 50..4000'),
+  durationMs: z.number().int().min(200).max(4000),
+  easing: ScrollEasingSchema,
+  dwellAfterMs: z.number().int().min(0).max(2000),
+  reasoning: z.string().min(1),
+});
+export const KeyStepSchema = z.object({
+  kind: z.literal('key'),
+  key: PerformanceKeySchema,
+  reasoning: z.string().min(1),
+  expectAfter: ExpectAfterSchema.optional(),
+});
+export const DwellStepSchema = z.object({
+  kind: z.literal('dwell'),
+  durationMs: z.number().int().min(100).max(8000),
+  reasoning: z.string().min(1),
+});
+export const BackStepSchema = z.object({
+  kind: z.literal('back'),
+  reasoning: z.string().min(1),
+  expectAfter: ExpectAfterSchema.optional(),
+});
+export const DoneStepSchema = z.object({
+  kind: z.literal('done'),
+  reasoning: z.string().min(1),
+});
 
 export const PerformanceStepSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -57,14 +84,6 @@ export const PerformanceStepSchema = z.discriminatedUnion('kind', [
     expectAfter: ExpectAfterSchema.optional(),
   }),
   z.object({
-    kind: z.literal('scroll'),
-    deltaPx: z.number().int().refine((n) => Math.abs(n) >= 50 && Math.abs(n) <= 4000, 'deltaPx magnitude must be 50..4000'),
-    durationMs: z.number().int().min(200).max(4000),
-    easing: ScrollEasingSchema,
-    dwellAfterMs: z.number().int().min(0).max(2000),
-    reasoning: z.string().min(1),
-  }),
-  z.object({
     kind: z.literal('type'),
     target: ResolvedTargetSchema,
     text: z.string().min(1),
@@ -72,26 +91,11 @@ export const PerformanceStepSchema = z.discriminatedUnion('kind', [
     keystrokeMs: z.number().int().min(0).max(500),
     reasoning: z.string().min(1),
   }),
-  z.object({
-    kind: z.literal('key'),
-    key: PerformanceKeySchema,
-    reasoning: z.string().min(1),
-    expectAfter: ExpectAfterSchema.optional(),
-  }),
-  z.object({
-    kind: z.literal('dwell'),
-    durationMs: z.number().int().min(100).max(8000),
-    reasoning: z.string().min(1),
-  }),
-  z.object({
-    kind: z.literal('back'),
-    reasoning: z.string().min(1),
-    expectAfter: ExpectAfterSchema.optional(),
-  }),
-  z.object({
-    kind: z.literal('done'),
-    reasoning: z.string().min(1),
-  }),
+  ScrollStepSchema,
+  KeyStepSchema,
+  DwellStepSchema,
+  BackStepSchema,
+  DoneStepSchema,
 ]);
 export type PerformanceStep = z.infer<typeof PerformanceStepSchema>;
 

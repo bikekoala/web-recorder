@@ -157,22 +157,52 @@ export interface IPageSession {
   screenshot(): Promise<Buffer>;
 
   /**
-   * Run a broad observe pass to collect candidate interactive elements
-   * currently on the page. Used by the planner as ground-truth for what
-   * exists. The instruction can be left empty to ask "everything notable".
+   * Capture a *ref-tagged accessibility snapshot* of the page in its current
+   * state — Playwright's `mode: 'ai'`: a YAML-ish tree where every actionable
+   * node carries a stable id like `[ref=e7]`, and `<iframe>` contents are
+   * inlined. Returned as text, capped at `opts.depth` levels (the implementation
+   * supplies a config default). On any failure, returns `''`.
    *
-   * This is one LLM call (one observe round-trip). Used at most once per
-   * job, BEFORE the recording window opens.
+   * The refs are valid ONLY in the page state at snapshot time — a navigation
+   * or a subsequent `ariaSnapshot()` invalidates them; resolve them (via
+   * {@link resolveAriaRef}) before doing anything that changes the page.
+   *
+   * This is the recon planner's view of the page (it replaced `observeAll()` in
+   * that role — see ADR §0036). Not an LLM call: deterministic, cheap.
+   */
+  ariaSnapshot(opts?: { depth?: number }): Promise<string>;
+
+  /**
+   * Resolve a ref from the most recent {@link ariaSnapshot} into a *durable*
+   * target: `{selector, bbox, description}` where `selector` is a derived
+   * CSS/XPath that survives a page reset (not the transient `aria-ref=eN`),
+   * `bbox` is the element's box, and `description` is its accessible-ish name
+   * (for logs / the dead-click sweep's fuzzy fallback — not for matching).
+   *
+   * The recon resolves every draft click/type `ref` through this, immediately
+   * after the snapshot, while the refs are still valid. Returns null if the ref
+   * is stale / detached / 0×0 / can't be given a durable selector. Never throws.
+   */
+  resolveAriaRef(ref: string): Promise<ObservedElement | null>;
+
+  /**
+   * Run a broad observe pass to collect candidate interactive elements
+   * currently on the page. One LLM call (one observe round-trip).
+   *
+   * No longer used by the recon planner (which uses {@link ariaSnapshot} since
+   * ADR §0036) — retained for other consumers.
    */
   observeAll(instruction?: string): Promise<ObservedElement[]>;
 
   /**
    * Look up an element by natural-language target description and return
-   * a stable selector + bbox for direct Playwright actions later. Used by
-   * the runner to pre-resolve all `click` targets in the plan before the
-   * recording window opens — keeps the recording window LLM-free.
+   * a stable selector + bbox via Stagehand `observe()`. Returns null if the
+   * target can't be resolved (no LLM error thrown).
    *
-   * Returns null if the target can't be resolved (no LLM error thrown).
+   * No longer used by the recon planner / rehearsal walk's normal path (a fuzzy
+   * re-match — ADR §0036 replaced it with deterministic ref resolution).
+   * {@link resolveTargetCandidates} is still used by the walk's dead-click
+   * *recovery* sweep, and this is retained for other consumers.
    */
   resolveTarget(target: string): Promise<ObservedElement | null>;
 

@@ -94,6 +94,14 @@ const Schema = z.object({
   reconReconvergeMax: z.coerce.number().int().min(0).max(10).default(1),
 
   /**
+   * Depth cap for the recon planner's `IPageSession.ariaSnapshot()` tree
+   * (ADR §0036). `mode: 'ai'` already prunes generic/text-only nodes; the depth
+   * cap bounds the token cost on huge content sites. Override with
+   * ARIA_SNAPSHOT_DEPTH. (Re-tune after a real run against the Recordly table.)
+   */
+  ariaSnapshotDepth: z.coerce.number().int().min(1).max(100).default(25),
+
+  /**
    * Off-camera blocker dismisser (Task #20). `blockerDismiss` is the master
    * switch (off ⇒ recon constructs no dismisser, behaviour as before).
    * `blockerDismissMaxRounds` caps the detect→click iterations;
@@ -224,6 +232,7 @@ const raw = {
   reconRehearse: process.env.RECON_REHEARSE || undefined,
   reconRehearsalBudgetMs: process.env.RECON_REHEARSAL_BUDGET_MS,
   reconReconvergeMax: process.env.RECON_RECONVERGE_MAX,
+  ariaSnapshotDepth: process.env.ARIA_SNAPSHOT_DEPTH,
   blockerDismiss: process.env.BLOCKER_DISMISS || undefined,
   blockerDismissMaxRounds: process.env.BLOCKER_DISMISS_MAX_ROUNDS,
   blockerDismissMaxMs: process.env.BLOCKER_DISMISS_MAX_MS,

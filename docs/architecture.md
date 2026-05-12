@@ -76,9 +76,12 @@ scripts/            # One-off entry points (prototypes, smoke tests). Compose ad
 core/record-job-runner.run({ url, prompt, durationMs })
    │
    ├── IPageSession.start() / goto(url)         → Browser + page + recordVideo on
-   ├── IReconnoiterer.recon(req, session)       → Performance (OFF-CAMERA: observe,
-   │                                              resolve every target to selector+bbox,
-   │                                              pace each step, set expectAfter)
+   ├── IReconnoiterer.recon(req, session)       → Performance (OFF-CAMERA: dismiss
+   │                                              blockers, IPageSession.ariaSnapshot()
+   │                                              (ref-tagged a11y tree), LLM picks a
+   │                                              draft (click/type targets by `ref`),
+   │                                              resolveAriaRef each → selector+bbox,
+   │                                              rehearsal walk, set expectAfter — §0036)
    ├── IDirector.run(performance, session)       → ON-CAMERA: deterministic playback.
    │                                              At most config.maxReplans re-plan
    │                                              checkpoints, each delegating back to

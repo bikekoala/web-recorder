@@ -76,6 +76,11 @@ describe('rehearsal config knobs', () => {
     expect(config.reconRehearsalBudgetMs).toBe(45000);
     expect(config.reconReconvergeMax).toBe(1);
   });
+
+  it('ariaSnapshotDepth defaults to 25 and honours ARIA_SNAPSHOT_DEPTH', async () => {
+    expect((await loadConfig({ ARIA_SNAPSHOT_DEPTH: undefined })).ariaSnapshotDepth).toBe(25);
+    expect((await loadConfig({ ARIA_SNAPSHOT_DEPTH: '12' })).ariaSnapshotDepth).toBe(12);
+  });
 });
 
 describe('blocker-dismiss config knobs', () => {

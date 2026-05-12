@@ -39,6 +39,12 @@ export class FakePageSession implements IPageSession {
   resolveTargetResult: ObservedElement | null = null;
   /** If set, resolveTargetCandidates returns this (decoupled from resolveTargetResult in the fake). */
   resolveTargetCandidatesResult: ObservedElement[] = [];
+  /** What ariaSnapshot() returns. */
+  ariaSnapshotResult = '';
+  /** Per-ref results for resolveAriaRef(); a ref not in the map resolves to null. */
+  resolveAriaRefResults: Record<string, ObservedElement | null> = {};
+  /** If set, called by resolveAriaRef instead of consulting the map. */
+  resolveAriaRefImpl: ((ref: string) => ObservedElement | null) | null = null;
   /** If set, observe(...) returns this. */
   observeResults: ObservedElement[] = [];
 
@@ -125,6 +131,12 @@ export class FakePageSession implements IPageSession {
   async focusedValue(): Promise<string | null> { return this.focusedValueResult; }
   async historyDepth(): Promise<number> { return this.historyDepthValue; }
   async screenshot(): Promise<Buffer> { return this.screenshotBytes; }
+  async ariaSnapshot(): Promise<string> { this.record('ariaSnapshot', null); return this.ariaSnapshotResult; }
+  async resolveAriaRef(ref: string): Promise<ObservedElement | null> {
+    this.record('resolveAriaRef', ref);
+    if (this.resolveAriaRefImpl) return this.resolveAriaRefImpl(ref);
+    return this.resolveAriaRefResults[ref] ?? null;
+  }
   async observeAll(): Promise<ObservedElement[]> { return this.observeResults; }
   async resolveTarget(): Promise<ObservedElement | null> { return this.resolveTargetResult; }
   async resolveTargetCandidates(): Promise<ObservedElement[]> { return this.resolveTargetCandidatesResult; }

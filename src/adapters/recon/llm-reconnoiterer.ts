@@ -4,11 +4,15 @@ import { DomainError } from '../../domain/errors.js';
 import {
   PerformanceSchema,
   ResolvedTargetSchema,
-  UNRESOLVED_SENTINEL,
   type Performance,
   type PerformanceStep,
   type RehearsalTrace,
 } from '../../domain/performance.js';
+import {
+  ReconDraftSchema,
+  ReconvergeDraftSchema,
+  type ReconDraftStep,
+} from '../../domain/recon-draft.js';
 import { config } from '../../infra/config.js';
 import { logger as rootLogger } from '../../infra/logger.js';
 import { buildReconUserText, buildReconvergeUserText, reconnoitererSystemPrompt } from '../../prompts/index.js';
@@ -21,15 +25,16 @@ import { rehearse, type ReconvergeContext } from './rehearsal.js';
  * LlmReconnoiterer — IReconnoiterer backed by a vision LLM via OpenRouter.
  * Default model: config.llmReconModelResolved (the resolved planner model).
  *
- * Pipeline:
- *   1. session.observeAll() — ground-truth interactive elements.
- *   2. one chat call (screenshot + intent + observed list) -> raw Performance
- *      JSON where each click/type target is just {description}.
- *   3. resolve each target via session.resolveTarget(); drop steps whose
- *      target won't resolve.
- *   4. (config.reconRehearse) run the off-camera rehearsal walk over the
- *      resolved draft — verifies each acting step against the live page,
- *      reconverges on divergence — then reset the page to the start URL so
+ * Pipeline (ADR §0036 — ref-tagged a11y snapshot target resolution):
+ *   1. session.ariaSnapshot() — a deterministic ref-tagged accessibility tree
+ *      (replaces the old `observeAll()` LLM enumeration).
+ *   2. one chat call (screenshot + intent + aria tree) -> a raw draft where each
+ *      click/type step carries a `ref` into that tree; parsed via ReconDraftSchema.
+ *   3. resolve each `ref` to a ResolvedTarget via session.resolveAriaRef() —
+ *      deterministic, no LLM; a ref that won't resolve drops the step.
+ *   4. (config.reconRehearse) run the off-camera rehearsal walk over the resolved
+ *      draft — verifies each acting step against the live page, reconverges (with a
+ *      fresh aria snapshot) on divergence — then reset the page to the start URL so
  *      the on-camera run reproduces the start state.
  *   5. Zod-validate the final Performance; throw ReconError on any failure.
  */
@@ -72,36 +77,36 @@ export class LlmReconnoiterer implements IReconnoiterer {
 
   async recon(input: ReconInput, session: IPageSession): Promise<Performance> {
     // Off-camera: clear cookie/consent banners / X-to-close modals before we
-    // observe + plan, so the Performance is built against the real page.
+    // snapshot + plan, so the Performance is built against the real page.
     const blockerDismissal = await this.dismissBlockers(session);
 
-    const observed = await session.observeAll().catch(() => []);
-    const userText = buildReconUserText(input, observed);
+    // Deterministic ref-tagged accessibility tree — the planner's view of the page.
+    const snapshot = await session.ariaSnapshot().catch(() => '');
+    const userText = buildReconUserText(input, snapshot);
     const userContent: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: 'text', text: userText }];
     if (input.screenshot && input.screenshot.length > 0) {
       userContent.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${input.screenshot.toString('base64')}` } });
     }
 
-    const parsedRaw = await this.callReconLlm(
+    const draftRaw = await this.callReconLlm(
       [
         { role: 'system', content: reconnoitererSystemPrompt },
         { role: 'user', content: userContent },
       ],
       { allowRetry: true },
     );
-    if (!Array.isArray(parsedRaw.steps)) throw new ReconError('recon output has no steps array');
-    const promptStr = typeof parsedRaw.prompt === 'string' ? parsedRaw.prompt : input.prompt;
+    const draftParsed = ReconDraftSchema.safeParse(draftRaw);
+    if (!draftParsed.success) {
+      throw new ReconError(`recon draft failed schema: ${draftParsed.error.message.slice(0, 400)}`);
+    }
+    const draft = draftParsed.data;
 
-    // Resolve targets. When a rehearsal walk will follow (config.reconRehearse),
-    // a click/type step whose target won't resolve *here* (at scrollY 0, right
-    // after goto) is KEPT with a sentinel target — the walk re-resolves it at
-    // the actual page state it'll run in. Without a rehearsal walk there's no
-    // such retry, so an unresolvable step is dropped as before.
-    const resolvedSteps = await this.resolveSteps(parsedRaw.steps as Array<Record<string, unknown>>, session, {
-      keepUnresolvable: config.reconRehearse,
-    });
+    // Resolve every click/type ref against the snapshot we just took (refs are
+    // valid only in that page state — resolve now, not deferred). A ref that
+    // won't resolve drops its step. Other kinds pass straight through.
+    const resolvedSteps = await this.resolveDraftSteps(draft.steps, session);
     if (resolvedSteps.length === 0) {
-      throw new ReconError('recon produced zero usable steps after target resolution');
+      throw new ReconError('recon produced zero usable steps after ref resolution');
     }
 
     // Off-camera rehearsal walk (config.reconRehearse). Verifies the draft
@@ -111,13 +116,13 @@ export class LlmReconnoiterer implements IReconnoiterer {
     let rehearsalTrace: RehearsalTrace | undefined;
     if (config.reconRehearse) {
       const reconverge = async (ctx: ReconvergeContext): Promise<PerformanceStep[]> => {
-        const observed = await ctx.session.observeAll().catch(() => []);
+        const snapshot = await ctx.session.ariaSnapshot().catch(() => '');
         const screenshot = await ctx.session.screenshot().catch(() => null);
         const userText = buildReconvergeUserText({
           intent: ctx.intent,
           divergedStep: ctx.divergedStep,
           observedUrl: ctx.observedUrl,
-          observed: observed.map((e) => ({ selector: e.selector, description: e.description })),
+          snapshot,
         });
         const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: 'text', text: userText }];
         if (screenshot && screenshot.length > 0) {
@@ -141,9 +146,9 @@ export class LlmReconnoiterer implements IReconnoiterer {
           return [];
         }
         if (!raw2) return [];
-        let parsed: { steps?: unknown };
+        let obj: unknown;
         try {
-          parsed = JSON.parse(stripCodeFence(raw2));
+          obj = JSON.parse(stripCodeFence(raw2));
         } catch {
           const extracted = extractFirstJsonObject(raw2);
           if (!extracted) {
@@ -151,23 +156,26 @@ export class LlmReconnoiterer implements IReconnoiterer {
             return [];
           }
           try {
-            parsed = JSON.parse(extracted);
+            obj = JSON.parse(extracted);
           } catch {
             this.logger.warn({ rawPreview: raw2.slice(0, 120) }, 'reconverge JSON parse failed');
             return [];
           }
           this.logger.warn({ rawPreview: raw2.slice(0, 120) }, 'reconverge response had non-JSON wrapper; recovered the JSON object');
         }
-        if (!Array.isArray(parsed.steps)) return [];
-        // Reconverge output always feeds the walk → keep unresolvable steps.
-        return this.resolveSteps(parsed.steps as Array<Record<string, unknown>>, ctx.session, { keepUnresolvable: true });
+        const parsed = ReconvergeDraftSchema.safeParse(obj);
+        if (!parsed.success) {
+          this.logger.warn({ err: parsed.error.message.slice(0, 200) }, 'reconverge draft failed schema');
+          return [];
+        }
+        return this.resolveDraftSteps(parsed.data.steps, ctx.session);
       };
       let result: Awaited<ReturnType<typeof rehearse>>;
       try {
         result = await rehearse({
           draftSteps: resolvedSteps,
           session,
-          intent: promptStr,
+          intent: draft.prompt,
           reconverge,
           rehearsalBudgetMs: config.reconRehearsalBudgetMs,
           reconvergeMax: config.reconReconvergeMax,
@@ -190,11 +198,11 @@ export class LlmReconnoiterer implements IReconnoiterer {
     }
 
     const candidate: Performance = {
-      prompt: promptStr,
+      prompt: draft.prompt,
       durationMs: input.durationMs,
       steps: finalSteps,
-      totalEstimatedMs: typeof parsedRaw.totalEstimatedMs === 'number' ? parsedRaw.totalEstimatedMs : sumDurations(finalSteps),
-      rationale: typeof parsedRaw.rationale === 'string' ? parsedRaw.rationale : 'no rationale provided',
+      totalEstimatedMs: sumDurations(finalSteps),
+      rationale: draft.rationale,
       ...(rehearsalTrace ? { rehearsal: rehearsalTrace } : {}),
       ...(blockerDismissal ? { blockerDismissal } : {}),
     };
@@ -210,47 +218,46 @@ export class LlmReconnoiterer implements IReconnoiterer {
   }
 
   /**
-   * Turn raw step objects from the LLM into {@link PerformanceStep}s.
-   * Non-click/type kinds pass through untouched.
-   *
-   * When `opts.keepUnresolvable` is true a rehearsal walk follows, and the walk
-   * re-resolves every click/type target at its real scroll position anyway — so
-   * resolving here would be a wasted (and slow: ~3-8 s each, sequential)
-   * `observe()` call per target, immediately overwritten. Instead every
-   * click/type step gets a sentinel target ({@link UNRESOLVED_SENTINEL}); the
-   * walk does all resolution, once. (Sweep-1 finding P1.) A step with no
-   * `target.description` at all is dropped.
-   *
-   * When it's false (no walk follows) we DO resolve here — it's the only
-   * resolution that happens — via `session.resolveTarget()`; a target that
-   * won't resolve is dropped (and logged).
+   * Turn parsed {@link ReconDraftStep}s into {@link PerformanceStep}s.
+   * scroll/key/dwell/back/done pass through (their schemas are shared).
+   * click/type: resolve the `ref` against the most-recent aria snapshot via
+   * `session.resolveAriaRef()` (deterministic, no LLM); a ref that won't resolve
+   * (stale / detached / 0×0 / no durable selector) drops the step.
    */
-  private async resolveSteps(
-    rawSteps: Array<Record<string, unknown>>,
+  private async resolveDraftSteps(
+    draftSteps: ReconDraftStep[],
     session: IPageSession,
-    opts: { keepUnresolvable: boolean },
   ): Promise<PerformanceStep[]> {
     const resolved: PerformanceStep[] = [];
-    for (const rawStep of rawSteps) {
-      const kind = rawStep.kind;
-      if (kind !== 'click' && kind !== 'type') {
-        resolved.push(rawStep as unknown as PerformanceStep);
+    for (const step of draftSteps) {
+      if (step.kind !== 'click' && step.kind !== 'type') {
+        resolved.push(step);
         continue;
       }
-      const desc = (rawStep.target as { description?: string } | undefined)?.description;
-      if (!desc) { this.logger.debug({ rawStep }, 'recon step missing target description — dropped'); continue; }
-
-      if (opts.keepUnresolvable) {
-        // Walk will resolve it. Sentinel for now.
-        const target = ResolvedTargetSchema.parse({ selector: UNRESOLVED_SENTINEL, bbox: { x: 0, y: 0, width: 0, height: 0 }, description: desc });
-        resolved.push({ ...rawStep, target } as unknown as PerformanceStep);
+      const r = await session.resolveAriaRef(step.ref).catch(() => null);
+      if (!r || !r.bbox) {
+        this.logger.info({ ref: step.ref, kind: step.kind }, 'recon ref did not resolve — step dropped');
         continue;
       }
-
-      const r = await session.resolveTarget(desc).catch(() => null);
-      if (!r || !r.bbox) { this.logger.info({ desc }, 'recon target did not resolve — step dropped'); continue; }
-      const target = ResolvedTargetSchema.parse({ selector: r.selector, bbox: r.bbox, description: desc });
-      resolved.push({ ...rawStep, target } as unknown as PerformanceStep);
+      const target = ResolvedTargetSchema.parse({ selector: r.selector, bbox: r.bbox, description: r.description });
+      if (step.kind === 'click') {
+        resolved.push({
+          kind: 'click',
+          target,
+          anticipationMs: step.anticipationMs,
+          reasoning: step.reasoning,
+          ...(step.expectAfter !== undefined ? { expectAfter: step.expectAfter } : {}),
+        });
+      } else {
+        resolved.push({
+          kind: 'type',
+          target,
+          text: step.text,
+          preMs: step.preMs,
+          keystrokeMs: step.keystrokeMs,
+          reasoning: step.reasoning,
+        });
+      }
     }
     return resolved;
   }
@@ -261,12 +268,13 @@ export class LlmReconnoiterer implements IReconnoiterer {
    * where `response_format: json_object` isn't reliably enforced) wraps it in
    * prose or markdown. On a hard parse failure / empty content, retries ONCE
    * with an emphatic JSON-only reminder appended; if the retry also fails,
-   * throws {@link ReconError}.
+   * throws {@link ReconError}. (Shape validation is the caller's job — this
+   * returns `unknown`.)
    */
   private async callReconLlm(
     messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
     opts: { allowRetry: boolean },
-  ): Promise<{ prompt?: unknown; durationMs?: unknown; steps?: unknown; totalEstimatedMs?: unknown; rationale?: unknown }> {
+  ): Promise<unknown> {
     let raw: string;
     try {
       const completion = await this.client.chat.completions.create({
@@ -281,7 +289,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
       throw new ReconError('recon LLM call failed', err);
     }
 
-    const retryWithReminder = (): ReturnType<LlmReconnoiterer['callReconLlm']> =>
+    const retryWithReminder = (): Promise<unknown> =>
       this.callReconLlm(
         [
           ...messages,
@@ -301,7 +309,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
 
     // Fast path: the whole response is JSON (possibly fenced).
     try {
-      return JSON.parse(stripCodeFence(raw)) as Record<string, unknown>;
+      return JSON.parse(stripCodeFence(raw));
     } catch {
       // fall through to wrapper recovery
     }
@@ -310,7 +318,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
     const extracted = extractFirstJsonObject(raw);
     if (extracted) {
       try {
-        const parsed = JSON.parse(extracted) as Record<string, unknown>;
+        const parsed = JSON.parse(extracted);
         this.logger.warn({ rawPreview: raw.slice(0, 120) }, 'recon response had non-JSON wrapper; recovered the JSON object');
         return parsed;
       } catch {

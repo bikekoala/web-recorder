@@ -25,11 +25,12 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Project scaffolding | ✅ |
 | `IPageSession` + Stagehand adapter | ✅ |
 | Playwright video recording + ffmpeg trim | ✅ |
-| `IReconnoiterer` + LlmReconnoiterer (recon → `Performance`; reused as re-planner) | ✅ |
-| Rehearsing reconnoiterer — `recon()` walks its draft against the live page off-camera, re-resolves targets at the right scroll position, rewrites `expectAfter` to observed state, reconverges on divergence, resets to start URL (`RECON_REHEARSE`, default on; §0034 / Task #21) | ✅ |
-| Recon prompt: PRIORITY #1 (a step per requested action, re-check before emit) + scroll-to-target discipline; reconverge keeps the goal (different path, not blind retry) | ✅ |
+| `IReconnoiterer` + LlmReconnoiterer (recon draft → resolved `Performance`; reused as re-planner) | ✅ |
+| ref-tagged a11y snapshot target resolution (§0036) — recon sees a deterministic `IPageSession.ariaSnapshot()` tree (`page.ariaSnapshot({mode:'ai'})`, native in Playwright 1.59; replaced the `observeAll()` LLM enumeration); the LLM picks click/type targets by `ref`; `ReconDraftSchema` (recon output finally Zod-parsed — Hard Rule 2); `resolveAriaRef(ref)` → durable `{selector,bbox,description}`, deterministic, no LLM, no fuzzy re-match. Roots out the wrong-element bug (robustness-sweep P2/finding 6) | ✅ |
+| Rehearsing reconnoiterer — `recon()` walks its draft against the live page off-camera, rewrites `expectAfter` to observed state, reconverges (with a fresh aria snapshot) on divergence, resets to start URL (`RECON_REHEARSE`, default on; §0034 / §0036; no more per-step `observe()` re-resolve) | ✅ |
+| Recon prompt: PRIORITY #1 (a step per requested action, re-check before emit) + scroll-to-target discipline + "pick targets by ref from the tree"; reconverge keeps the goal (different ref / scroll first, not blind retry) | ✅ |
 | `IBlockerDismisser` + LlmBlockerDismisser — off-camera probe→detect(vision LLM)→click→re-probe loop that clears cookie/consent banners + X-to-close modals before recon plans & before recording (gated on `pageDiagnostic.blockerSignals`; `BLOCKER_DISMISS`, default on; capped 3 rounds/10s; `RunMetrics.blockerDismissal`; §0035 / Task #20) | ✅ |
-| `resolveTargetCandidates` — all sized `observe()` matches, interactive elements ranked ahead of wrappers, deduped (`resolveTarget` = `[0]`); rehearsal walk recovers a dead click by sweeping the other candidates before the LLM reconverge; reconverge prompt hard-checks the requested click survives (robustness-sweep finding 6, partial) | ✅ |
+| `resolveTargetCandidates` — all sized `observe()` matches, interactive elements ranked ahead of wrappers, deduped; the rehearsal walk's dead-click *recovery* sweep tries the other candidates before the LLM reconverge; reconverge prompt hard-checks the requested click survives (finding 6 — now a recovery path; the primary resolution is the §0036 aria-ref one) | ✅ |
 | `IDirector` + PerformanceDirector (deterministic `Performance` playback + re-plan checkpoint, §0034) | ✅ |
 | PerformanceDirector graceful degradation — drops stale tail + gentle closing scroll when an `expectAfter` mismatch can't be re-planned (§0034) | ✅ |
 | `replanMinRemainingMs` gate (default 60s) — mid-recording re-plan only when enough budget remains; short recordings degrade instead (§0034) | ✅ |
@@ -38,7 +39,7 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Two model knobs that matter: `LLM_MODEL` (Stagehand internals) / `LLM_RECON_MODEL` (recon+re-plan) | ✅ |
 | `RecordJobRunner` (orchestrates setup → recon → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (110 passing) | ✅ |
+| Vitest unit tests (127 passing) | ✅ |
 | Action vocabulary: 7 primitives (click / scroll / dwell / type / key / back / done) | ✅ |
 | `IRecordingJudge` + LlmVisionJudge — automated 5-dim rubric naturalness grading via Gemini 3.1 Pro (§0030) | ✅ |
 | Naturalness rendering bundle — pre-typing pause, slower keystroke delay, inter-scroll micro-pause (§0031) | ✅ |
@@ -71,7 +72,9 @@ Post-§0034 (prophet pipeline) **after Task #21 (rehearsing reconnoiterer)**, si
 | Video judge verdict (Gemini 3.1 Pro) | **`LOOKS_HUMAN`** — motionQuality / pacing / intentExecution / recovery / visualCoherence all `pass` |
 | Total wall-clock | ~72 s (the rehearsal walk adds ~20 s, all off-camera) |
 
-Known remaining recon-plan-quality gap: multi-screenful "scroll down then click X" where X is *above* the scroll position (e.g. Wikipedia "Cat → Felidae" — taxobox link scrolls away) — the recon doesn't scroll the target back into view first, and a long page has several same-text links `resolveTarget` can't disambiguate. See [`docs/findings/2026-05-11-prophet-first-integration.md`](./docs/findings/2026-05-11-prophet-first-integration.md). `RECON_REHEARSE=false` skips the walk (fast dev iteration).
+> ⚠️ This table is the **pre-§0036** run. §0036 (ref-tagged a11y snapshot target resolution) replaced `observeAll()` + the per-target `observe()` resolves with `ariaSnapshot()` + deterministic `aria-ref` resolution — recon-internals only, on-camera `Performance` shape unchanged — but it's **not yet re-measured**. Expect `reconMs` and total wall-clock to drop (fewer LLM calls); re-run `npm run prototype:stagehand` + `npm run judge` and refresh this table.
+
+Known remaining recon-plan-quality gap (status uncertain post-§0036): multi-screenful "scroll down then click X" where X is *above* the scroll position (e.g. Wikipedia "Cat → Felidae" — taxobox link scrolls away, and a long page has several same-text "Felidae" nodes). §0036's ref-based picking *should* disambiguate (the LLM picks one specific `[ref=eN]` from the tree, no fuzzy re-match) — but the "scroll past it then need it back" timing is still on the recon prompt's scroll-to-target discipline. Re-verify on a real run. See [`docs/findings/2026-05-11-prophet-first-integration.md`](./docs/findings/2026-05-11-prophet-first-integration.md). `RECON_REHEARSE=false` skips the walk (fast dev iteration).
 
 ## Common commands
 

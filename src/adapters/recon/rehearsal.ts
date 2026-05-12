@@ -1,5 +1,4 @@
 import type { ExpectAfter, PerformanceStep, RehearsalTrace } from '../../domain/performance.js';
-import { UNRESOLVED_SENTINEL } from '../../domain/performance.js';
 import type { PageDiagnostic } from '../../domain/action-log.js';
 import type { Logger } from '../../infra/logger.js';
 import type { IPageSession } from '../../ports/page-session.js';
@@ -101,7 +100,7 @@ export async function rehearse(
       truncated = true;
       break;
     }
-    let step = steps[i]!;
+    const step = steps[i]!;
 
     if (step.kind === 'done') {
       walked.push(step);
@@ -125,39 +124,11 @@ export async function rehearse(
       continue;
     }
 
-    // Acting step: click | type | key | back.
-
-    // Re-resolve click/type targets against the LIVE page at the actual scroll
-    // position this step runs in — the recon's eager resolve happened at
-    // scrollY 0 and may have missed the element (or matched the wrong one). The
-    // returned bbox is viewport-relative at resolve time; the rest of the
-    // pipeline treats stored bboxes as page-absolute, so convert: y += scrollY.
-    if (step.kind === 'click' || step.kind === 'type') {
-      const scrollAtResolve = await session.scrollY().catch(() => 0);
-      const fresh = await session.resolveTarget(step.target.description).catch(() => null);
-      if (fresh && fresh.bbox) {
-        const freshTarget = {
-          selector: fresh.selector,
-          bbox: {
-            x: fresh.bbox.x,
-            y: fresh.bbox.y + scrollAtResolve,
-            width: fresh.bbox.width,
-            height: fresh.bbox.height,
-          },
-          description: step.target.description,
-        };
-        step = { ...step, target: freshTarget };
-        steps[i] = step;
-      } else {
-        // Re-resolve failed at the current page state — there's nothing to
-        // click. Treat as a divergence (the reconverge LLM is told it couldn't
-        // find '<desc>' here and can pick a different element / scroll more).
-        logger.info({ i, kind: step.kind, reason: 'target_unresolvable' }, 'rehearsal divergence — target did not resolve');
-        const result = await handleDivergence(i, step, await safeCurrentUrl(session));
-        if (result === 'reconverged') continue;
-        break;
-      }
-    }
+    // Acting step: click | type | key | back. Run it as-is — the recon resolved
+    // click/type targets eagerly & deterministically via aria refs (ADR §0036);
+    // `clickResolvedTarget` falls back to a selector click if the (scrollY-0)
+    // bbox has gone stale. A dead click is caught below (divergence → candidate
+    // sweep → reconverge), same as before.
 
     const urlBefore = await safeCurrentUrl(session);
     const diagBefore = await session.pageDiagnostic().catch(() => null);
@@ -242,16 +213,7 @@ export async function rehearse(
     break;
   }
 
-  // Defensive: drop any click/type step that somehow still carries the
-  // unresolved sentinel (in practice the walk re-resolves it or diverges, so
-  // none should survive — but a sentinel target Zod-validates fine, so the
-  // adapter's final safeParse wouldn't catch it).
-  let finalWalked = walked.filter(
-    (s) => !((s.kind === 'click' || s.kind === 'type') && s.target.selector === UNRESOLVED_SENTINEL),
-  );
-  if (finalWalked.length !== walked.length) {
-    logger.warn({ dropped: walked.length - finalWalked.length }, 'rehearsal: dropped surviving unresolved-sentinel step(s)');
-  }
+  let finalWalked = [...walked];
 
   if (truncated) {
     finalWalked.push(...gracefulTail());

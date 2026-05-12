@@ -151,24 +151,26 @@ finding 6 above — still open.
   tokens per recording (= the whole goals.md #5 budget). Left as a follow-up;
   the dismiss *logic* is unit-tested and it correctly clears OneTrust/Cookiebot-
   class banners when `blockerSignals` does fire.
-- **Finding 6 — target resolution / disambiguation** — partly addressed (the
-  "A + B lightweight" pass): (B) `resolveTarget` now goes through
-  `resolveTargetCandidates`, which keeps all sized `observe()` matches, ranks
-  *genuinely interactive* elements (`<a href>`/`<button>`/`[role=button|link]`/…)
-  ahead of bare wrappers, dedups by position — so the *first* pick is more often
-  the real clickable thing, not a wrapper `<div>`. (A) when a click on the best
-  candidate turns out dead (URL didn't move), the rehearsal walk sweeps the
-  *other* ranked candidates — clicks each, keeps the first that actually changes
-  the page / satisfies expectAfter — *before* the (~30–50 s) LLM reconverge.
-  Plus the reconverge prompt got a HARD CHECK: a reconverged plan for "click X
-  then …" must still contain a click for X (the LLM was sometimes returning an
-  all-scroll plan). Re-ran the canonical (no regression: `complete`, 0 div).
-  **Still open**: when `observe()` returns *no* good candidate at all (it didn't
-  on the HN comments link this run — every candidate was dead), the sweep has
-  nothing to try and we're back on the reconverge; and the reconverge can still
-  flake. The deeper fix (scroll-aware disambiguation; a verification trial
-  before committing a resolution; richer observe prompting) is finding 6's
-  "C and beyond" — not yet scheduled.
+- **Finding 6 — target resolution / disambiguation** — **resolved** by ADR §0036
+  (ref-tagged a11y snapshot target resolution), shipped 2026-05-12. The earlier
+  "A + B lightweight" pass (interactive-first `resolveTargetCandidates` ranking +
+  the rehearsal walk's dead-click sweep + the reconverge HARD CHECK) was a set of
+  *recovery* patches around the fuzzy `observe()` re-match; §0036 removed the
+  re-match entirely: recon now sees a deterministic `IPageSession.ariaSnapshot()`
+  ref-tagged tree (`page.ariaSnapshot({mode:'ai'})`, native in Playwright 1.59),
+  the LLM picks each click/type target by `ref`, and `resolveAriaRef(ref)` resolves
+  it to a durable selector+bbox deterministically — no second LLM call, no
+  same-text ambiguity (the LLM picked one specific `[ref=eN]`). The walk no longer
+  re-resolves per step; `resolveTargetCandidates` survives only as the dead-click
+  *recovery* sweep (a fuzzy fallback there is acceptable). `UNRESOLVED_SENTINEL`
+  retired. Scoping done in [`2026-05-12-similar-projects-eval.md`](./2026-05-12-similar-projects-eval.md)
+  (borrowing the technique from the playwright-mcp lineage, not the package);
+  details in `docs/superpowers/specs/2026-05-12-aria-ref-target-resolution-design.md`
+  and ADR §0036. **Not yet re-validated on a real run** — the unit suite is green
+  (127 tests); the canonical scenario + the multi-same-text-link sites (Wikipedia
+  "Cat → Felidae", HN "open a comment") still need a `npm run prototype:stagehand`
+  re-run to confirm the disambiguation actually holds and to re-measure recon
+  wall-clock (expected to drop — fewer LLM calls).
 - Fix 4 (don't let `intentSatisfaction` over-credit a click that ran but didn't
   change the page — use the walk's observed effect).
 - Re-run the full sweep after finding 6 is addressed.

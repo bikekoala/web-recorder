@@ -64,7 +64,7 @@ export interface RunResult {
 export interface RunMetrics {
   totalWallClockMs: number;
   setupMs: number;          // session.start through screenshot
-  reconMs: number;          // reconnoiterer.recon() call (includes resolveTarget calls)
+  reconMs: number;          // reconnoiterer.recon() call (aria snapshot + LLM + ref resolution + rehearsal walk)
   recordingMs: number;      // director.run duration
   trimMs: number;           // ffmpeg
   rawVideoMs: number | null;

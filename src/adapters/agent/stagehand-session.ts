@@ -503,6 +503,54 @@ export class StagehandPageSession implements IPageSession {
     return page.screenshot({ type: 'png', fullPage: false });
   }
 
+  async ariaSnapshot(opts: { depth?: number } = {}): Promise<string> {
+    try {
+      const page = this.requirePage();
+      return await page.ariaSnapshot({ mode: 'ai', depth: opts.depth ?? config.ariaSnapshotDepth });
+    } catch (err) {
+      this.logger.warn({ err }, 'ariaSnapshot failed; returning empty tree');
+      return '';
+    }
+  }
+
+  async resolveAriaRef(ref: string): Promise<ObservedElement | null> {
+    try {
+      const page = this.requirePage();
+      const id = ref.trim().replace(/^(aria-)?ref=/i, '');
+      if (!id) return null;
+      const locator = page.locator(`aria-ref=${id}`).first();
+      const box = await locator.boundingBox({ timeout: 1000 });
+      // 0×0 wrapper / unloaded node — not a clickable target. See sweep-1 P2.
+      if (!box || box.width < 1 || box.height < 1) return null;
+      // A durable selector (xpath snapshot) — `aria-ref=eN` itself is only valid
+      // until the next snapshot, so it's useless for on-camera playback.
+      const selector = await this.locatorSelectorFallback(locator);
+      if (!selector) return null;
+      const description = await locator
+        .evaluate((el) => {
+          const e = el as HTMLElement;
+          const text =
+            e.getAttribute('aria-label') ||
+            (e.textContent ?? '').trim() ||
+            e.getAttribute('title') ||
+            e.getAttribute('alt') ||
+            e.getAttribute('value') ||
+            e.getAttribute('placeholder') ||
+            '';
+          return text.replace(/\s+/g, ' ').trim().slice(0, 120);
+        })
+        .catch(() => '');
+      return {
+        selector,
+        description: description || `aria-ref ${id}`,
+        bbox: { x: box.x, y: box.y, width: box.width, height: box.height },
+      };
+    } catch (err) {
+      this.logger.debug({ err, ref }, 'resolveAriaRef failed');
+      return null;
+    }
+  }
+
   async observeAll(instruction?: string): Promise<ObservedElement[]> {
     const page = this.requirePage();
     const stagehand = this.requireStagehand();
