@@ -151,14 +151,24 @@ finding 6 above — still open.
   tokens per recording (= the whole goals.md #5 budget). Left as a follow-up;
   the dismiss *logic* is unit-tested and it correctly clears OneTrust/Cookiebot-
   class banners when `blockerSignals` does fire.
-- **Finding 6 — target resolution / disambiguation** is now the top open
-  robustness gap (it explains Guardian, CNN, and the Wikipedia "Cat → Felidae"
-  case): `resolveTarget` returns a *sized* element that isn't the one the
-  description means (a wrapper, a section header, the wrong same-text link).
-  The walk catches it (divergence) but the reconverge picks another wrong
-  element. Needs: better recon descriptions, or a "did this click actually
-  navigate / change the page?" check inside `resolveTarget` candidate-ranking,
-  or scroll-aware disambiguation.
+- **Finding 6 — target resolution / disambiguation** — partly addressed (the
+  "A + B lightweight" pass): (B) `resolveTarget` now goes through
+  `resolveTargetCandidates`, which keeps all sized `observe()` matches, ranks
+  *genuinely interactive* elements (`<a href>`/`<button>`/`[role=button|link]`/…)
+  ahead of bare wrappers, dedups by position — so the *first* pick is more often
+  the real clickable thing, not a wrapper `<div>`. (A) when a click on the best
+  candidate turns out dead (URL didn't move), the rehearsal walk sweeps the
+  *other* ranked candidates — clicks each, keeps the first that actually changes
+  the page / satisfies expectAfter — *before* the (~30–50 s) LLM reconverge.
+  Plus the reconverge prompt got a HARD CHECK: a reconverged plan for "click X
+  then …" must still contain a click for X (the LLM was sometimes returning an
+  all-scroll plan). Re-ran the canonical (no regression: `complete`, 0 div).
+  **Still open**: when `observe()` returns *no* good candidate at all (it didn't
+  on the HN comments link this run — every candidate was dead), the sweep has
+  nothing to try and we're back on the reconverge; and the reconverge can still
+  flake. The deeper fix (scroll-aware disambiguation; a verification trial
+  before committing a resolution; richer observe prompting) is finding 6's
+  "C and beyond" — not yet scheduled.
 - Fix 4 (don't let `intentSatisfaction` over-credit a click that ran but didn't
   change the page — use the walk's observed effect).
 - Re-run the full sweep after finding 6 is addressed.
