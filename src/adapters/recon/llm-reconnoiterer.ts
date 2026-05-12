@@ -14,6 +14,7 @@ import { logger as rootLogger } from '../../infra/logger.js';
 import { buildReconUserText, buildReconvergeUserText, reconnoitererSystemPrompt } from '../../prompts/index.js';
 import type { IPageSession } from '../../ports/page-session.js';
 import type { IReconnoiterer, ReconInput } from '../../ports/reconnoiterer.js';
+import type { IBlockerDismisser, BlockerDismissalReport } from '../../ports/blocker-dismisser.js';
 import { rehearse, type ReconvergeContext } from './rehearsal.js';
 
 /**
@@ -41,21 +42,39 @@ export class ReconError extends DomainError {
 interface LlmReconnoitererOpts {
   model?: string;
   client?: OpenAI;
+  blockerDismisser?: IBlockerDismisser;
 }
 
 export class LlmReconnoiterer implements IReconnoiterer {
   private readonly client: OpenAI;
   private readonly model: string;
+  private readonly blockerDismisser: IBlockerDismisser | null;
   private readonly logger = rootLogger.child({ component: 'LlmReconnoiterer' });
 
   constructor(opts: LlmReconnoitererOpts = {}) {
     this.model = opts.model ?? config.llmReconModelResolved;
     this.client = opts.client ?? new OpenAI({ baseURL: config.openrouterBaseUrl, apiKey: config.openrouterApiKey });
+    this.blockerDismisser = opts.blockerDismisser ?? null;
   }
 
   get modelId(): string { return this.model; }
 
+  /** Run the off-camera blocker dismisser (if configured); never throws. */
+  private async dismissBlockers(session: IPageSession): Promise<BlockerDismissalReport | null> {
+    if (!this.blockerDismisser) return null;
+    try {
+      return await this.blockerDismisser.dismiss(session);
+    } catch (err) {
+      this.logger.warn({ err }, 'blocker dismisser threw — proceeding without it');
+      return { rounds: 0, dismissed: [], stillBlocked: true };
+    }
+  }
+
   async recon(input: ReconInput, session: IPageSession): Promise<Performance> {
+    // Off-camera: clear cookie/consent banners / X-to-close modals before we
+    // observe + plan, so the Performance is built against the real page.
+    const blockerDismissal = await this.dismissBlockers(session);
+
     const observed = await session.observeAll().catch(() => []);
     const userText = buildReconUserText(input, observed);
     const userContent: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: 'text', text: userText }];
@@ -161,6 +180,9 @@ export class LlmReconnoiterer implements IReconnoiterer {
       rehearsalTrace = result.trace;
       try {
         await session.goto(input.url);
+        // The walk reloaded the page — a consent banner / modal can be back.
+        // Re-dismiss so the on-camera run starts on a clean page too.
+        await this.dismissBlockers(session);
         await session.waitForVisualStability();
       } catch (err) {
         this.logger.warn({ err }, 'page reset after rehearsal failed — on-camera run may diverge (the director re-plan/graceful-degradation is the backstop)');
@@ -174,6 +196,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
       totalEstimatedMs: typeof parsedRaw.totalEstimatedMs === 'number' ? parsedRaw.totalEstimatedMs : sumDurations(finalSteps),
       rationale: typeof parsedRaw.rationale === 'string' ? parsedRaw.rationale : 'no rationale provided',
       ...(rehearsalTrace ? { rehearsal: rehearsalTrace } : {}),
+      ...(blockerDismissal ? { blockerDismissal } : {}),
     };
     const validation = PerformanceSchema.safeParse(candidate);
     if (!validation.success) {

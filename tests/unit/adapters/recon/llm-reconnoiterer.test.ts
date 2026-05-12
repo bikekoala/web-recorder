@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { LlmReconnoiterer, ReconError } from '../../../../src/adapters/recon/llm-reconnoiterer.js';
 import { FakePageSession } from '../../../fakes/fake-page-session.js';
+import type { IBlockerDismisser, BlockerDismissalReport } from '../../../../src/ports/blocker-dismisser.js';
+import type { IPageSession } from '../../../../src/ports/page-session.js';
 
 // Minimal fake OpenAI-shaped client.
 function fakeClient(content: string) {
@@ -201,5 +203,58 @@ describe('LlmReconnoiterer', () => {
     expect(session.events.some((e) => e.kind === 'goto')).toBe(false);
     vi.unstubAllEnvs();
     vi.resetModules();
+  });
+});
+
+describe('LlmReconnoiterer + blockerDismisser', () => {
+  const goPlanJson = JSON.stringify({
+    prompt: 'go somewhere',
+    durationMs: 10000,
+    steps: [
+      { kind: 'click', target: { description: 'go' }, anticipationMs: 500, reasoning: 'navigate' },
+      { kind: 'done', reasoning: 'done' },
+    ],
+    totalEstimatedMs: 900,
+    rationale: 'one click',
+  });
+  // Spy IBlockerDismisser — counts dismiss() calls; returns a fixed report.
+  class SpyDismisser implements IBlockerDismisser {
+    calls = 0;
+    report: BlockerDismissalReport = { rounds: 1, dismissed: ['Accept all cookies'], stillBlocked: false };
+    async dismiss(_session: IPageSession): Promise<BlockerDismissalReport> { this.calls++; return this.report; }
+  }
+  function wireSession() {
+    const session = new FakePageSession();
+    session.url = 'https://site.test/';
+    session.resolveTargetResult = { selector: 'a#go', description: 'go', bbox: { x: 0, y: 0, width: 1, height: 1 } };
+    const goNext = () => { session.url = 'https://site.test/next'; };
+    session.clickAtImpl = goNext;
+    session.clickSelectorImpl = goNext;
+    return session;
+  }
+  const reconInput = { url: 'https://site.test/', prompt: 'go somewhere', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null };
+
+  it('calls dismiss() and surfaces the report on Performance.blockerDismissal', async () => {
+    const session = wireSession();
+    const dismisser = new SpyDismisser();
+    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goPlanJson), blockerDismisser: dismisser });
+    const perf = await recon.recon(reconInput, session);
+    expect(dismisser.calls).toBeGreaterThanOrEqual(1); // recon-start call (+ one more from the walk reset)
+    expect(perf.blockerDismissal).toEqual({ rounds: 1, dismissed: ['Accept all cookies'], stillBlocked: false });
+  });
+
+  it('without a dismisser, Performance.blockerDismissal is undefined', async () => {
+    const session = wireSession();
+    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goPlanJson) });
+    const perf = await recon.recon(reconInput, session);
+    expect(perf.blockerDismissal).toBeUndefined();
+  });
+
+  it('a dismiss() that throws does not fail recon — report is stillBlocked', async () => {
+    const session = wireSession();
+    const throwing: IBlockerDismisser = { dismiss: async () => { throw new Error('boom'); } };
+    const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goPlanJson), blockerDismisser: throwing });
+    const perf = await recon.recon(reconInput, session);
+    expect(perf.blockerDismissal).toEqual({ rounds: 0, dismissed: [], stillBlocked: true });
   });
 });
