@@ -176,9 +176,19 @@ finding 6 above — still open.
   the regression suite — **6/6 pass, every case `intentSatisfaction: complete`**
   (GitHub multi-step nav 简中→back→folder→file ×2 prompt variants, YouTube
   search→channel→browse ×2, Google Maps search ×2); unit suite green (129 tests).
-  Wikipedia "Cat → Felidae" (the original P3 hard case) not yet re-run — but the
-  ref-or-description picking + the dead-click sweep + reconverge should now handle
-  it; check it next.
+  **Wikipedia "Cat → Felidae" (the original P3 hard case) — re-run, still fails**
+  (`intentSatisfaction: unknown`, click step dropped at recon time): two compounding
+  problems on a giant page — (1) the recon LLM picked a wrong `ref` for the
+  disambiguation-note Felidae link (`e252`, which is in the sidebar/contents area)
+  out of a tree that big; (2) the `targetDescription` fallback (`resolveTargetCandidates`
+  → `stagehand.observe()`) sends the *full* accessibility tree as text — ~140 k
+  tokens for the Cat article — which blew gpt-4o-mini's 128 k context window (a 400)
+  → the fallback returned nothing. (Note: the *old* code would have failed here too
+  — `resolveTarget` was the same `stagehand.observe()` call; Cat was always listed
+  as still-open. §0036 didn't regress it, it just didn't fix it.) The lever: scope /
+  prune the recon's `ariaSnapshot()` (e.g. to `<main>`) so the tree is ~10× smaller
+  → easier ref-picking AND lower token cost (goal #5), and a fallback that doesn't
+  re-serialize the whole tree. Not done — the next finding-6 increment.
 - Fix 4 (don't let `intentSatisfaction` over-credit a click that ran but didn't
   change the page — use the walk's observed effect).
 - Re-run the full sweep after finding 6 is addressed.
