@@ -20,6 +20,7 @@
  */
 
 import { StagehandPageSession } from '../src/adapters/agent/stagehand-session.js';
+import { LlmBlockerDismisser } from '../src/adapters/blocker/llm-blocker-dismisser.js';
 import { PerformanceDirector } from '../src/adapters/director/performance-director.js';
 import { LlmReconnoiterer } from '../src/adapters/recon/llm-reconnoiterer.js';
 import { RecordJobRunner } from '../src/core/record-job-runner.js';
@@ -58,7 +59,8 @@ async function main(): Promise<void> {
     viewport: config.viewport,
     verbose: 1,
   });
-  const reconnoiterer = new LlmReconnoiterer();
+  const blockerDismisser = config.blockerDismiss ? new LlmBlockerDismisser() : undefined;
+  const reconnoiterer = new LlmReconnoiterer({ blockerDismisser });
   // The PerformanceDirector reuses the reconnoiterer as its re-planner at
   // the (at most config.maxReplans) re-plan checkpoints.
   const director = new PerformanceDirector({ replanner: reconnoiterer });
