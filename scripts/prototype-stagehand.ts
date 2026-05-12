@@ -59,8 +59,7 @@ async function main(): Promise<void> {
     viewport: config.viewport,
     verbose: 1,
   });
-  const blockerDismisser = config.blockerDismiss ? new LlmBlockerDismisser() : undefined;
-  const reconnoiterer = new LlmReconnoiterer({ blockerDismisser });
+  const reconnoiterer = new LlmReconnoiterer(config.blockerDismiss ? { blockerDismisser: new LlmBlockerDismisser() } : {});
   // The PerformanceDirector reuses the reconnoiterer as its re-planner at
   // the (at most config.maxReplans) re-plan checkpoints.
   const director = new PerformanceDirector({ replanner: reconnoiterer });
