@@ -171,11 +171,14 @@ finding 6 above — still open.
   not the hot path). Scoping done in [`2026-05-12-similar-projects-eval.md`](./2026-05-12-similar-projects-eval.md)
   (borrowing the technique from the playwright-mcp lineage, not the package);
   details in `docs/superpowers/specs/2026-05-12-aria-ref-target-resolution-design.md`
-  and ADR §0036. **Validated** on the canonical Recordly scenario — `intentSatisfaction:
-  complete`, judge `LOOKS_HUMAN`, recon ~24 s (was ~49 s), total ~42 s (was ~72 s);
-  unit suite green (129 tests). The multi-same-text-link sites (Wikipedia "Cat →
-  Felidae", HN "open a comment") + the regression suite are the remaining
-  re-verification.
+  and ADR §0036. **Validated**: canonical Recordly — `intentSatisfaction: complete`,
+  judge `LOOKS_HUMAN` (all 5 dims), recon ~24 s (was ~49 s), total ~42 s (was ~72 s);
+  the regression suite — **6/6 pass, every case `intentSatisfaction: complete`**
+  (GitHub multi-step nav 简中→back→folder→file ×2 prompt variants, YouTube
+  search→channel→browse ×2, Google Maps search ×2); unit suite green (129 tests).
+  Wikipedia "Cat → Felidae" (the original P3 hard case) not yet re-run — but the
+  ref-or-description picking + the dead-click sweep + reconverge should now handle
+  it; check it next.
 - Fix 4 (don't let `intentSatisfaction` over-credit a click that ran but didn't
   change the page — use the walk's observed effect).
 - Re-run the full sweep after finding 6 is addressed.
