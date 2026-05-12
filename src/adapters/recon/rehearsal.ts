@@ -186,9 +186,16 @@ export async function rehearse(
     const eaSatisfied = ea ? await expectAfterSatisfied(ea, urlAfter, session) : true;
     const aboutBlank = urlAfter === 'about:blank';
     const pageChanged = urlBefore !== urlAfter || sigBefore !== sigAfter;
-    // A dead element was clicked (the §0034 failure this whole thing exists to catch).
-    const unchanged =
-      (step.kind === 'click' || step.kind === 'type') && !threw && !pageChanged;
+    // A dead element was clicked (the §0034 failure this whole thing exists to
+    // catch) — but ONLY for a real `click`, and only when this click isn't just
+    // a "focus an input" beat: a `click` whose next step is `type`/`key` (the
+    // SEARCH pattern: click box → type → Enter) legitimately changes nothing,
+    // and a `type` step never reliably changes the page signature either — its
+    // real test is the step that follows it (Enter / a dwell for results). So a
+    // type-not-throwing, or a click-that-feeds-an-input, is NOT a divergence.
+    const nextStep: PerformanceStep | undefined = steps[i + 1];
+    const clickFeedsInput = !!nextStep && (nextStep.kind === 'type' || nextStep.kind === 'key');
+    const unchanged = step.kind === 'click' && !threw && !pageChanged && !clickFeedsInput;
     // Hard expectAfter failure: the planner expected the URL to contain X
     // afterwards, but the URL is literally unchanged AND still doesn't contain
     // X. That's unambiguous — a click/key that was supposed to navigate didn't.
@@ -206,7 +213,7 @@ export async function rehearse(
     const diverged = threw || aboutBlank || unchanged || eaSoftMismatch || eaUrlHardFail;
 
     if (!diverged) {
-      walked.push(await rewriteExpectAfter(step, urlBefore, urlAfter, ea, diag, session));
+      walked.push(await rewriteExpectAfter(step, urlBefore, urlAfter, ea, eaSatisfied, diag, session));
       i++;
       continue;
     }
@@ -308,7 +315,7 @@ async function sweepResolveCandidates(
     const eaOk = ea ? await expectAfterSatisfied(ea, urlA, session) : false;
     if (changed || eaOk) {
       logger.info({ selector: c.selector, desc: step.target.description }, 'rehearsal: dead click recovered via another resolve candidate');
-      return rewriteExpectAfter(candStep, urlBeforeStep, urlA, ea, diagA, session);
+      return rewriteExpectAfter(candStep, urlBeforeStep, urlA, ea, eaOk, diagA, session);
     }
   }
   return null;
@@ -431,6 +438,7 @@ async function rewriteExpectAfter(
   urlBefore: string,
   urlAfter: string,
   eaBefore: ExpectAfter | null,
+  eaBeforeWasSatisfied: boolean,
   diag: PageDiagnostic | null,
   session: IPageSession,
 ): Promise<PerformanceStep> {
@@ -456,7 +464,12 @@ async function rewriteExpectAfter(
   if (next.urlContains !== undefined || next.visibleText !== undefined) {
     return { ...step, expectAfter: next };
   }
-  // No new evidence — keep whatever the step already had (it was satisfied,
-  // which is the only way we reach here for a step that carried one).
+  // No new evidence to express the post-state with.
+  //  - If the planner's original expectAfter was still satisfied here, keep it.
+  //  - If it was NOT satisfied (the action "worked" — page changed — but in a
+  //    way we can't pin a check on, and the old guess is now stale), drop the
+  //    check entirely: an unverifiable expectAfter would only make the on-camera
+  //    Director mismatch → degrade. (sweep-1 / review bug 3.)
+  if (eaBefore && !eaBeforeWasSatisfied) return { ...step, expectAfter: {} };
   return step;
 }

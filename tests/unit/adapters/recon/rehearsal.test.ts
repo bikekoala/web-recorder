@@ -10,6 +10,10 @@ const NEVER_RECONVERGE = async (_ctx: ReconvergeContext): Promise<PerformanceSte
 function clickStep(desc: string, expectAfter?: { urlContains?: string; visibleText?: string[] }): PerformanceStep {
   return { kind: 'click', target: { selector: `sel:${desc}`, bbox: { x: 0, y: 0, width: 10, height: 10 }, description: desc }, anticipationMs: 200, reasoning: `click ${desc}`, ...(expectAfter ? { expectAfter } : {}) };
 }
+function typeStep(desc: string, text: string): PerformanceStep {
+  return { kind: 'type', target: { selector: `sel:${desc}`, bbox: { x: 0, y: 0, width: 10, height: 10 }, description: desc }, text, preMs: 0, keystrokeMs: 0, reasoning: `type into ${desc}` };
+}
+const enterKey: PerformanceStep = { kind: 'key', key: 'Enter', reasoning: 'submit' };
 const dwell = (ms: number): PerformanceStep => ({ kind: 'dwell', durationMs: ms, reasoning: 'd' });
 const scroll = (px: number): PerformanceStep => ({ kind: 'scroll', deltaPx: px, durationMs: 2000, easing: 'inOutQuad', dwellAfterMs: 200, reasoning: 's' });
 const done: PerformanceStep = { kind: 'done', reasoning: 'fin' };
@@ -41,6 +45,34 @@ describe('rehearse()', () => {
     expect(click.expectAfter?.visibleText).toContain('Heading ZH');
     expect(click.expectAfter?.visibleText).not.toContain('gone');
     expect(steps[steps.length - 1].kind).toBe('done');
+  });
+
+  it('a click that "worked" but whose expectAfter is now unverifiable → the stale expectAfter is cleared, not kept (bug 3)', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x/page'; // URL won't change — the click only mutates the page
+    session.resolveTargetResult = { selector: 'sel:open', description: 'open the panel', bbox: { x: 0, y: 0, width: 10, height: 10 } };
+    // Clicking changes the page signature (a panel opened) but the planner's
+    // expectAfter.visibleText is NOT on the resulting page, and the page has no
+    // heading to anchor a new check on.
+    session.clickAtImpl = () => { session.pageDiagnosticImpl = () => ({ url: session.url, title: '', interactiveElementCount: 9, visibleHeadings: [], blockerSignals: [] }); };
+    const draft: PerformanceStep[] = [clickStep('open the panel', { visibleText: ['Some text that never appears'] }), done];
+    const { steps, trace } = await rehearse({ draftSteps: draft, session, intent: 'open the panel', reconverge: NEVER_RECONVERGE, rehearsalBudgetMs: 30000, reconvergeMax: 2, logger: log });
+    expect(trace.divergences).toBe(0); // the click "worked" (page changed) — not a divergence
+    const click = steps[0] as Extract<PerformanceStep, { kind: 'click' }>;
+    expect(click.expectAfter).toEqual({}); // cleared — an unverifiable stale check would only trip the on-camera Director
+  });
+
+  it('a SEARCH flow [click box, type, Enter] does not spurious-diverge even though the click/type change no page signature (bug 2)', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x/search';
+    // Re-resolve succeeds for the search box / input; neither the click (focus)
+    // nor the type changes the page signature. Pre-fix this spurious-diverged
+    // on the first click ("page unchanged after a click"); now it should not.
+    session.resolveTargetResult = { selector: 'sel:box', description: 'the search box', bbox: { x: 0, y: 0, width: 200, height: 24 } };
+    const draft: PerformanceStep[] = [clickStep('the search box'), typeStep('the search box', 'cats'), enterKey, dwell(500), done];
+    const { steps, trace } = await rehearse({ draftSteps: draft, session, intent: 'search for cats', reconverge: NEVER_RECONVERGE, rehearsalBudgetMs: 30000, reconvergeMax: 2, logger: log });
+    expect(trace).toMatchObject({ divergences: 0, reconverges: 0, truncated: false, timedOut: false });
+    expect(steps.map((s) => s.kind)).toEqual(['click', 'type', 'key', 'dwell', 'done']);
   });
 
   it('dead click → recovered via another resolve candidate, no reconverge (finding 6)', async () => {
