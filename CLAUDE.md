@@ -38,12 +38,12 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Two model knobs that matter: `LLM_MODEL` (Stagehand internals) / `LLM_RECON_MODEL` (recon+re-plan) | ✅ |
 | `RecordJobRunner` (orchestrates setup → recon → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (47 passing) | ✅ |
+| Vitest unit tests (105 passing) | ✅ |
 | Action vocabulary: 7 primitives (click / scroll / dwell / type / key / back / done) | ✅ |
 | `IRecordingJudge` + LlmVisionJudge — automated 5-dim rubric naturalness grading via Gemini 3.1 Pro (§0030) | ✅ |
 | Naturalness rendering bundle — pre-typing pause, slower keystroke delay, inter-scroll micro-pause (§0031) | ✅ |
 | `intentSatisfaction` 1-to-1 bipartite matching — no more single-token UI-noun bridges over-crediting hints (§0033) | ✅ |
-| Regression suite — 3 sites × 2 human-prompt variants, categorical asserts only (rewire pending — Task 9) | ⏳ |
+| Regression suite — 3 sites × 2 human-prompt variants, categorical asserts only; wired to the prophet pipeline + blocker dismisser (`tests/regression/`) | ✅ |
 | Operation log: `replan` / `page_diagnostic` entries (`decision` / `decision_failure` kept as legacy) | ✅ |
 | `intentSatisfaction` metric (transparent "did we do what user asked?") | ✅ |
 | Bot-detection mitigations (chrome flags + UA + optional storageState) | ✅ |
