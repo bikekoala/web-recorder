@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 import type { ActionLogEntry, RecordingWindow } from '../domain/action-log.js';
 import { countMatchedHints } from '../domain/intent-matching.js';
-import type { Performance, PerformanceStep, RehearsalTrace } from '../domain/performance.js';
+import type { BlockerDismissalReport, Performance, PerformanceStep, RehearsalTrace } from '../domain/performance.js';
 import { trimVideo, videoDurationMs } from '../infra/ffmpeg.js';
 import { logger as rootLogger } from '../infra/logger.js';
 import type { DirectorReport, IDirector } from '../ports/director.js';
@@ -96,6 +96,13 @@ export interface RunMetrics {
    * means the planner's first-draft is weak for that site.
    */
   rehearsal: RehearsalTrace | null;
+  /**
+   * Off-camera blocker dismisser outcome (Task #20), or `null` if recon ran
+   * without one (`config.blockerDismiss === false`). `rounds > 0` means a
+   * cookie/consent banner or X-to-close modal was cleared before recording;
+   * `stillBlocked: true` means one slipped past — the deliverable may show it.
+   */
+  blockerDismissal: BlockerDismissalReport | null;
 }
 
 export interface IntentSatisfaction {
@@ -200,6 +207,7 @@ export class RecordJobRunner {
       replanCount: directorReport.replanCount,
       intentSatisfaction,
       rehearsal: performance.rehearsal ?? null,
+      blockerDismissal: performance.blockerDismissal ?? null,
     };
 
     if (intentSatisfaction.level === 'unmet' || intentSatisfaction.level === 'partial') {

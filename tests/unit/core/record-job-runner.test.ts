@@ -187,6 +187,7 @@ describe('RecordJobRunner — prophet wiring', () => {
     const performance: Performance = {
       ...perf([clickStep('the 简体中文 link'), scrollStep(), { kind: 'done', reasoning: 'finished' }]),
       rehearsal: { walkedSteps: 4, divergences: 1, reconverges: 1, truncated: false, timedOut: false },
+      blockerDismissal: { rounds: 1, dismissed: ['Accept all cookies'], stillBlocked: false },
     };
     const recon = new FakeReconnoiterer([performance]);
     const director = new StubDirector({ totalMs: 8123, stepsExecuted: 3, replanCount: 1, endReason: 'done' });
@@ -221,6 +222,8 @@ describe('RecordJobRunner — prophet wiring', () => {
     expect(result.metrics.intentSatisfaction.level).toBe('unmet');
     // Rehearsal trace surfaced verbatim.
     expect(result.metrics.rehearsal).toEqual({ walkedSteps: 4, divergences: 1, reconverges: 1, truncated: false, timedOut: false });
+    // Blocker-dismissal report surfaced verbatim.
+    expect(result.metrics.blockerDismissal).toEqual({ rounds: 1, dismissed: ['Accept all cookies'], stillBlocked: false });
 
     // Session lifecycle: started, navigated, stopped.
     const kinds = session.events.map((e) => e.kind);
@@ -244,5 +247,7 @@ describe('RecordJobRunner — prophet wiring', () => {
     expect(result.directorReport.endReason).toBe('done');
     // No rehearsal walk on this Performance → metrics.rehearsal is null.
     expect(result.metrics.rehearsal).toBeNull();
+    // No blocker dismisser → metrics.blockerDismissal is null.
+    expect(result.metrics.blockerDismissal).toBeNull();
   });
 });
