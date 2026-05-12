@@ -43,6 +43,46 @@ describe('rehearse()', () => {
     expect(steps[steps.length - 1].kind).toBe('done');
   });
 
+  it('dead click → recovered via another resolve candidate, no reconverge (finding 6)', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x/start';
+    // The walk's re-resolve picks the WRONG element (a wrapper); clicking it (at
+    // its center, y≈5) navigates nowhere.
+    session.resolveTargetResult = { selector: 'sel:wrong', description: 'the link', bbox: { x: 0, y: 0, width: 10, height: 10 } };
+    // observe()'s candidate list: the wrong one first, the right one second.
+    session.resolveTargetCandidatesResult = [
+      { selector: 'sel:wrong', description: 'the link', bbox: { x: 0, y: 0, width: 10, height: 10 } },
+      { selector: 'sel:right', description: 'the link', bbox: { x: 0, y: 60, width: 10, height: 10 } },
+    ];
+    // Only a click at the RIGHT element (center y≈65) navigates.
+    session.clickAtImpl = (_x, y) => { if (y === 65) session.url = 'https://x/target'; };
+    const draft: PerformanceStep[] = [clickStep('the link', { urlContains: '/target' }), done];
+    const { steps, trace } = await rehearse({ draftSteps: draft, session, intent: 'click the link', reconverge: NEVER_RECONVERGE, rehearsalBudgetMs: 30000, reconvergeMax: 2, logger: log });
+    expect(trace).toMatchObject({ divergences: 1, reconverges: 0, truncated: false, timedOut: false });
+    const click = steps[0] as Extract<PerformanceStep, { kind: 'click' }>;
+    expect(click.target.selector).toBe('sel:right');
+    expect(click.expectAfter?.urlContains).toBe('/target');
+    expect(steps[steps.length - 1].kind).toBe('done');
+  });
+
+  it('dead click + no usable candidates → falls back to reconverge (sweep is a no-op)', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x/start';
+    session.resolveTargetResult = { selector: 'sel:wrong', description: 'the link', bbox: { x: 0, y: 0, width: 10, height: 10 } };
+    session.resolveTargetCandidatesResult = [{ selector: 'sel:wrong', description: 'the link', bbox: { x: 0, y: 0, width: 10, height: 10 } }]; // only the already-tried one
+    let reconvergeCalls = 0;
+    const reconverge = async (): Promise<PerformanceStep[]> => {
+      reconvergeCalls++;
+      session.clickAtImpl = () => { session.url = 'https://x/real'; };
+      session.resolveTargetResult = { selector: 'sel:real', description: 'real', bbox: { x: 0, y: 0, width: 5, height: 5 } };
+      return [clickStep('real'), done];
+    };
+    const draft: PerformanceStep[] = [clickStep('the link', { urlContains: '/target' }), done];
+    const { trace } = await rehearse({ draftSteps: draft, session, intent: 'x', reconverge, rehearsalBudgetMs: 30000, reconvergeMax: 2, logger: log });
+    expect(reconvergeCalls).toBe(1);
+    expect(trace).toMatchObject({ divergences: 1, reconverges: 1 });
+  });
+
   it('dead click (page unchanged after click) → divergence → reconverge → working list replaced', async () => {
     const session = new FakePageSession();
     session.url = 'https://test.example/';

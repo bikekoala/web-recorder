@@ -211,6 +211,21 @@ export async function rehearse(
       continue;
     }
 
+    // Dead click? Before the (expensive) LLM reconverge, try the OTHER resolve
+    // candidates for this description — the planner's intent was probably fine,
+    // `observe()` just ranked a wrapper / the wrong same-text element first.
+    // (finding 6 / sweep-1.) Only for `click` (a `type` "change" signal is
+    // murkier), and only when the click was truly dead (URL didn't move).
+    if (!threw && !aboutBlank && (unchanged || eaUrlHardFail) && step.kind === 'click') {
+      const recovered = await sweepResolveCandidates(step, session, step.target.selector, urlBefore, ea, logger);
+      if (recovered) {
+        divergences++; // it WAS a planning-layer miss — we just recovered without an LLM call
+        walked.push(recovered);
+        i++;
+        continue;
+      }
+    }
+
     logger.info(
       { i, kind: step.kind, threw, aboutBlank, unchanged, eaSatisfied, eaUrlHardFail },
       'rehearsal divergence',
@@ -249,6 +264,55 @@ export async function rehearse(
 }
 
 // ---------------------------------------------------------------- helpers
+
+/**
+ * A `click` step's resolved target turned out dead (the page didn't move). The
+ * description is still the planner's intent — try `observe()`'s OTHER ranked
+ * candidates for it: click each (skipping the one already tried), and if one
+ * actually changes the page (or satisfies the step's expectAfter), return the
+ * step re-pointed at that element with a freshly-observed expectAfter. Null if
+ * none works → the caller falls back to the LLM reconverge. Each attempt is one
+ * click + a settle + two diagnostics; the candidate list is short, so this is
+ * far cheaper than a reconverge call. (finding 6 / sweep-1.)
+ */
+async function sweepResolveCandidates(
+  step: Extract<PerformanceStep, { kind: 'click' }>,
+  session: IPageSession,
+  triedSelector: string,
+  urlBeforeStep: string,
+  ea: ExpectAfter | null,
+  logger: Logger,
+): Promise<PerformanceStep | null> {
+  const candidates = await session.resolveTargetCandidates(step.target.description).catch(() => []);
+  for (const c of candidates) {
+    if (!c.bbox) continue;
+    if (c.selector === triedSelector) continue;
+    const scrollAtResolve = await session.scrollY().catch(() => 0);
+    const target = {
+      selector: c.selector,
+      bbox: { x: c.bbox.x, y: c.bbox.y + scrollAtResolve, width: c.bbox.width, height: c.bbox.height },
+      description: step.target.description,
+    };
+    const candStep: Extract<PerformanceStep, { kind: 'click' }> = { ...step, target };
+    const urlB = await safeCurrentUrl(session);
+    const diagB = await session.pageDiagnostic().catch(() => null);
+    try {
+      await renderActingStepInstant(candStep, session);
+    } catch {
+      continue;
+    }
+    await session.waitForVisualStability({ maxMs: 3000 }).catch(() => {});
+    const urlA = await safeCurrentUrl(session);
+    const diagA = await session.pageDiagnostic().catch(() => null);
+    const changed = urlB !== urlA || pageSignature(diagB) !== pageSignature(diagA);
+    const eaOk = ea ? await expectAfterSatisfied(ea, urlA, session) : false;
+    if (changed || eaOk) {
+      logger.info({ selector: c.selector, desc: step.target.description }, 'rehearsal: dead click recovered via another resolve candidate');
+      return rewriteExpectAfter(candStep, urlBeforeStep, urlA, ea, diagA, session);
+    }
+  }
+  return null;
+}
 
 function gracefulTail(): PerformanceStep[] {
   return [
