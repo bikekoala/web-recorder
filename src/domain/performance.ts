@@ -124,6 +124,19 @@ export const BlockerDismissalReportSchema = z.object({
 });
 export type BlockerDismissalReport = z.infer<typeof BlockerDismissalReportSchema>;
 
+/**
+ * The blocker dismisser's per-round LLM detect output (crosses a boundary —
+ * Hard Rule 2). `blocker: false` ⇒ no dismissable overlay (or it's a
+ * paywall/login-wall we won't touch). `dismissTargetDescription` is the element
+ * that clears it; omitted when `blocker` is false. Extra fields (e.g.
+ * `rationale`) are ignored — only these matter.
+ */
+export const BlockerDismissDecisionSchema = z.object({
+  blocker: z.boolean(),
+  dismissTargetDescription: z.string().min(1).optional(),
+}).passthrough();
+export type BlockerDismissDecision = z.infer<typeof BlockerDismissDecisionSchema>;
+
 export const PerformanceSchema = z.object({
   prompt: z.string().min(1),
   durationMs: z.number().int().positive(),

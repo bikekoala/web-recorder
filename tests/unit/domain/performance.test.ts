@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PerformanceSchema, PerformanceStepSchema, RehearsalTraceSchema, BlockerDismissalReportSchema } from '../../../src/domain/performance.js';
+import { PerformanceSchema, PerformanceStepSchema, RehearsalTraceSchema, BlockerDismissalReportSchema, BlockerDismissDecisionSchema } from '../../../src/domain/performance.js';
 
 const validClickStep = {
   kind: 'click' as const,
@@ -78,5 +78,20 @@ describe('BlockerDismissalReport + Performance.blockerDismissal', () => {
   it('Performance.blockerDismissal round-trips when present', () => {
     const perf = { ...base, blockerDismissal: { rounds: 1, dismissed: ['Accept all'], stillBlocked: false } };
     expect(PerformanceSchema.parse(perf).blockerDismissal).toEqual({ rounds: 1, dismissed: ['Accept all'], stillBlocked: false });
+  });
+});
+
+describe('BlockerDismissDecisionSchema', () => {
+  it('accepts a "blocker, dismiss this" decision and ignores extra fields', () => {
+    const d = BlockerDismissDecisionSchema.parse({ blocker: true, dismissTargetDescription: 'Accept all cookies', rationale: 'GDPR banner at the bottom' });
+    expect(d.blocker).toBe(true);
+    expect(d.dismissTargetDescription).toBe('Accept all cookies');
+  });
+  it('accepts a "no blocker" decision with no target', () => {
+    expect(BlockerDismissDecisionSchema.parse({ blocker: false }).blocker).toBe(false);
+  });
+  it('rejects a non-boolean blocker / empty target string', () => {
+    expect(() => BlockerDismissDecisionSchema.parse({ blocker: 'yes' })).toThrow();
+    expect(() => BlockerDismissDecisionSchema.parse({ blocker: true, dismissTargetDescription: '' })).toThrow();
   });
 });

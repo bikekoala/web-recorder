@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 
+import { BlockerDismissDecisionSchema, type BlockerDismissDecision } from '../../domain/performance.js';
 import { config } from '../../infra/config.js';
 import { logger as rootLogger } from '../../infra/logger.js';
 import { blockerDismisserSystemPrompt, buildBlockerDismissUserText } from '../../prompts/index.js';
@@ -24,10 +25,6 @@ interface LlmBlockerDismisserOpts {
   maxMs?: number;
 }
 
-interface DismissDecision {
-  blocker: boolean;
-  dismissTargetDescription?: string;
-}
 
 export class LlmBlockerDismisser implements IBlockerDismisser {
   private readonly client: OpenAI;
@@ -62,7 +59,7 @@ export class LlmBlockerDismisser implements IBlockerDismisser {
       const shot = await session.screenshot().catch(() => null);
       const observed = await session.observeAll().catch((): ObservedElement[] => []);
 
-      let decision: DismissDecision | null;
+      let decision: BlockerDismissDecision | null;
       try {
         decision = await this.detect(shot, observed);
       } catch (err) {
@@ -105,7 +102,7 @@ export class LlmBlockerDismisser implements IBlockerDismisser {
   private async detect(
     screenshot: Buffer | null,
     observed: ObservedElement[],
-  ): Promise<DismissDecision | null> {
+  ): Promise<BlockerDismissDecision | null> {
     const userText = buildBlockerDismissUserText(observed.map((e) => ({ selector: e.selector, description: e.description })));
     const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: 'text', text: userText }];
     if (screenshot && screenshot.length > 0) {
@@ -147,7 +144,7 @@ export class LlmBlockerDismisser implements IBlockerDismisser {
   }
 }
 
-function parseDismissDecision(raw: string): DismissDecision | null {
+function parseDismissDecision(raw: string): BlockerDismissDecision | null {
   const tryParse = (s: string): unknown => {
     try {
       return JSON.parse(s);
@@ -157,11 +154,7 @@ function parseDismissDecision(raw: string): DismissDecision | null {
   };
   const stripped = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
   const obj = tryParse(raw) ?? tryParse(stripped);
-  if (!obj || typeof obj !== 'object') return null;
-  const o = obj as Record<string, unknown>;
-  if (typeof o.blocker !== 'boolean') return null;
-  const desc = typeof o.dismissTargetDescription === 'string' && o.dismissTargetDescription.trim()
-    ? o.dismissTargetDescription
-    : undefined;
-  return desc ? { blocker: o.blocker, dismissTargetDescription: desc } : { blocker: o.blocker };
+  if (obj === null) return null;
+  const parsed = BlockerDismissDecisionSchema.safeParse(obj);
+  return parsed.success ? parsed.data : null;
 }
