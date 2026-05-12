@@ -16,6 +16,16 @@ export type { PageDiagnostic } from '../domain/action-log.js';
 export type ScrollEasing = 'inOutQuad' | 'outQuart' | 'outExpo' | 'linear';
 
 /**
+ * Part of {@link IPageSession.ariaSnapshot}'s contract: when the page's tree is
+ * too large to fit the planner prompt even after pruning + scoping to `<main>`,
+ * the returned string is cut at a line boundary and this exact marker is
+ * appended as the last line. Consumers that want to know "was it truncated?"
+ * test `snapshot.includes(ARIA_SNAPSHOT_TRUNCATION_MARKER)`.
+ */
+export const ARIA_SNAPSHOT_TRUNCATION_MARKER =
+  '... [accessibility tree truncated here — the page is large; nodes below this point are not shown; plan a scroll to reach them]';
+
+/**
  * IPageSession is the only port the Stagehand prototype needs.
  *
  * Lifecycle: `start()` → many `goto/act/observe/scroll/wait` calls → `stop()`.
@@ -219,6 +229,20 @@ export interface IPageSession {
    * nothing resolves. Never throws.
    */
   resolveTargetCandidates(target: string): Promise<ObservedElement[]>;
+
+  /**
+   * Resolve an element by its *exact visible text* via cheap Playwright
+   * role/text matchers (`getByRole('link', {name})` → `getByRole('button',
+   * {name})` → `getByText(text, {exact:true})`), returning the first match
+   * whose bbox is sized (≥ 1×1) and visible, else null.
+   *
+   * No LLM, and — unlike {@link resolveTargetCandidates} (`stagehand.observe()`)
+   * — no DOM serialization, so it scales to arbitrarily large pages where the
+   * `observe()`-based fallback overflows the model context. The recon uses this
+   * (with the draft's `targetText`) as the first fallback when a click `ref`
+   * misses. Returns null if nothing matches; never throws.
+   */
+  resolveByVisibleText(text: string): Promise<ObservedElement | null>;
 
   /**
    * Fast non-LLM element finder by natural-language description.

@@ -192,12 +192,20 @@ finding 6 above — still open.
   ~25 k tokens (without it the Cat run sent a ~180 k-token tree, ~$0.50/recon — a
   goal #5 blowout). For Cat the scoped tree is still ~723 KB (Wikipedia's `<main>` is
   almost the whole page) → truncated to ~100 KB, and the LLM *still* picks a bad ref.
-  The real fix for this class of page (a thousands-of-lines tree the LLM can't navigate
-  one-shot, that `stagehand.observe()` also can't ingest) is a dedicated next pass —
-  options: a smarter region pick (not just `<main>`), a non-`observe()` fallback (a CDP
-  a11y query, or `quickFindOnPage` with a literal-text `targetDescription`), or simply
-  accepting `unknown` for such pages (goal #3 allows it — `unknown` *is* the transparent
-  "intent not satisfied"). Tracked.
+  **Partly addressed by ADR §0038 (2026-05-12, option C — "accept it, but try harder and
+  be transparent")**: the recon draft's `click` now carries an optional `targetText` (the
+  element's exact visible text) and the `ref`-miss fallback chain became
+  `resolveAriaRef` → `resolveByVisibleText(targetText)` (a deterministic Playwright
+  role/text lookup — no DOM serialization, so it scales to huge pages, unlike `observe()`)
+  → `resolveTargetCandidates(targetDescription)` → drop; and a *dropped* requested click
+  is now surfaced as `Performance.unresolvedTargets` → `RunMetrics` → `intentSatisfaction`
+  reports `unmet`/`partial` naming what couldn't be located (annotated "(page tree too
+  large to analyze in full)" when the tree was truncated), never silent `unknown`. So
+  Cat→Felidae is now `intentSatisfaction: unmet` with a concrete reason — goal #3
+  satisfied (transparently not). The giant tree *itself* is still not navigable one-shot;
+  the genuine fix (drill-down / region-pick recon — a coarse "which region?" LLM pass over
+  the page's landmark/heading outline, then a region-scoped `ariaSnapshot()`, then a fine
+  `ref` pick — option A) is the next pass if "report it" proves insufficient. Tracked.
 - Fix 4 (don't let `intentSatisfaction` over-credit a click that ran but didn't
   change the page — use the walk's observed effect).
 - Re-run the full sweep after finding 6 is addressed.

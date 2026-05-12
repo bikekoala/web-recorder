@@ -103,6 +103,13 @@ export interface RunMetrics {
    * `stillBlocked: true` means one slipped past — the deliverable may show it.
    */
   blockerDismissal: BlockerDismissalReport | null;
+  /**
+   * Requested click/type targets the recon couldn't locate on the page (ref +
+   * visible-text + `observe()` fallbacks all missed), so the step was dropped —
+   * mirrors `performance.unresolvedTargets`. Non-empty here means part (or all)
+   * of the user's intent was never attempted; `intentSatisfaction` reflects it.
+   */
+  unresolvedTargets: string[];
 }
 
 export interface IntentSatisfaction {
@@ -192,12 +199,14 @@ export class RecordJobRunner {
 
     const trimmedVideoMs = await videoDurationMs(videoPath).catch(() => null);
 
+    const unresolvedTargets = performance.unresolvedTargets ?? [];
     const intentSatisfaction = computeIntentSatisfaction(
       performance.steps
         .filter((s): s is Extract<PerformanceStep, { kind: 'click' }> => s.kind === 'click')
         .map((s) => s.target.description),
       artifacts.actionLog.entries,
       artifacts.recording,
+      unresolvedTargets,
     );
 
     const metrics: RunMetrics = {
@@ -213,6 +222,7 @@ export class RecordJobRunner {
       intentSatisfaction,
       rehearsal: performance.rehearsal ?? null,
       blockerDismissal: performance.blockerDismissal ?? null,
+      unresolvedTargets,
     };
 
     if (intentSatisfaction.level === 'unmet' || intentSatisfaction.level === 'partial') {
@@ -255,11 +265,21 @@ export class RecordJobRunner {
  *
  * Only entries inside the recording window count. Anything that happened
  * before the recording window opened is excluded — that's not user intent.
+ *
+ * `unresolvedTargets` are requested click/type targets the recon couldn't
+ * locate on the page at all (so the step was dropped — they're not in
+ * `hintDescriptions`). When non-empty, the result is never `unknown`: it's
+ * `unmet` (every requested click was dropped — nothing actionable was planned)
+ * or `partial` (some clicks were planned/executed, but others couldn't even be
+ * attempted), with the dropped targets named in the note. `unknown` is reserved
+ * for the genuinely-unjudgeable case: the Performance had no click steps AND
+ * none were dropped (the prompt asked for no click — e.g. "just scroll").
  */
 export function computeIntentSatisfaction(
   hintDescriptions: ReadonlyArray<string>,
   entries: ActionLogEntry[],
   window: RecordingWindow | null,
+  unresolvedTargets: ReadonlyArray<string> = [],
 ): IntentSatisfaction {
   const inWindow = (e: ActionLogEntry): boolean =>
     !window ? true : e.t >= window.startedAtMs && e.t <= window.endedAtMs;
@@ -284,30 +304,46 @@ export function computeIntentSatisfaction(
   const hintsClicked = countMatchedHints(hintDescriptions, clickDescriptions);
 
   const totalHints = hintDescriptions.length;
+  const droppedCount = unresolvedTargets.length;
+  const droppedList = unresolvedTargets.join('; ');
   let level: IntentSatisfaction['level'];
   let note: string;
 
   if (totalHints === 0) {
-    // No click steps in the Performance — can't score against targets.
-    if (clicksExecuted === 0 && scrollsExecuted === 0 && types.length === 0) {
+    if (droppedCount > 0) {
+      // Every requested click was dropped at recon time — intent never attempted.
+      level = 'unmet';
+      const ran = clicksExecuted || scrollsExecuted || types.length;
+      note =
+        `couldn't locate ${droppedCount} requested target(s): ${droppedList}; no actionable step was planned` +
+        (ran ? ` (${clicksExecuted} click(s), ${scrollsExecuted} scroll(s), ${types.length} type(s) still ran)` : '');
+    } else if (clicksExecuted === 0 && scrollsExecuted === 0 && types.length === 0) {
       level = 'unmet';
       note = 'no click targets, no actions executed in recording window';
     } else {
       level = 'unknown';
       note = `no click targets; ${clicksExecuted} click(s), ${scrollsExecuted} scroll(s), ${types.length} type(s)`;
     }
-  } else if (hintsClicked === totalHints && scrollsExecuted >= 1) {
-    level = 'complete';
-    note = `all ${totalHints} target(s) clicked at least once + scrolling occurred`;
-  } else if (hintsClicked === totalHints) {
-    level = 'partial';
-    note = `all ${totalHints} target(s) clicked but no scrolling — user may have asked for both`;
-  } else if (hintsClicked > 0) {
-    level = 'partial';
-    note = `${hintsClicked}/${totalHints} unique target(s) actually clicked`;
   } else {
-    level = 'unmet';
-    note = `0/${totalHints} target(s) actually clicked (clicksExecuted=${clicksExecuted} but none matched target descriptions)`;
+    if (hintsClicked === totalHints && scrollsExecuted >= 1) {
+      level = 'complete';
+      note = `all ${totalHints} target(s) clicked at least once + scrolling occurred`;
+    } else if (hintsClicked === totalHints) {
+      level = 'partial';
+      note = `all ${totalHints} target(s) clicked but no scrolling — user may have asked for both`;
+    } else if (hintsClicked > 0) {
+      level = 'partial';
+      note = `${hintsClicked}/${totalHints} unique target(s) actually clicked`;
+    } else {
+      level = 'unmet';
+      note = `0/${totalHints} target(s) actually clicked (clicksExecuted=${clicksExecuted} but none matched target descriptions)`;
+    }
+    if (droppedCount > 0) {
+      // Some intent was planned/executed, but other requested targets couldn't
+      // even be located — that's never "complete".
+      if (level === 'complete') level = 'partial';
+      note = `${note}; ${droppedCount} other requested target(s) couldn't be located: ${droppedList}`;
+    }
   }
 
   return {

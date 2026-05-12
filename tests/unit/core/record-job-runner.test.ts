@@ -145,6 +145,36 @@ describe('computeIntentSatisfaction — UNIQUE-target matching', () => {
   });
 });
 
+describe('computeIntentSatisfaction — unresolved (dropped) targets are transparent, never silently `unknown`', () => {
+  it('every requested click dropped (no planned hints) → `unmet`, names what it couldn\'t locate', () => {
+    const r = computeIntentSatisfaction([], [scroll(5000)], WINDOW, ['the Felidae link (page tree too large to analyze in full)']);
+    expect(r.level).toBe('unmet');
+    expect(r.level).not.toBe('unknown');
+    expect(r.note).toMatch(/couldn't locate/i);
+    expect(r.note).toContain('the Felidae link');
+  });
+
+  it('some clicks planned/executed, others dropped → never `complete`; demoted to `partial` with the names', () => {
+    const r = computeIntentSatisfaction(
+      ['the simplified Chinese link'],
+      [click(5000, 'click the 简体中文 link'), scroll(7000)],
+      WINDOW,
+      ['the Felidae taxobox link'],
+    );
+    // Without the dropped target this would be "complete"; the drop demotes it.
+    expect(r.level).toBe('partial');
+    expect(r.note).toContain('the Felidae taxobox link');
+    expect(r.note).toMatch(/couldn't be located/i);
+  });
+
+  it('empty unresolvedTargets ⇒ exactly the prior behavior (still `unknown` when there were genuinely no click targets)', () => {
+    expect(computeIntentSatisfaction([], [scroll(5000), scroll(7000)], WINDOW, []).level).toBe('unknown');
+    expect(computeIntentSatisfaction([], [scroll(5000), scroll(7000)], WINDOW).level).toBe('unknown');
+    // and the param is optional — old call sites keep working
+    expect(computeIntentSatisfaction(['the X link'], [click(5000, 'click the X link'), scroll(6000)], WINDOW).level).toBe('complete');
+  });
+});
+
 describe('videoRelativeTrimWindow — recordVideo clock-drift correction', () => {
   it('scales the window down by the raw-video-to-wall ratio when drift is present', () => {
     // The §0036 finding's numbers: 11 s wall-clock window inside a session

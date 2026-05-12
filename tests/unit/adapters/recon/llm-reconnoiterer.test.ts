@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fitPlanToBudget, LlmReconnoiterer, ReconError } from '../../../../src/adapters/recon/llm-reconnoiterer.js';
 import type { PerformanceStep } from '../../../../src/domain/performance.js';
+import { ARIA_SNAPSHOT_TRUNCATION_MARKER } from '../../../../src/ports/page-session.js';
 import { FakePageSession } from '../../../fakes/fake-page-session.js';
 import type { IBlockerDismisser, BlockerDismissalReport } from '../../../../src/ports/blocker-dismisser.js';
 import type { IPageSession, ObservedElement } from '../../../../src/ports/page-session.js';
@@ -367,5 +368,58 @@ describe('fitPlanToBudget — keep the recording the length the user paid for', 
     // Budget == the plan's own estimate ⇒ neither over (no compress) nor below
     // 90 % (no pad) ⇒ the same array reference comes straight back.
     expect(fitPlanToBudget(steps, estimateMs(steps))).toBe(steps);
+  });
+});
+
+describe('LlmReconnoiterer — giant-page handling (targetText fallback + transparent unresolvedTargets)', () => {
+  // A draft whose click carries a `targetText` (the §0036+ visible-text fallback).
+  const draftWithTargetText = JSON.stringify({
+    prompt: 'click Felidae',
+    durationMs: 10000,
+    steps: [
+      { kind: 'click', ref: 'eBad', targetDescription: 'the Felidae taxobox link', targetText: 'Felidae', anticipationMs: 500, reasoning: 'user asked', expectAfter: { urlContains: 'Felidae' } },
+      { kind: 'done', reasoning: 'done' },
+    ],
+    totalEstimatedMs: 2000,
+    rationale: 'one click',
+  });
+
+  it('ref miss → resolves the click by visible text (deterministic fallback), keeps the LLM description', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://wiki.test/Cat';
+    session.resolveAriaRefResults = {}; // eBad → null (LLM picked a wrong ref out of a huge tree)
+    session.resolveByVisibleTextResult = { selector: 'a[href*="Felidae"]', description: 'Felidae', bbox: { x: 5, y: 5, width: 60, height: 16 } };
+    session.resolveTargetCandidatesResult = []; // the observe() fallback would miss too — but visible-text wins first
+    const go = () => { session.url = 'https://wiki.test/Felidae'; };
+    session.clickAtImpl = go; session.clickSelectorImpl = go;
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(draftWithTargetText) });
+    const perf = await recon.recon({ url: 'https://wiki.test/Cat', prompt: 'click Felidae', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
+    const click = perf.steps.find((s) => s.kind === 'click')!;
+    expect(click).toMatchObject({ kind: 'click', target: { selector: 'a[href*="Felidae"]', description: 'the Felidae taxobox link' } });
+    expect(perf.unresolvedTargets).toBeUndefined(); // nothing dropped
+  });
+
+  it('ref + visible-text + observe ALL miss → click dropped, surfaced in `unresolvedTargets`, never lost silently', async () => {
+    const session = new FakePageSession();
+    session.resolveAriaRefResults = {};            // ref miss
+    session.resolveByVisibleTextResult = null;     // visible-text miss
+    session.resolveTargetCandidatesResult = [];    // observe miss
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(draftWithTargetText) });
+    const perf = await recon.recon({ url: 'https://wiki.test/Cat', prompt: 'click Felidae', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
+    expect(perf.steps.some((s) => s.kind === 'click')).toBe(false);   // dropped
+    expect(perf.unresolvedTargets).toEqual(['the Felidae taxobox link']);
+  });
+
+  it('when the aria tree was truncated (page too big), the unresolved entry says so', async () => {
+    const session = new FakePageSession();
+    session.ariaSnapshotResult = '- main:\n  - heading "Cat" [ref=e1]\n' + ARIA_SNAPSHOT_TRUNCATION_MARKER;
+    session.resolveAriaRefResults = {};
+    session.resolveByVisibleTextResult = null;
+    session.resolveTargetCandidatesResult = [];
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(draftWithTargetText) });
+    const perf = await recon.recon({ url: 'https://wiki.test/Cat', prompt: 'click Felidae', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
+    expect(perf.unresolvedTargets).toHaveLength(1);
+    expect(perf.unresolvedTargets![0]).toContain('the Felidae taxobox link');
+    expect(perf.unresolvedTargets![0]).toMatch(/page tree too large/i);
   });
 });

@@ -79,9 +79,12 @@ core/record-job-runner.run({ url, prompt, durationMs })
    ├── IReconnoiterer.recon(req, session)       → Performance (OFF-CAMERA: dismiss
    │                                              blockers, IPageSession.ariaSnapshot()
    │                                              (ref-tagged a11y tree), LLM picks a
-   │                                              draft (click/type targets by `ref`),
-   │                                              resolveAriaRef each → selector+bbox,
-   │                                              rehearsal walk, set expectAfter — §0036)
+   │                                              draft (click targets by `ref` + `targetText`),
+   │                                              resolveAriaRef → on miss resolveByVisibleText
+   │                                              → on miss resolveTargetCandidates → drop
+   │                                              (dropped → Performance.unresolvedTargets);
+   │                                              rehearsal walk, set expectAfter, fitPlanToBudget
+   │                                              — §0036/§0037/§0038)
    ├── IDirector.run(performance, session)       → ON-CAMERA: deterministic playback.
    │                                              At most config.maxReplans re-plan
    │                                              checkpoints, each delegating back to

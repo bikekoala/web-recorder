@@ -151,5 +151,16 @@ export const PerformanceSchema = z.object({
   rehearsal: RehearsalTraceSchema.optional(),
   /** Present iff the recon ran the off-camera blocker dismisser (config.blockerDismiss). */
   blockerDismissal: BlockerDismissalReportSchema.optional(),
+  /**
+   * Requested click/type targets the recon couldn't resolve to anything on the
+   * page (the `ref` was stale/wrong AND the visible-text / `observe()` fallbacks
+   * missed) — so the step was dropped from the plan. Present only when non-empty.
+   * Each entry is the LLM's `targetDescription`, optionally annotated with
+   * "(page tree too large to analyze in full)" when the aria snapshot had to be
+   * truncated. Feeds `RunMetrics.intentSatisfaction` so a dropped requested
+   * action is reported transparently (`partial`/`unmet` with the name), never
+   * silently `unknown`. See docs/superpowers/specs/2026-05-12-transparent-giant-page-handling-design.md.
+   */
+  unresolvedTargets: z.array(z.string().min(1)).optional(),
 });
 export type Performance = z.infer<typeof PerformanceSchema>;

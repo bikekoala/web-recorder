@@ -18,18 +18,28 @@ import {
  * `click` / `type` carry a **`ref`** — a stable id (`"e7"`) into the page's
  * `IPageSession.ariaSnapshot()` tree, picked by the LLM from the snapshot it was
  * shown — **plus a `targetDescription`** (the LLM's plain-English name for the
- * element). LlmReconnoiterer resolves the `ref` deterministically via
+ * element), and `click` may also carry **`targetText`** (the element's exact
+ * visible text). LlmReconnoiterer resolves the `ref` deterministically via
  * `IPageSession.resolveAriaRef()`; if that misses (the LLM picked a stale / wrong
- * ref — the tree can run to thousands of lines), it falls back to a fuzzy lookup
- * by `targetDescription` (`resolveTargetCandidates`) — so the description is the
- * safety net, not the primary path. scroll/key/dwell/back/done are reused
- * verbatim from `performance.ts`.
+ * ref — the tree can run to thousands of lines), it falls back to
+ * `resolveByVisibleText(targetText)` (a deterministic role/text lookup — works on
+ * huge pages) and then to a fuzzy `resolveTargetCandidates(targetDescription)` —
+ * so those two are the safety net, not the primary path. scroll/key/dwell/back/done
+ * are reused verbatim from `performance.ts`.
  */
 
 export const ReconDraftClickStepSchema = z.object({
   kind: z.literal('click'),
   ref: z.string().min(1),
   targetDescription: z.string().min(1),
+  /**
+   * The element's exact visible text ("Felidae", "Sign in"), if it has any —
+   * the LLM copies it character-for-character; omitted for icon-only elements.
+   * Used as a deterministic fallback when the `ref` misses: a Playwright
+   * role/text lookup, no LLM, no DOM serialization — so it works even on huge
+   * pages where the `observe()`-based `targetDescription` fallback overflows.
+   */
+  targetText: z.string().min(1).optional(),
   anticipationMs: z.number().int().min(0).max(3000),
   reasoning: z.string().min(1),
   expectAfter: ExpectAfterSchema.optional(),

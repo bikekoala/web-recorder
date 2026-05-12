@@ -24,7 +24,9 @@ THE ACCESSIBILITY TREE: you are given the page's accessibility tree — a YAML-i
   - textbox "Search" [ref=e11]
 For every \`click\` and \`type\` step you MUST give BOTH:
   • \`"ref"\` — the id of the node you want to act on. FIND THE EXACT LINE in the tree and copy its id CHARACTER-FOR-CHARACTER: \`"e42"\` (not \`"ref=e42"\`, not \`"[ref=e42]"\`, not a guess). Do NOT invent a ref. Search carefully — the tree is long; the right line is in there. Pick the most SPECIFIC actionable node — a \`link\`/\`button\`/\`textbox\`, not a \`generic\` wrapper around it. If two nodes share a name, use the one whose context (its parent landmark — \`navigation\`, \`main\`, \`contentinfo\`, etc.) matches what the task means.
-  • \`"targetDescription"\` — a short plain-English name for that same node ("the simplified Chinese language link", "the search box in the header"). This is the SAFETY NET: if the ref turns out stale at execution time, the recorder re-finds the element by this description. Make it specific enough to disambiguate.
+  • \`"targetDescription"\` — a short plain-English name for that same node ("the simplified Chinese language link", "the search box in the header"). This is a SAFETY NET: if the ref turns out stale at execution time, the recorder re-finds the element by this description. Make it specific enough to disambiguate.
+And for a \`click\` step, ALSO give (when the node has any):
+  • \`"targetText"\` — the node's EXACT visible text, copied character-for-character ("Felidae", "Sign in", "简体中文"). This is the strongest safety net — the recorder can re-find the element by a deterministic text/role lookup that works even on a huge page where the description-based re-find can't. Omit \`targetText\` only for icon-only / image-only nodes that show no text. (\`type\` steps don't need it.)
 
 ⚠️ DON'T NARRATE MISSING ELEMENTS: If the node you need isn't in the tree (it's lazy-loaded, or below a virtualized list), DO NOT write a sentence about that and DO NOT bail out. Pick the NEAREST visible node and add a \`scroll\` step toward it — when the recorder reaches that area it will re-look; if your plan still diverges, a re-plan with a fresh tree will fix it. Just plan the scroll-then-act and keep going.
 
@@ -40,7 +42,7 @@ OUTPUT — strict JSON, single object, exactly this shape:
 }
 
 Each step is exactly one of:
-  { "kind": "click",  "ref": "<id from the tree, e.g. e7>", "targetDescription": "<plain English of that node>", "anticipationMs": <0..3000>, "reasoning": "<short>", "expectAfter"?: {"urlContains"?: "...", "visibleText"?: ["..."]} }
+  { "kind": "click",  "ref": "<id from the tree, e.g. e7>", "targetDescription": "<plain English of that node>", "targetText"?: "<that node's exact visible text, e.g. Felidae — omit if it shows no text>", "anticipationMs": <0..3000>, "reasoning": "<short>", "expectAfter"?: {"urlContains"?: "...", "visibleText"?: ["..."]} }
   { "kind": "scroll", "deltaPx": <int, |value| 50..4000, positive = down>, "durationMs": <200..4000>, "easing": "inOutQuad"|"outQuart"|"outExpo"|"linear", "dwellAfterMs": <0..2000>, "reasoning": "<short>" }
   { "kind": "type",   "ref": "<id from the tree, e.g. e11>", "targetDescription": "<plain English of that input>", "text": "<text to type>", "preMs": <0..2000>, "keystrokeMs": <0..500>, "reasoning": "<short>" }
   { "kind": "key",    "key": "Enter"|"Escape"|"Tab"|"ArrowDown"|"ArrowUp"|"ArrowLeft"|"ArrowRight"|"Backspace", "reasoning": "<short>", "expectAfter"?: {...} }
@@ -94,7 +96,7 @@ export function buildReconUserText(input: ReconInput, snapshot: string): string 
     `Viewport: ${input.viewport.width}x${input.viewport.height}`,
     prior,
     '',
-    'PAGE ACCESSIBILITY TREE — every actionable node has a stable id `[ref=eN]`. For each `click`/`type` step give `"ref"` (copy the EXACT id from the line in the tree — no `ref=` prefix, no guessing) AND `"targetDescription"` (plain English for that node — the fallback if the ref goes stale). Prefer the most specific node, not a `generic` wrapper. If what you want is not in the tree (lazy-loaded), pick the nearest node and add a `scroll` step toward it.',
+    'PAGE ACCESSIBILITY TREE — every actionable node has a stable id `[ref=eN]`. For each `click`/`type` step give `"ref"` (copy the EXACT id from the line in the tree — no `ref=` prefix, no guessing) AND `"targetDescription"` (plain English for that node); for a `click`, ALSO give `"targetText"` = that node\'s exact visible text (omit only if it shows no text) — both are fallbacks if the ref goes stale. Prefer the most specific node, not a `generic` wrapper. If what you want is not in the tree (lazy-loaded), pick the nearest node and add a `scroll` step toward it.',
     '',
     tree,
     '',
@@ -132,7 +134,7 @@ export function buildReconvergeUserText(args: {
     `PAGE ACCESSIBILITY TREE (current state) — actionable nodes have \`[ref=eN]\` ids:`,
     tree,
     ``,
-    `Give me the REMAINING plan from HERE — a JSON object \`{ "steps": [ ... ] }\` whose \`steps\` follow the step schema (kinds click/scroll/type/key/dwell/back/done; click/type carry a \`"ref"\` copied from a line in the tree above AND a \`"targetDescription"\`). End with a \`done\` step. Keep it tight and paced for the time that's left.`,
+    `Give me the REMAINING plan from HERE — a JSON object \`{ "steps": [ ... ] }\` whose \`steps\` follow the step schema (kinds click/scroll/type/key/dwell/back/done; click/type carry a \`"ref"\` copied from a line in the tree above AND a \`"targetDescription"\`; a \`click\` ALSO carries \`"targetText"\` = the node's exact visible text unless it shows none). End with a \`done\` step. Keep it tight and paced for the time that's left.`,
     `IMPORTANT — the failed step's GOAL still matters: the action did not work AS DESCRIBED, but if it was the thing the task asks for (e.g. clicking a particular link), DON'T abandon that outcome. What you must not do is blindly re-issue the EXACT same action on the EXACT same node and hope. Instead reach the same outcome a DIFFERENT way: pick a DIFFERENT, more specific node (a different \`ref\`) than the one that failed, or \`scroll\` first to bring the right node fully into view and then act on it, or \`dwell\` so late-loading content appears and then act. Only if the goal genuinely cannot be reached from this page should you move on to whatever else the task asks for and fill the remaining time with that.`,
     `HARD CHECK before you emit: if the original task asked you to click / open / go to something (a link, a button, a page), your "steps" array MUST still contain a \`click\` (or \`key\`) step that does it — re-pointed at a different \`ref\` or preceded by a \`scroll\`. A reconverged plan that is all scroll/dwell with no attempt at the requested click is WRONG; fix it. Re-read "Original task" above and check.`,
     `Respond with ONLY that JSON object — no prose, no markdown, nothing before or after it. If a node isn't in the tree right now, plan a scroll toward the nearest one rather than narrating.`,

@@ -25,6 +25,7 @@ import type {
   ScrollEasing,
   SessionArtifacts,
 } from '../../ports/page-session.js';
+import { ARIA_SNAPSHOT_TRUNCATION_MARKER } from '../../ports/page-session.js';
 import { config } from '../../infra/config.js';
 import { logger as rootLogger } from '../../infra/logger.js';
 
@@ -573,7 +574,7 @@ export class StagehandPageSession implements IPageSession {
         const cut = snap.lastIndexOf('\n', max);
         const head = cut > 0 ? snap.slice(0, cut) : snap.slice(0, max);
         this.logger.info({ origChars: snap.length, keptChars: head.length }, 'ariaSnapshot: page still large — truncated the tree to its top');
-        snap = head + '\n... [accessibility tree truncated here — the page is large; nodes below this point are not shown; plan a scroll to reach them]';
+        snap = head + '\n' + ARIA_SNAPSHOT_TRUNCATION_MARKER;
       }
       return snap;
     } catch (err) {
@@ -675,6 +676,46 @@ export class StagehandPageSession implements IPageSession {
       resolved.push({ selector: m.selector, description: m.description, bbox: meta.bbox, interactive: meta.interactive });
     }
     return rankCandidates(resolved).map(({ selector, description, bbox }) => ({ selector, description, bbox }));
+  }
+
+  async resolveByVisibleText(text: string): Promise<ObservedElement | null> {
+    let page: Page;
+    try {
+      page = this.requirePage();
+    } catch {
+      return null;
+    }
+    const t = text.trim();
+    if (!t) return null;
+    // Role-first (a click target is almost always a link/button), then a bare
+    // exact-text match as a last resort. All Playwright locator queries — no
+    // LLM, no DOM serialization — so this is safe on arbitrarily large pages.
+    const candidates = [
+      page.getByRole('link', { name: t }),
+      page.getByRole('button', { name: t }),
+      page.getByRole('menuitem', { name: t }),
+      page.getByRole('tab', { name: t }),
+      page.getByText(t, { exact: true }),
+    ];
+    for (const locator of candidates) {
+      try {
+        const handle = locator.first();
+        if ((await handle.count().catch(() => 0)) === 0) continue;
+        if (!(await handle.isVisible({ timeout: 500 }).catch(() => false))) continue;
+        const box = await handle.boundingBox({ timeout: 500 }).catch(() => null);
+        if (!box || box.width < 1 || box.height < 1) continue; // 0×0 wrapper — not clickable
+        const sel = await this.locatorSelectorFallback(handle);
+        if (!sel) continue;
+        return {
+          selector: sel,
+          description: t,
+          bbox: { x: box.x, y: box.y, width: box.width, height: box.height },
+        };
+      } catch {
+        // try next candidate
+      }
+    }
+    return null;
   }
 
   async quickFindInViewport(description: string): Promise<ObservedElement | null> {

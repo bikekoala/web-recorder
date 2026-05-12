@@ -19,6 +19,7 @@ describe('buildReconUserText', () => {
     expect(text).toContain('简体中文');
     expect(text.toLowerCase()).toContain('"ref"');
     expect(text.toLowerCase()).toContain('targetdescription');
+    expect(text.toLowerCase()).toContain('targettext');
     expect(text).toContain('https://example.com/');
   });
 
@@ -80,6 +81,14 @@ describe('reconnoitererSystemPrompt', () => {
     expect(lower).toContain('"ref"');
     expect(lower).toContain('targetdescription');
     expect(lower).toContain('safety net');
+  });
+
+  it('tells the planner to give `targetText` (exact visible text) on click steps as the strongest fallback', () => {
+    const lower = reconnoitererSystemPrompt.toLowerCase();
+    expect(lower).toContain('targettext');
+    expect(lower).toContain('exact visible text');
+    // and the click step shape lists it
+    expect(reconnoitererSystemPrompt).toMatch(/"kind": "click"[^}]*"targetText"\?/);
   });
 
   it('makes accomplishing the goal priority #1 (a step per requested action)', () => {

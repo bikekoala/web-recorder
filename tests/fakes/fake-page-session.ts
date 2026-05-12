@@ -39,6 +39,8 @@ export class FakePageSession implements IPageSession {
   resolveTargetResult: ObservedElement | null = null;
   /** If set, resolveTargetCandidates returns this (decoupled from resolveTargetResult in the fake). */
   resolveTargetCandidatesResult: ObservedElement[] = [];
+  /** What resolveByVisibleText(...) returns (the deterministic role/text fallback). */
+  resolveByVisibleTextResult: ObservedElement | null = null;
   /** What ariaSnapshot() returns. */
   ariaSnapshotResult = '';
   /** Per-ref results for resolveAriaRef(); a ref not in the map resolves to null. */
@@ -140,6 +142,7 @@ export class FakePageSession implements IPageSession {
   async observeAll(): Promise<ObservedElement[]> { return this.observeResults; }
   async resolveTarget(): Promise<ObservedElement | null> { return this.resolveTargetResult; }
   async resolveTargetCandidates(): Promise<ObservedElement[]> { return this.resolveTargetCandidatesResult; }
+  async resolveByVisibleText(): Promise<ObservedElement | null> { return this.resolveByVisibleTextResult; }
   /**
    * Optional test hook — if set, called by `clickSelector` AFTER recording the
    * event. Use it to simulate the click's effect (e.g. mutate `this.url` /

@@ -17,6 +17,7 @@ import { config } from '../../infra/config.js';
 import { logger as rootLogger } from '../../infra/logger.js';
 import { buildReconUserText, buildReconvergeUserText, reconnoitererSystemPrompt } from '../../prompts/index.js';
 import type { IPageSession } from '../../ports/page-session.js';
+import { ARIA_SNAPSHOT_TRUNCATION_MARKER } from '../../ports/page-session.js';
 import type { IReconnoiterer, ReconInput } from '../../ports/reconnoiterer.js';
 import type { IBlockerDismisser, BlockerDismissalReport } from '../../ports/blocker-dismisser.js';
 import { rehearse, type ReconvergeContext } from './rehearsal.js';
@@ -103,11 +104,20 @@ export class LlmReconnoiterer implements IReconnoiterer {
 
     // Resolve every click/type ref against the snapshot we just took (refs are
     // valid only in that page state — resolve now, not deferred). A ref that
-    // won't resolve drops its step. Other kinds pass straight through.
-    const resolvedSteps = await this.resolveDraftSteps(draft.steps, session);
+    // won't resolve (nor by visible text, nor by `observe()` description) drops
+    // its step — and lands in `unresolved` so the dropped intent is reported
+    // transparently. Other kinds pass straight through.
+    const { steps: resolvedSteps, unresolved } = await this.resolveDraftSteps(draft.steps, session);
     if (resolvedSteps.length === 0) {
       throw new ReconError('recon produced zero usable steps after ref resolution');
     }
+    // The aria tree was too big to show in full → the ref-picking was working
+    // off a truncated view; say so when we surface what we couldn't locate.
+    const treeTruncated = snapshot.includes(ARIA_SNAPSHOT_TRUNCATION_MARKER);
+    const unresolvedTargets =
+      unresolved.length > 0 && treeTruncated
+        ? unresolved.map((d) => `${d} (page tree too large to analyze in full)`)
+        : unresolved;
 
     // Off-camera rehearsal walk (config.reconRehearse). Verifies the draft
     // against the live page, reconverging on divergence; afterwards we reset
@@ -168,7 +178,10 @@ export class LlmReconnoiterer implements IReconnoiterer {
           this.logger.warn({ err: parsed.error.message.slice(0, 200) }, 'reconverge draft failed schema');
           return [];
         }
-        return this.resolveDraftSteps(parsed.data.steps, ctx.session);
+        // A reconverge step that won't resolve is just dropped here (the walk's
+        // truncated/timedOut flags already flag a struggling reconverge); only
+        // the initial recon's drops feed `unresolvedTargets`.
+        return (await this.resolveDraftSteps(parsed.data.steps, ctx.session)).steps;
       };
       let result: Awaited<ReturnType<typeof rehearse>>;
       try {
@@ -212,13 +225,17 @@ export class LlmReconnoiterer implements IReconnoiterer {
       rationale: draft.rationale,
       ...(rehearsalTrace ? { rehearsal: rehearsalTrace } : {}),
       ...(blockerDismissal ? { blockerDismissal } : {}),
+      ...(unresolvedTargets.length > 0 ? { unresolvedTargets } : {}),
     };
     const validation = PerformanceSchema.safeParse(candidate);
     if (!validation.success) {
       throw new ReconError(`recon Performance failed schema: ${validation.error.message.slice(0, 400)}`);
     }
+    if (unresolvedTargets.length > 0) {
+      this.logger.warn({ unresolvedTargets, treeTruncated }, 'recon dropped requested click/type step(s) — target(s) not locatable on the page');
+    }
     this.logger.info(
-      { stepCount: validation.data.steps.length, totalEstimatedMs: validation.data.totalEstimatedMs, durationMs: input.durationMs, rehearsal: rehearsalTrace },
+      { stepCount: validation.data.steps.length, totalEstimatedMs: validation.data.totalEstimatedMs, durationMs: input.durationMs, rehearsal: rehearsalTrace, unresolvedTargets: unresolvedTargets.length || undefined },
       'recon complete',
     );
     return validation.data;
@@ -226,25 +243,40 @@ export class LlmReconnoiterer implements IReconnoiterer {
 
   /**
    * Turn parsed {@link ReconDraftStep}s into {@link PerformanceStep}s.
+   *
    * scroll/key/dwell/back/done pass through (their schemas are shared).
-   * click/type: resolve the `ref` against the most-recent aria snapshot via
-   * `session.resolveAriaRef()` (deterministic, no LLM); if that misses (the LLM
-   * picked a stale / wrong ref out of a huge tree) fall back to a fuzzy lookup by
-   * `targetDescription` (`session.resolveTargetCandidates(...)[0]`); if BOTH miss,
-   * drop the step. The kept step's `target.description` is always the LLM's
-   * `targetDescription` (its intent — best fodder for the walk's dead-click sweep).
+   * click/type: resolve the target, trying in order —
+   *   1. `session.resolveAriaRef(ref)` — deterministic, no LLM (the primary path).
+   *   2. (click only, when the draft gave a `targetText`)
+   *      `session.resolveByVisibleText(targetText)` — a deterministic Playwright
+   *      role/text lookup; no DOM serialization, so it works even on huge pages
+   *      where the `observe()` fallback overflows the model context.
+   *   3. `session.resolveTargetCandidates(targetDescription)[0]` — the fuzzy
+   *      `observe()` re-match (the original §0036 fallback).
+   * If all of them miss, the step is dropped — and its `targetDescription` is
+   * collected in the returned `unresolved` list so `intentSatisfaction` can
+   * report the dropped intent transparently rather than silently `unknown`.
+   * The kept step's `target.description` is always the LLM's `targetDescription`
+   * (its intent — best fodder for the walk's dead-click sweep / the metric).
    */
   private async resolveDraftSteps(
     draftSteps: ReconDraftStep[],
     session: IPageSession,
-  ): Promise<PerformanceStep[]> {
+  ): Promise<{ steps: PerformanceStep[]; unresolved: string[] }> {
     const resolved: PerformanceStep[] = [];
+    const unresolved: string[] = [];
     for (const step of draftSteps) {
       if (step.kind !== 'click' && step.kind !== 'type') {
         resolved.push(step);
         continue;
       }
       let r = await session.resolveAriaRef(step.ref).catch(() => null);
+      if ((!r || !r.bbox) && step.kind === 'click' && step.targetText) {
+        r = await session.resolveByVisibleText(step.targetText).catch(() => null);
+        if (r && r.bbox) {
+          this.logger.info({ ref: step.ref, text: step.targetText }, 'recon ref miss — resolved by visible text');
+        }
+      }
       if (!r || !r.bbox) {
         r = (await session.resolveTargetCandidates(step.targetDescription).catch(() => []))[0] ?? null;
         if (r && r.bbox) {
@@ -252,7 +284,8 @@ export class LlmReconnoiterer implements IReconnoiterer {
         }
       }
       if (!r || !r.bbox) {
-        this.logger.info({ ref: step.ref, kind: step.kind, desc: step.targetDescription }, 'recon target did not resolve (ref + description both missed) — step dropped');
+        this.logger.info({ ref: step.ref, kind: step.kind, desc: step.targetDescription }, 'recon target did not resolve (ref + visible-text + description all missed) — step dropped');
+        unresolved.push(step.targetDescription);
         continue;
       }
       const target = ResolvedTargetSchema.parse({ selector: r.selector, bbox: r.bbox, description: step.targetDescription });
@@ -275,7 +308,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
         });
       }
     }
-    return resolved;
+    return { steps: resolved, unresolved };
   }
 
   /**
