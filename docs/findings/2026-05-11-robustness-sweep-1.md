@@ -133,10 +133,32 @@ finding 6 above — still open.
 
 ## Next
 
-- **Task #20 — pre-recording blocker dismissal** (the Guardian failure). Detect
-  + dismiss cookie/consent/region overlays off-camera, before the `Performance`
-  plays, with an independent LLM client. This is the biggest remaining
-  robustness gap the sweep found.
+- **Task #20 — pre-recording blocker dismissal** — ✅ done (ADR §0035, spec
+  `2026-05-12-blocker-dismisser-design.md`). `IBlockerDismisser` +
+  `LlmBlockerDismisser`: a probe(`pageDiagnostic.blockerSignals`)→detect(vision
+  LLM)→click→re-probe loop, owned by `LlmReconnoiterer`, run before observe and
+  on the walk-reset; capped (3 rounds / 10 s), never fatal,
+  `RunMetrics.blockerDismissal`. **But** the sweep re-runs surfaced two things:
+  (a) the Guardian failure this run wasn't actually a cookie wall — the click
+  hit a *wrong-but-sized* element ("the first headline link" resolved to
+  something that isn't the article link), URL didn't change → divergence →
+  reconverge re-failed → truncate → `unknown`. That's finding 6 (target
+  resolution / disambiguation), not a blocker problem. (b) The `blockerSignals`
+  heuristic is narrow — it didn't fire on Guardian/CNN from this IP/headless
+  (no heuristic-matched "Accept all"-type banner shown), so the dismisser was a
+  clean no-op there. Broadening the heuristic = more hardcoded selectors
+  (against goals.md #6); always-running the LLM detect = ~$0.01 screenshot
+  tokens per recording (= the whole goals.md #5 budget). Left as a follow-up;
+  the dismiss *logic* is unit-tested and it correctly clears OneTrust/Cookiebot-
+  class banners when `blockerSignals` does fire.
+- **Finding 6 — target resolution / disambiguation** is now the top open
+  robustness gap (it explains Guardian, CNN, and the Wikipedia "Cat → Felidae"
+  case): `resolveTarget` returns a *sized* element that isn't the one the
+  description means (a wrapper, a section header, the wrong same-text link).
+  The walk catches it (divergence) but the reconverge picks another wrong
+  element. Needs: better recon descriptions, or a "did this click actually
+  navigate / change the page?" check inside `resolveTarget` candidate-ranking,
+  or scroll-aware disambiguation.
 - Fix 4 (don't let `intentSatisfaction` over-credit a click that ran but didn't
   change the page — use the walk's observed effect).
-- Re-run the full sweep after Task #20.
+- Re-run the full sweep after finding 6 is addressed.

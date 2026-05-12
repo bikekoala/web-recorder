@@ -47,9 +47,11 @@ A new tech choice should always become an adapter, never a `core/` import.
 
 One end-to-end recording attempt: `start() → goto → act/observe/scroll/wait* → stop()`. Owns one Browser + BrowserContext + Page + recordVideo file. Always cleaned up in `finally`.
 
-## BlockerPrelude (removed)
+## Blocker dismisser
 
-A streaming-era pre-recording phase that probed the page for visual blockers (cookie consent, play overlays, login modals) and dismissed them off-camera. **Deleted in §0034 Task 8** — it was coupled to the removed `IFastDecider`. On-page blocker dismissal is now folded into the `Performance` as its first steps (the recon prompt instructs the LLM to do this). Off-camera dismissal of *non-natural* blockers (region/age gates, interstitials) is a tracked follow-up.
+`IBlockerDismisser` (port) / `LlmBlockerDismisser` (adapter, its own `gpt-4o-mini` client) — the off-camera step (ADR §0035 / Task #20) that clears **dismissable overlays** (cookie/consent banners, X-to-close newsletter/app-install modals) from a page before the `Performance` is planned and before recording opens. Owned by `LlmReconnoiterer`; runs a probe → detect → click → re-probe loop: probe `pageDiagnostic().blockerSignals` (empty ⇒ no LLM call, return), else a few rounds of "screenshot + observed elements → vision LLM picks the dismiss control → click it → re-probe", capped (3 rounds / 10 s). Best-effort — never throws; `stillBlocked: true` on a cap/error. Called at the top of `recon()` (so the plan sees a clean page) and on the rehearsal walk's page-reset (the walk reloaded the page; re-clean it for the on-camera run). Outcome on `Performance.blockerDismissal = {rounds, dismissed[], stillBlocked}` → `RunMetrics.blockerDismissal`. Does **not** touch region/age gates or paywalls. Gated by `config.blockerDismiss` (default on). The §0034-era stopgap — "the recon prompt plans an accept-cookies click as the first `Performance` step" — stays as a backstop for overlays that appear mid-recording.
+
+(Was `BlockerPrelude`, a streaming-era pre-recording phase coupled to the removed `IFastDecider`, deleted in §0034 Task 8 — reborn here without that coupling.)
 
 ## Page diagnostic
 

@@ -28,6 +28,7 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `IReconnoiterer` + LlmReconnoiterer (recon → `Performance`; reused as re-planner) | ✅ |
 | Rehearsing reconnoiterer — `recon()` walks its draft against the live page off-camera, re-resolves targets at the right scroll position, rewrites `expectAfter` to observed state, reconverges on divergence, resets to start URL (`RECON_REHEARSE`, default on; §0034 / Task #21) | ✅ |
 | Recon prompt: PRIORITY #1 (a step per requested action, re-check before emit) + scroll-to-target discipline; reconverge keeps the goal (different path, not blind retry) | ✅ |
+| `IBlockerDismisser` + LlmBlockerDismisser — off-camera probe→detect(vision LLM)→click→re-probe loop that clears cookie/consent banners + X-to-close modals before recon plans & before recording (gated on `pageDiagnostic.blockerSignals`; `BLOCKER_DISMISS`, default on; capped 3 rounds/10s; `RunMetrics.blockerDismissal`; §0035 / Task #20) | ✅ |
 | `IDirector` + PerformanceDirector (deterministic `Performance` playback + re-plan checkpoint, §0034) | ✅ |
 | PerformanceDirector graceful degradation — drops stale tail + gentle closing scroll when an `expectAfter` mismatch can't be re-planned (§0034) | ✅ |
 | `replanMinRemainingMs` gate (default 60s) — mid-recording re-plan only when enough budget remains; short recordings degrade instead (§0034) | ✅ |
