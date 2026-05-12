@@ -26,7 +26,7 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `IPageSession` + Stagehand adapter | ✅ |
 | Playwright video recording + ffmpeg trim | ✅ |
 | `IReconnoiterer` + LlmReconnoiterer (recon draft → resolved `Performance`; reused as re-planner) | ✅ |
-| ref-tagged a11y snapshot target resolution (§0036) — recon sees a deterministic `IPageSession.ariaSnapshot()` tree (`page.ariaSnapshot({mode:'ai'})`, native in Playwright 1.59; replaced the `observeAll()` LLM enumeration); the LLM picks click/type targets by `ref`; `ReconDraftSchema` (recon output finally Zod-parsed — Hard Rule 2); `resolveAriaRef(ref)` → durable `{selector,bbox,description}`, deterministic, no LLM, no fuzzy re-match. Roots out the wrong-element bug (robustness-sweep P2/finding 6) | ✅ |
+| ref-tagged a11y snapshot target resolution (§0036) — recon sees a deterministic `IPageSession.ariaSnapshot()` tree (`page.ariaSnapshot({mode:'ai'})`, native in Playwright 1.59; replaced the `observeAll()` LLM enumeration); the LLM picks each click/type target by `ref` **+ a `targetDescription`** (the fallback if it picks a wrong/stale ref out of a huge tree — playwright-mcp's `target`+`element` pattern); `ReconDraftSchema` (recon output finally Zod-parsed — Hard Rule 2); `resolveAriaRef(ref)` → durable `{selector,bbox,description}`, deterministic, no LLM; on a ref miss → `resolveTargetCandidates(targetDescription)` fuzzy fallback. Roots out the wrong-element bug (robustness-sweep P2/finding 6) — fuzzy match is a fallback now, not the hot path. Validated: canonical Recordly run = `intentSatisfaction: complete`, judge `LOOKS_HUMAN`, recon ~24 s (was ~49 s) | ✅ |
 | Rehearsing reconnoiterer — `recon()` walks its draft against the live page off-camera, rewrites `expectAfter` to observed state, reconverges (with a fresh aria snapshot) on divergence, resets to start URL (`RECON_REHEARSE`, default on; §0034 / §0036; no more per-step `observe()` re-resolve) | ✅ |
 | Recon prompt: PRIORITY #1 (a step per requested action, re-check before emit) + scroll-to-target discipline + "pick targets by ref from the tree"; reconverge keeps the goal (different ref / scroll first, not blind retry) | ✅ |
 | `IBlockerDismisser` + LlmBlockerDismisser — off-camera probe→detect(vision LLM)→click→re-probe loop that clears cookie/consent banners + X-to-close modals before recon plans & before recording (gated on `pageDiagnostic.blockerSignals`; `BLOCKER_DISMISS`, default on; capped 3 rounds/10s; `RunMetrics.blockerDismissal`; §0035 / Task #20) | ✅ |
@@ -57,24 +57,23 @@ The **naturalness catalog** in [`docs/naturalness-catalog.md`](./docs/naturalnes
 
 ### Measured performance (Recordly README, "click 简中, slow scroll, 10s")
 
-Post-§0034 (prophet pipeline) **after Task #21 (rehearsing reconnoiterer)**, single integration run on macOS + OpenRouter (recon on `anthropic/claude-sonnet-4.6`), `npm run prototype:stagehand` + `npm run judge`:
+Post-**§0036** (ref-tagged a11y snapshot target resolution), single integration run on macOS + OpenRouter (recon on `anthropic/claude-sonnet-4.6`, headless), `npm run prototype:stagehand` + `npm run judge`:
 
 | Metric | Value |
 |---|---|
-| Pipeline | Prophet (§0034 + Task #21): off-camera recon → off-camera rehearsal walk → deterministic paced playback |
-| Trimmed video duration | 10.6 s (target 10 s, +6.4%) |
-| Reconnaissance (off-camera, incl. the rehearsal walk) | ~49 s — `observeAll()` + vision LLM + per-target resolve + walking the draft against the live page |
-| Rehearsal trace | `{walkedSteps: 8, divergences: 0, reconverges: 0, truncated: false, timedOut: false}` |
+| Pipeline | Prophet (§0034 + Task #21 + §0036): blocker-dismiss → `ariaSnapshot()` ref-tagged tree → LLM picks a draft (targets by `ref` + `targetDescription`) → resolve refs (deterministic; fuzzy fallback on a ref miss) → off-camera rehearsal walk → deterministic paced playback |
+| Trimmed video duration | 10.6 s (target 10 s, +6%) |
+| Reconnaissance (off-camera, incl. the rehearsal walk) | ~24 s (was ~49 s — the per-target `observe()` calls are gone; on this run the LLM picked a wrong `ref` for the 简中 link → one `resolveTargetCandidates` fallback call, then the rehearsal walk clicked it for real off-camera) |
+| Rehearsal trace | `{walkedSteps: 10, divergences: 0, reconverges: 0, truncated: false, timedOut: false}` |
 | On-camera recording | 10.6 s — no dead air |
 | Re-plans (on-camera) | 0 |
-| Director end reason | `budget` (steps consumed the window) |
-| `intentSatisfaction` | **complete** — 1 click (简体中文, verified off-camera) + 3 scrolls |
+| `intentSatisfaction` | **complete** — 1 click (简中, verified off-camera) + 3 scrolls |
 | Video judge verdict (Gemini 3.1 Pro) | **`LOOKS_HUMAN`** — motionQuality / pacing / intentExecution / recovery / visualCoherence all `pass` |
-| Total wall-clock | ~72 s (the rehearsal walk adds ~20 s, all off-camera) |
+| Total wall-clock | ~42 s (was ~72 s) |
 
-> ⚠️ This table is the **pre-§0036** run. §0036 (ref-tagged a11y snapshot target resolution) replaced `observeAll()` + the per-target `observe()` resolves with `ariaSnapshot()` + deterministic `aria-ref` resolution — recon-internals only, on-camera `Performance` shape unchanged — but it's **not yet re-measured**. Expect `reconMs` and total wall-clock to drop (fewer LLM calls); re-run `npm run prototype:stagehand` + `npm run judge` and refresh this table.
+Note on goal #5: the aria tree is the recon prompt's big input now (~1450 lines / ~23 k tokens for a GitHub repo page — `mode:'ai'` already prunes, `ariaSnapshotDepth=25` caps depth). That's a real LLM-cost pressure point; if a page blows the budget, scope the snapshot to a landmark / prune harder.
 
-Known remaining recon-plan-quality gap (status uncertain post-§0036): multi-screenful "scroll down then click X" where X is *above* the scroll position (e.g. Wikipedia "Cat → Felidae" — taxobox link scrolls away, and a long page has several same-text "Felidae" nodes). §0036's ref-based picking *should* disambiguate (the LLM picks one specific `[ref=eN]` from the tree, no fuzzy re-match) — but the "scroll past it then need it back" timing is still on the recon prompt's scroll-to-target discipline. Re-verify on a real run. See [`docs/findings/2026-05-11-prophet-first-integration.md`](./docs/findings/2026-05-11-prophet-first-integration.md). `RECON_REHEARSE=false` skips the walk (fast dev iteration).
+Known remaining recon-plan-quality gap: the recon LLM is **not great at picking the right `ref` out of a thousand-line tree** (it picked a wrong one for the 简中 link on the canonical run — the `targetDescription` fallback caught it). Multi-screenful "scroll down then click X" where X is *above* the scroll position (Wikipedia "Cat → Felidae") is still on the recon prompt's scroll-to-target discipline + the fallback. Re-verify on the harder sites. See [`docs/findings/2026-05-11-prophet-first-integration.md`](./docs/findings/2026-05-11-prophet-first-integration.md). `RECON_REHEARSE=false` skips the walk (fast dev iteration).
 
 ## Common commands
 

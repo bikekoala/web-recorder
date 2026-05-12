@@ -221,8 +221,11 @@ export class LlmReconnoiterer implements IReconnoiterer {
    * Turn parsed {@link ReconDraftStep}s into {@link PerformanceStep}s.
    * scroll/key/dwell/back/done pass through (their schemas are shared).
    * click/type: resolve the `ref` against the most-recent aria snapshot via
-   * `session.resolveAriaRef()` (deterministic, no LLM); a ref that won't resolve
-   * (stale / detached / 0×0 / no durable selector) drops the step.
+   * `session.resolveAriaRef()` (deterministic, no LLM); if that misses (the LLM
+   * picked a stale / wrong ref out of a huge tree) fall back to a fuzzy lookup by
+   * `targetDescription` (`session.resolveTargetCandidates(...)[0]`); if BOTH miss,
+   * drop the step. The kept step's `target.description` is always the LLM's
+   * `targetDescription` (its intent — best fodder for the walk's dead-click sweep).
    */
   private async resolveDraftSteps(
     draftSteps: ReconDraftStep[],
@@ -234,12 +237,18 @@ export class LlmReconnoiterer implements IReconnoiterer {
         resolved.push(step);
         continue;
       }
-      const r = await session.resolveAriaRef(step.ref).catch(() => null);
+      let r = await session.resolveAriaRef(step.ref).catch(() => null);
       if (!r || !r.bbox) {
-        this.logger.info({ ref: step.ref, kind: step.kind }, 'recon ref did not resolve — step dropped');
+        r = (await session.resolveTargetCandidates(step.targetDescription).catch(() => []))[0] ?? null;
+        if (r && r.bbox) {
+          this.logger.info({ ref: step.ref, kind: step.kind, desc: step.targetDescription }, 'recon ref miss — fell back to description lookup');
+        }
+      }
+      if (!r || !r.bbox) {
+        this.logger.info({ ref: step.ref, kind: step.kind, desc: step.targetDescription }, 'recon target did not resolve (ref + description both missed) — step dropped');
         continue;
       }
-      const target = ResolvedTargetSchema.parse({ selector: r.selector, bbox: r.bbox, description: r.description });
+      const target = ResolvedTargetSchema.parse({ selector: r.selector, bbox: r.bbox, description: step.targetDescription });
       if (step.kind === 'click') {
         resolved.push({
           kind: 'click',

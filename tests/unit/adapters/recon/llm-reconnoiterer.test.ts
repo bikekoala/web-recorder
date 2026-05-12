@@ -30,13 +30,13 @@ const target = (selector: string, description: string): ObservedElement => ({
   selector, description, bbox: { x: 10, y: 20, width: 80, height: 30 },
 });
 
-// A recon draft: click/type carry `ref` (not a target description) — ADR §0036.
+// A recon draft: click/type carry `ref` (+ `targetDescription` fallback) — ADR §0036.
 const llmDraftJson = JSON.stringify({
   prompt: 'click sign in then browse',
   durationMs: 10000,
   steps: [
     { kind: 'dwell', durationMs: 350, reasoning: 'absorbing the page' },
-    { kind: 'click', ref: 'e7', anticipationMs: 600, reasoning: 'user asked', expectAfter: { urlContains: '/login' } },
+    { kind: 'click', ref: 'e7', targetDescription: 'the sign-in link', anticipationMs: 600, reasoning: 'user asked', expectAfter: { urlContains: '/login' } },
     { kind: 'dwell', durationMs: 2000, reasoning: 'reading the login form' },
     { kind: 'done', reasoning: 'done' },
   ],
@@ -64,7 +64,8 @@ describe('LlmReconnoiterer', () => {
     expect(session.events.filter((e) => e.kind === 'resolveAriaRef').map((e) => e.payload)).toContain('e7');
     expect(perf.steps).toHaveLength(4);
     const clickStep = perf.steps.find((s) => s.kind === 'click')!;
-    expect(clickStep).toMatchObject({ kind: 'click', target: { selector: 'text=Sign in', description: 'Sign in' } });
+    // selector from resolveAriaRef; description is the LLM's targetDescription (not the resolved element's name)
+    expect(clickStep).toMatchObject({ kind: 'click', target: { selector: 'text=Sign in', description: 'the sign-in link' } });
     expect(recon.modelId).toBe('test/model');
   });
 
@@ -85,16 +86,17 @@ describe('LlmReconnoiterer', () => {
   it('throws ReconError when a click step has no ref', async () => {
     const session = new FakePageSession();
     const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(JSON.stringify({
-      prompt: 'p', steps: [{ kind: 'click', anticipationMs: 500, reasoning: 'x' }, { kind: 'done', reasoning: 'd' }], totalEstimatedMs: 0, rationale: 'x',
+      prompt: 'p', steps: [{ kind: 'click', targetDescription: 'x', anticipationMs: 500, reasoning: 'x' }, { kind: 'done', reasoning: 'd' }], totalEstimatedMs: 0, rationale: 'x',
     })) });
     await expect(recon.recon({ url: 'u', prompt: 'p', durationMs: 1000, viewport: { width: 1, height: 1 }, screenshot: null }, session))
       .rejects.toBeInstanceOf(ReconError);
   });
 
-  it('a click whose ref will not resolve is dropped; surviving steps still form the Performance', async () => {
+  it('a click whose ref AND description both miss is dropped; surviving steps still form the Performance', async () => {
     const session = new FakePageSession();
     session.ariaSnapshotResult = '- generic [ref=e1]';
     session.resolveAriaRefResults = {}; // e7 → null
+    session.resolveTargetCandidatesResult = []; // description fallback also misses
     const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(llmDraftJson) });
     const perf = await recon.recon({ url: 'u', prompt: 'p', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
     expect(perf.steps.some((s) => s.kind === 'click')).toBe(false);
@@ -104,11 +106,24 @@ describe('LlmReconnoiterer', () => {
     expect(perf.steps[perf.steps.length - 1]!.kind).toBe('done');
   });
 
-  it('throws ReconError when every step is a click whose ref will not resolve (zero usable steps)', async () => {
+  it('a click whose ref misses but whose targetDescription resolves → kept, target carries the LLM description', async () => {
+    const session = new FakePageSession();
+    session.resolveAriaRefResults = {}; // e7 → null (LLM picked a stale/wrong ref)
+    session.resolveTargetCandidatesResult = [target('text=Sign in', 'Sign in')]; // fallback by description hits
+    const goLogin = () => { session.url = 'https://x.test/login'; };
+    session.clickAtImpl = goLogin; session.clickSelectorImpl = goLogin;
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(llmDraftJson) });
+    const perf = await recon.recon({ url: 'https://x.test/', prompt: 'p', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
+    const click = perf.steps.find((s) => s.kind === 'click')!;
+    expect(click).toMatchObject({ kind: 'click', target: { selector: 'text=Sign in', description: 'the sign-in link' } });
+  });
+
+  it('throws ReconError when every step is a click whose ref + description both miss (zero usable steps)', async () => {
     const session = new FakePageSession();
     session.resolveAriaRefResults = {};
+    session.resolveTargetCandidatesResult = [];
     const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(JSON.stringify({
-      prompt: 'p', steps: [{ kind: 'click', ref: 'eX', anticipationMs: 500, reasoning: 'x' }], totalEstimatedMs: 0, rationale: 'x',
+      prompt: 'p', steps: [{ kind: 'click', ref: 'eX', targetDescription: 'nonexistent thing', anticipationMs: 500, reasoning: 'x' }], totalEstimatedMs: 0, rationale: 'x',
     })) });
     await expect(recon.recon({ url: 'u', prompt: 'p', durationMs: 1000, viewport: { width: 1280, height: 720 }, screenshot: null }, session))
       .rejects.toBeInstanceOf(ReconError);
@@ -118,7 +133,7 @@ describe('LlmReconnoiterer', () => {
     prompt: 'go somewhere',
     durationMs: 10000,
     steps: [
-      { kind: 'click', ref: 'eGo', anticipationMs: 500, reasoning: 'navigate' },
+      { kind: 'click', ref: 'eGo', targetDescription: 'the Go link', anticipationMs: 500, reasoning: 'navigate' },
       { kind: 'done', reasoning: 'done' },
     ],
     totalEstimatedMs: 900,
@@ -229,7 +244,7 @@ describe('LlmReconnoiterer + blockerDismisser', () => {
     prompt: 'go somewhere',
     durationMs: 10000,
     steps: [
-      { kind: 'click', ref: 'eGo', anticipationMs: 500, reasoning: 'navigate' },
+      { kind: 'click', ref: 'eGo', targetDescription: 'the Go link', anticipationMs: 500, reasoning: 'navigate' },
       { kind: 'done', reasoning: 'done' },
     ],
     totalEstimatedMs: 900,

@@ -687,7 +687,7 @@ export class StagehandPageSession implements IPageSession {
     // an XPath snapshot computed in the page. If that fails, return null
     // and the caller will re-query by description.
     try {
-      const handle = await locator.elementHandle({ timeout: 500 });
+      const handle = await locator.elementHandle({ timeout: 1500 });
       if (!handle) return null;
       const xpath = await handle.evaluate((el: Element) => {
         function getXPath(node: Element): string {

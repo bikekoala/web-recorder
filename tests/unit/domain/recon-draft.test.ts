@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { ReconDraftSchema, ReconDraftStepSchema, ReconvergeDraftSchema } from '../../../src/domain/recon-draft.js';
 import { PerformanceStepSchema } from '../../../src/domain/performance.js';
 
-const clickDraft = { kind: 'click' as const, ref: 'e7', anticipationMs: 600, reasoning: 'user asked', expectAfter: { urlContains: '/login' } };
-const typeDraft = { kind: 'type' as const, ref: 'e11', text: 'cats', preMs: 300, keystrokeMs: 90, reasoning: 'search' };
+const clickDraft = { kind: 'click' as const, ref: 'e7', targetDescription: 'the sign-in link', anticipationMs: 600, reasoning: 'user asked', expectAfter: { urlContains: '/login' } };
+const typeDraft = { kind: 'type' as const, ref: 'e11', targetDescription: 'the search box', text: 'cats', preMs: 300, keystrokeMs: 90, reasoning: 'search' };
 const scrollStep = { kind: 'scroll' as const, deltaPx: 600, durationMs: 1800, easing: 'inOutQuad' as const, dwellAfterMs: 200, reasoning: 'browse' };
 const keyStep = { kind: 'key' as const, key: 'Enter' as const, reasoning: 'submit' };
 const dwellStep = { kind: 'dwell' as const, durationMs: 2400, reasoning: 'reading' };
@@ -27,10 +27,13 @@ describe('ReconDraft schema', () => {
     }
   });
   it('rejects a click step with no ref', () => {
-    expect(() => ReconDraftStepSchema.parse({ kind: 'click', anticipationMs: 600, reasoning: 'x' })).toThrow();
+    expect(() => ReconDraftStepSchema.parse({ kind: 'click', targetDescription: 'd', anticipationMs: 600, reasoning: 'x' })).toThrow();
+  });
+  it('rejects a click step with no targetDescription', () => {
+    expect(() => ReconDraftStepSchema.parse({ kind: 'click', ref: 'e7', anticipationMs: 600, reasoning: 'x' })).toThrow();
   });
   it('rejects a type step with no ref', () => {
-    expect(() => ReconDraftStepSchema.parse({ kind: 'type', text: 'x', preMs: 0, keystrokeMs: 0, reasoning: 'x' })).toThrow();
+    expect(() => ReconDraftStepSchema.parse({ kind: 'type', targetDescription: 'd', text: 'x', preMs: 0, keystrokeMs: 0, reasoning: 'x' })).toThrow();
   });
   it('rejects negative durations', () => {
     expect(() => ReconDraftStepSchema.parse({ ...dwellStep, durationMs: -1 })).toThrow();

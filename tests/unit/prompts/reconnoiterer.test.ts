@@ -10,7 +10,7 @@ const divergedStep: PerformanceStep = {
 };
 
 describe('buildReconUserText', () => {
-  it('embeds the aria snapshot tree and tells the LLM to pick targets by ref', () => {
+  it('embeds the aria snapshot tree and tells the LLM to pick targets by ref + targetDescription', () => {
     const text = buildReconUserText(
       { url: 'https://example.com/', prompt: 'click 简体中文', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null },
       '- navigation:\n  - link "简体中文" [ref=e42]',
@@ -18,6 +18,7 @@ describe('buildReconUserText', () => {
     expect(text).toContain('[ref=e42]');
     expect(text).toContain('简体中文');
     expect(text.toLowerCase()).toContain('"ref"');
+    expect(text.toLowerCase()).toContain('targetdescription');
     expect(text).toContain('https://example.com/');
   });
 
@@ -72,11 +73,13 @@ describe('reconnoitererSystemPrompt', () => {
     expect(lower).toContain('screenful');
   });
 
-  it('explains the accessibility tree + that click/type steps carry a ref', () => {
+  it('explains the accessibility tree + that click/type steps carry a ref and a targetDescription fallback', () => {
     const lower = reconnoitererSystemPrompt.toLowerCase();
     expect(lower).toContain('accessibility tree');
     expect(lower).toContain('[ref=');
     expect(lower).toContain('"ref"');
+    expect(lower).toContain('targetdescription');
+    expect(lower).toContain('safety net');
   });
 
   it('makes accomplishing the goal priority #1 (a step per requested action)', () => {

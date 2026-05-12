@@ -316,3 +316,26 @@ a11y snapshot target resolution; replaces the fuzzy `observe()` re-match"), `doc
 
 - `observeAll`/`resolveTarget` stay in the port (deprecated-by-comment, not removed) — see above.
 - `ariaSnapshotDepth` default = 25, env-overridable — re-tune after the first real run.
+
+## Amendment (during implementation, 2026-05-12)
+
+The "pure ref" decision (the draft carries only `ref`, no description; resolution
+is `resolveAriaRef` only) was reverted after the first real run. On the canonical
+Recordly scenario the recon LLM, given a ~1450-line aria tree, picked a wrong
+`ref` for the 简中 link (`e687` ≠ the link's `e740`); `resolveAriaRef` returned
+null; the click step was dropped; `intentSatisfaction` regressed `complete →
+unknown`. The mechanism was fine (`aria-ref=e740` resolves cleanly) — the LLM
+just isn't reliable at needle-in-a-thousand-lines ref picking.
+
+Fix: the draft `click`/`type` steps carry **`ref` + `targetDescription`** (the
+LLM's plain-English name for the element) — playwright-mcp's own `target`+`element`
+pattern. `resolveDraftSteps`: `resolveAriaRef(ref)` first; on a miss,
+`resolveTargetCandidates(targetDescription)[0]`; on both missing, drop the step.
+The kept step's `target.description` is the LLM's `targetDescription` (its intent
+— best fodder for the walk's dead-click sweep). Net: dominates pure-ref on goal #3
+(intent works — re-validated `complete` / `LOOKS_HUMAN`), still strictly better
+than the pre-§0036 status quo on #6 (the fuzzy `observe()` match is a *fallback*
+now, not the primary path). Prompt updated: "give `ref` (copy the EXACT id from a
+line in the tree) AND `targetDescription` (the safety net)". Also: bumped
+`locatorSelectorFallback`'s `elementHandle` timeout 500→1500 ms (defensive on
+heavy pages — a real ref shouldn't drop because the page was momentarily busy).

@@ -163,14 +163,19 @@ finding 6 above — still open.
   same-text ambiguity (the LLM picked one specific `[ref=eN]`). The walk no longer
   re-resolves per step; `resolveTargetCandidates` survives only as the dead-click
   *recovery* sweep (a fuzzy fallback there is acceptable). `UNRESOLVED_SENTINEL`
-  retired. Scoping done in [`2026-05-12-similar-projects-eval.md`](./2026-05-12-similar-projects-eval.md)
+  retired. One wrinkle the first real run exposed: the LLM is unreliable at
+  picking the right `ref` out of a thousand-line tree (it picked a wrong one for
+  the 简中 link on Recordly) — so the draft also carries a `targetDescription`
+  fallback (playwright-mcp's `target`+`element` pattern): `resolveAriaRef` miss →
+  `resolveTargetCandidates(targetDescription)` (the fuzzy match, now a *fallback*
+  not the hot path). Scoping done in [`2026-05-12-similar-projects-eval.md`](./2026-05-12-similar-projects-eval.md)
   (borrowing the technique from the playwright-mcp lineage, not the package);
   details in `docs/superpowers/specs/2026-05-12-aria-ref-target-resolution-design.md`
-  and ADR §0036. **Not yet re-validated on a real run** — the unit suite is green
-  (127 tests); the canonical scenario + the multi-same-text-link sites (Wikipedia
-  "Cat → Felidae", HN "open a comment") still need a `npm run prototype:stagehand`
-  re-run to confirm the disambiguation actually holds and to re-measure recon
-  wall-clock (expected to drop — fewer LLM calls).
+  and ADR §0036. **Validated** on the canonical Recordly scenario — `intentSatisfaction:
+  complete`, judge `LOOKS_HUMAN`, recon ~24 s (was ~49 s), total ~42 s (was ~72 s);
+  unit suite green (129 tests). The multi-same-text-link sites (Wikipedia "Cat →
+  Felidae", HN "open a comment") + the regression suite are the remaining
+  re-verification.
 - Fix 4 (don't let `intentSatisfaction` over-credit a click that ran but didn't
   change the page — use the walk's observed effect).
 - Re-run the full sweep after finding 6 is addressed.
