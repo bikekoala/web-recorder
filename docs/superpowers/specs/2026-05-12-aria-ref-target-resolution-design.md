@@ -39,9 +39,14 @@ the most common wrong-click failure mode) and #6 (AI-first, no hardcoded
 heuristics — the fuzzy `resolveTargetCandidates` re-match in the hot path *is*
 the heuristic; the LLM should plan, not re-match; recovery is "reconverge with a
 fresh snapshot", not a fuzzy matcher), and a little of #2 (fewer dead clicks →
-fewer stalls). It also nets out cheaper (#5): recon's LLM calls drop from "1×
-`observeAll` + N× `resolveTarget` retries" to "1× recon (+ occasional
-reconverge)". It does **not** serve #1 (cursor synthesis — parked).
+fewer stalls). On **#5** it's a *mixed* result — recon's LLM *calls* drop ("1×
+`observeAll` + N× `resolveTarget` retries" → "1× recon (+ occasional reconverge)")
+and recon *wall-clock* drops (~49 s → ~24 s), but the aria tree is a much bigger
+*prompt* than the old observed-element list and it goes to the expensive recon
+model, so per-recon LLM **$ goes up** (~$0.07–0.10 vs ~$0.02–0.04 — both over the
+$0.01 target). See the §0036 ADR's cost trade-off note; getting to $0.01 is a
+follow-up (cheaper recon model / aggressive tree pruning). It does **not** serve
+#1 (cursor synthesis — parked).
 
 ## Scope
 
