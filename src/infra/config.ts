@@ -100,6 +100,15 @@ const Schema = z.object({
    * ARIA_SNAPSHOT_DEPTH. (Re-tune after a real run against the Recordly table.)
    */
   ariaSnapshotDepth: z.coerce.number().int().min(1).max(100).default(25),
+  /**
+   * If the aria snapshot exceeds this many chars (≈ chars/4 tokens),
+   * `ariaSnapshot()` scopes it to `<main>` / `[role=main]` and, if still over,
+   * truncates to the top of the tree (line boundary + a "truncated" note) — so
+   * the recon prompt stays in budget (goal #5) and the planner has a tree it can
+   * actually navigate. ARIA_SNAPSHOT_MAX_CHARS. (≈ 100 KB ≈ ~25 k tokens — sized
+   * so a GitHub repo page fits whole, a Wikipedia featured article gets cut.)
+   */
+  ariaSnapshotMaxChars: z.coerce.number().int().min(1000).default(100000),
 
   /**
    * Off-camera blocker dismisser (Task #20). `blockerDismiss` is the master
@@ -233,6 +242,7 @@ const raw = {
   reconRehearsalBudgetMs: process.env.RECON_REHEARSAL_BUDGET_MS,
   reconReconvergeMax: process.env.RECON_RECONVERGE_MAX,
   ariaSnapshotDepth: process.env.ARIA_SNAPSHOT_DEPTH,
+  ariaSnapshotMaxChars: process.env.ARIA_SNAPSHOT_MAX_CHARS,
   blockerDismiss: process.env.BLOCKER_DISMISS || undefined,
   blockerDismissMaxRounds: process.env.BLOCKER_DISMISS_MAX_ROUNDS,
   blockerDismissMaxMs: process.env.BLOCKER_DISMISS_MAX_MS,

@@ -176,19 +176,28 @@ finding 6 above — still open.
   the regression suite — **6/6 pass, every case `intentSatisfaction: complete`**
   (GitHub multi-step nav 简中→back→folder→file ×2 prompt variants, YouTube
   search→channel→browse ×2, Google Maps search ×2); unit suite green (129 tests).
-  **Wikipedia "Cat → Felidae" (the original P3 hard case) — re-run, still fails**
-  (`intentSatisfaction: unknown`, click step dropped at recon time): two compounding
-  problems on a giant page — (1) the recon LLM picked a wrong `ref` for the
-  disambiguation-note Felidae link (`e252`, which is in the sidebar/contents area)
-  out of a tree that big; (2) the `targetDescription` fallback (`resolveTargetCandidates`
-  → `stagehand.observe()`) sends the *full* accessibility tree as text — ~140 k
-  tokens for the Cat article — which blew gpt-4o-mini's 128 k context window (a 400)
-  → the fallback returned nothing. (Note: the *old* code would have failed here too
-  — `resolveTarget` was the same `stagehand.observe()` call; Cat was always listed
-  as still-open. §0036 didn't regress it, it just didn't fix it.) The lever: scope /
-  prune the recon's `ariaSnapshot()` (e.g. to `<main>`) so the tree is ~10× smaller
-  → easier ref-picking AND lower token cost (goal #5), and a fallback that doesn't
-  re-serialize the whole tree. Not done — the next finding-6 increment.
+  **Wikipedia "Cat → Felidae" (the original P3 hard case) — re-run several ways, still
+  fails** (`intentSatisfaction: unknown`, click step dropped at recon time). Two
+  compounding problems on a giant page (the Cat article's aria tree is **~775 KB** —
+  `mode:'ai'` already-pruned!): (1) the recon LLM picks a wrong / unresolvable `ref`
+  out of a tree that size (`e252` — and `resolveAriaRef` returned null for it); (2) the
+  `targetDescription` fallback (`resolveTargetCandidates` → `stagehand.observe()`)
+  re-serializes the *whole* page tree — ~140 k tokens — over gpt-4o-mini's 128 k
+  context (a 400) → returns nothing. Both arms miss → the click is dropped. (The *old*
+  code would have failed here too — `resolveTarget` was the same `stagehand.observe()`
+  call; Cat was always listed as still-open. §0036 didn't regress it, it just didn't
+  fix it.) **Mitigated, not fixed**: `ariaSnapshot()` now scopes to `<main>`/`[role=main]`
+  then truncates to `config.ariaSnapshotMaxChars` (~100 KB, line-boundary cut + a
+  "truncated, scroll for more" note) when the tree is huge — so the recon prompt stays
+  ~25 k tokens (without it the Cat run sent a ~180 k-token tree, ~$0.50/recon — a
+  goal #5 blowout). For Cat the scoped tree is still ~723 KB (Wikipedia's `<main>` is
+  almost the whole page) → truncated to ~100 KB, and the LLM *still* picks a bad ref.
+  The real fix for this class of page (a thousands-of-lines tree the LLM can't navigate
+  one-shot, that `stagehand.observe()` also can't ingest) is a dedicated next pass —
+  options: a smarter region pick (not just `<main>`), a non-`observe()` fallback (a CDP
+  a11y query, or `quickFindOnPage` with a literal-text `targetDescription`), or simply
+  accepting `unknown` for such pages (goal #3 allows it — `unknown` *is* the transparent
+  "intent not satisfied"). Tracked.
 - Fix 4 (don't let `intentSatisfaction` over-credit a click that ran but didn't
   change the page — use the walk's observed effect).
 - Re-run the full sweep after finding 6 is addressed.

@@ -506,7 +506,35 @@ export class StagehandPageSession implements IPageSession {
   async ariaSnapshot(opts: { depth?: number } = {}): Promise<string> {
     try {
       const page = this.requirePage();
-      return await page.ariaSnapshot({ mode: 'ai', depth: opts.depth ?? config.ariaSnapshotDepth });
+      const depth = opts.depth ?? config.ariaSnapshotDepth;
+      const max = config.ariaSnapshotMaxChars;
+      let snap = await page.ariaSnapshot({ mode: 'ai', depth });
+      if (snap.length > max) {
+        // Too big for the planner prompt (a Wikipedia featured article, a long
+        // docs page): a thousands-of-lines tree is hard to pick a ref out of and
+        // a token sink. First scope to the main content region — drops the global
+        // nav / sidebar / footer, so what's left starts with the actual content
+        // (hatnotes, infoboxes, the intro — where "click X" targets near the top
+        // of a page live). Refs from a scoped ariaSnapshot still resolve via
+        // page.locator('aria-ref=eN').
+        const mainLoc = page.locator('main, [role="main"]').first();
+        if ((await mainLoc.count().catch(() => 0)) > 0) {
+          const scoped = await mainLoc.ariaSnapshot({ mode: 'ai', depth }).catch(() => '');
+          if (scoped.length > 0 && scoped.length < snap.length) {
+            this.logger.info({ fullChars: snap.length, scopedChars: scoped.length }, 'ariaSnapshot: page large — scoped to <main>');
+            snap = scoped;
+          }
+        }
+      }
+      if (snap.length > max) {
+        // Still too big — keep the top of the tree (cut at a line boundary) and
+        // tell the planner the rest is below it (so it plans a scroll to reach it).
+        const cut = snap.lastIndexOf('\n', max);
+        const head = cut > 0 ? snap.slice(0, cut) : snap.slice(0, max);
+        this.logger.info({ origChars: snap.length, keptChars: head.length }, 'ariaSnapshot: page still large — truncated the tree to its top');
+        snap = head + '\n... [accessibility tree truncated here — the page is large; nodes below this point are not shown; plan a scroll to reach them]';
+      }
+      return snap;
     } catch (err) {
       this.logger.warn({ err }, 'ariaSnapshot failed; returning empty tree');
       return '';

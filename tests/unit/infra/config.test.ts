@@ -81,6 +81,11 @@ describe('rehearsal config knobs', () => {
     expect((await loadConfig({ ARIA_SNAPSHOT_DEPTH: undefined })).ariaSnapshotDepth).toBe(25);
     expect((await loadConfig({ ARIA_SNAPSHOT_DEPTH: '12' })).ariaSnapshotDepth).toBe(12);
   });
+
+  it('ariaSnapshotMaxChars defaults to 100000 and honours ARIA_SNAPSHOT_MAX_CHARS', async () => {
+    expect((await loadConfig({ ARIA_SNAPSHOT_MAX_CHARS: undefined })).ariaSnapshotMaxChars).toBe(100000);
+    expect((await loadConfig({ ARIA_SNAPSHOT_MAX_CHARS: '20000' })).ariaSnapshotMaxChars).toBe(20000);
+  });
 });
 
 describe('blocker-dismiss config knobs', () => {
