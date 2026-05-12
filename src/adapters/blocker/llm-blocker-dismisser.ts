@@ -160,11 +160,8 @@ function parseDismissDecision(raw: string): DismissDecision | null {
   if (!obj || typeof obj !== 'object') return null;
   const o = obj as Record<string, unknown>;
   if (typeof o.blocker !== 'boolean') return null;
-  return {
-    blocker: o.blocker,
-    dismissTargetDescription:
-      typeof o.dismissTargetDescription === 'string' && o.dismissTargetDescription.trim()
-        ? o.dismissTargetDescription
-        : undefined,
-  };
+  const desc = typeof o.dismissTargetDescription === 'string' && o.dismissTargetDescription.trim()
+    ? o.dismissTargetDescription
+    : undefined;
+  return desc ? { blocker: o.blocker, dismissTargetDescription: desc } : { blocker: o.blocker };
 }
