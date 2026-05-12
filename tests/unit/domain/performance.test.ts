@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PerformanceSchema, PerformanceStepSchema, RehearsalTraceSchema } from '../../../src/domain/performance.js';
+import { PerformanceSchema, PerformanceStepSchema, RehearsalTraceSchema, BlockerDismissalReportSchema } from '../../../src/domain/performance.js';
 
 const validClickStep = {
   kind: 'click' as const,
@@ -60,5 +60,23 @@ describe('RehearsalTrace + Performance.rehearsal', () => {
   it('Performance.rehearsal round-trips when present', () => {
     const perf = { prompt: 'x', durationMs: 10000, totalEstimatedMs: 9000, rationale: 'r', steps: [{ kind: 'dwell', durationMs: 300, reasoning: 'open' }], rehearsal: { walkedSteps: 3, divergences: 0, reconverges: 0, truncated: false, timedOut: false } };
     expect(PerformanceSchema.parse(perf).rehearsal).toEqual(perf.rehearsal);
+  });
+});
+
+describe('BlockerDismissalReport + Performance.blockerDismissal', () => {
+  const base = { prompt: 'p', durationMs: 1000, totalEstimatedMs: 0, rationale: 'r', steps: [{ kind: 'done', reasoning: 'x' }] };
+  it('round-trips a report', () => {
+    const r = { rounds: 2, dismissed: ['Accept all cookies', 'Close newsletter modal'], stillBlocked: false };
+    expect(BlockerDismissalReportSchema.parse(r)).toEqual(r);
+  });
+  it('rejects a negative round count', () => {
+    expect(() => BlockerDismissalReportSchema.parse({ rounds: -1, dismissed: [], stillBlocked: true })).toThrow();
+  });
+  it('Performance.blockerDismissal is optional — absent is valid', () => {
+    expect(PerformanceSchema.parse(base).blockerDismissal).toBeUndefined();
+  });
+  it('Performance.blockerDismissal round-trips when present', () => {
+    const perf = { ...base, blockerDismissal: { rounds: 1, dismissed: ['Accept all'], stillBlocked: false } };
+    expect(PerformanceSchema.parse(perf).blockerDismissal).toEqual({ rounds: 1, dismissed: ['Accept all'], stillBlocked: false });
   });
 });

@@ -109,6 +109,21 @@ export const RehearsalTraceSchema = z.object({
 });
 export type RehearsalTrace = z.infer<typeof RehearsalTraceSchema>;
 
+/**
+ * Outcome of the off-camera blocker dismisser (Task #20). Lives on the
+ * Performance like RehearsalTrace — it's metadata about how the page was
+ * prepared, surfaced in RunMetrics as an operator canary.
+ */
+export const BlockerDismissalReportSchema = z.object({
+  /** detect→click iterations that ran (0 = the page was already clean). */
+  rounds: z.number().int().nonnegative(),
+  /** descriptions of the elements we clicked, in order. */
+  dismissed: z.array(z.string()),
+  /** a blocker still seemed present when we stopped (cap hit / error / undismissable). */
+  stillBlocked: z.boolean(),
+});
+export type BlockerDismissalReport = z.infer<typeof BlockerDismissalReportSchema>;
+
 export const PerformanceSchema = z.object({
   prompt: z.string().min(1),
   durationMs: z.number().int().positive(),
@@ -117,5 +132,7 @@ export const PerformanceSchema = z.object({
   rationale: z.string().min(1),
   /** Present iff the recon ran a rehearsal walk (config.reconRehearse). */
   rehearsal: RehearsalTraceSchema.optional(),
+  /** Present iff the recon ran the off-camera blocker dismisser (config.blockerDismiss). */
+  blockerDismissal: BlockerDismissalReportSchema.optional(),
 });
 export type Performance = z.infer<typeof PerformanceSchema>;
