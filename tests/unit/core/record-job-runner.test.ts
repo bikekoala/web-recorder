@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ActionLogEntry, RecordingWindow } from '../../../src/domain/action-log.js';
 import type { Performance } from '../../../src/domain/performance.js';
-import { computeIntentSatisfaction, RecordJobRunner } from '../../../src/core/record-job-runner.js';
+import { computeIntentSatisfaction, RecordJobRunner, videoRelativeTrimWindow } from '../../../src/core/record-job-runner.js';
 import type { DirectorReport, IDirector } from '../../../src/ports/director.js';
 import type { IPageSession } from '../../../src/ports/page-session.js';
 import { FakePageSession } from '../../fakes/fake-page-session.js';
@@ -142,6 +142,42 @@ describe('computeIntentSatisfaction — UNIQUE-target matching', () => {
     //  target shared the lone "link" token with the click descriptions.)
     expect(r.level).toBe('partial');
     expect(r.note).toMatch(/1\/3/);
+  });
+});
+
+describe('videoRelativeTrimWindow — recordVideo clock-drift correction', () => {
+  it('scales the window down by the raw-video-to-wall ratio when drift is present', () => {
+    // The §0036 finding's numbers: 11 s wall-clock window inside a session
+    // whose 41 s of wall time produced only ~38.76 s of video (f ≈ 0.9454).
+    const out = videoRelativeTrimWindow({ startedAtMs: 29984, endedAtMs: 40902 }, 38760, 41000);
+    expect(out.startMs).toBe(Math.round(29984 * (38760 / 41000)));
+    expect(out.endMs).toBe(Math.round(40902 * (38760 / 41000)));
+    // The kept clip is now ~10.3 s, not the ~8.78 s a wall-clock trim left.
+    expect(out.endMs - out.startMs).toBeGreaterThan(10000);
+    // endMs stays inside the raw video (no EOF clamp needed).
+    expect(out.endMs).toBeLessThanOrEqual(38760);
+  });
+
+  it('leaves the window untouched when the raw-video length is unknown', () => {
+    expect(videoRelativeTrimWindow({ startedAtMs: 1000, endedAtMs: 11000 }, null, 41000))
+      .toEqual({ startMs: 1000, endMs: 11000 });
+  });
+
+  it('leaves the window untouched when the raw video is not shorter than wall time (f ≥ 1)', () => {
+    expect(videoRelativeTrimWindow({ startedAtMs: 1000, endedAtMs: 11000 }, 41000, 41000))
+      .toEqual({ startMs: 1000, endMs: 11000 });
+    expect(videoRelativeTrimWindow({ startedAtMs: 1000, endedAtMs: 11000 }, 42000, 41000))
+      .toEqual({ startMs: 1000, endMs: 11000 });
+  });
+
+  it('leaves the window untouched on a pathological ratio (f < 0.5)', () => {
+    expect(videoRelativeTrimWindow({ startedAtMs: 1000, endedAtMs: 11000 }, 10000, 41000))
+      .toEqual({ startMs: 1000, endMs: 11000 });
+  });
+
+  it('leaves the window untouched when session wall time is zero', () => {
+    expect(videoRelativeTrimWindow({ startedAtMs: 1000, endedAtMs: 11000 }, 38760, 0))
+      .toEqual({ startMs: 1000, endMs: 11000 });
   });
 });
 

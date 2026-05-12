@@ -197,6 +197,13 @@ export class LlmReconnoiterer implements IReconnoiterer {
       }
     }
 
+    // Recon LLMs routinely mis-size the window — usually over-packing (a 10 s
+    // budget comes back as a 13–14 s plan), occasionally under. Compress or pad
+    // the plan deterministically so it fits the duration the user paid for
+    // before we hand it off (goals.md #2). "Fit the recording into the budget"
+    // is mechanical — goals.md #6 carve-out.
+    finalSteps = fitPlanToBudget(finalSteps, input.durationMs);
+
     const candidate: Performance = {
       prompt: draft.prompt,
       durationMs: input.durationMs,
@@ -340,20 +347,128 @@ export class LlmReconnoiterer implements IReconnoiterer {
   }
 }
 
+/**
+ * Estimate how long playback of `steps` actually takes — the basis for
+ * `Performance.totalEstimatedMs` and the target {@link fitPlanToBudget} fits to.
+ * Mirrors what {@link PerformanceDirector} does per step, plus the unlogged
+ * per-step overhead the Director can't avoid:
+ *  - dwell/scroll: exactly their declared timings.
+ *  - click: the anticipation pause + a page-settle wait afterwards
+ *    (`config.pacingSettleEstMs`).
+ *  - key/back: a page-settle wait afterwards (`config.pacingSettleEstMs`).
+ *  - type: the pre-pause + per-keystroke delay (the focus click is negligible).
+ *  - done: nothing — it ends the run.
+ *  - every non-`done` step: `config.pacingStepOverheadMs` (mouse moves,
+ *    actionability waits, the post-click `expectAfter` probe, scroll-animation
+ *    overshoot, …).
+ * The settle term used to be a hard-coded 400 ms and there was no per-step
+ * overhead, which undercounted the window by ~1–2 s and made recordings
+ * overrun the requested duration; see
+ * docs/findings/2026-05-12-recordvideo-clock-drift.md.
+ */
 function sumDurations(steps: PerformanceStep[]): number {
   let total = 0;
   for (const s of steps) {
+    if (s.kind !== 'done') total += config.pacingStepOverheadMs;
     switch (s.kind) {
       case 'dwell': total += s.durationMs; break;
       case 'scroll': total += s.durationMs + s.dwellAfterMs; break;
-      case 'click': total += s.anticipationMs + 400; break;
+      case 'click': total += s.anticipationMs + config.pacingSettleEstMs; break;
       case 'type': total += s.preMs + s.text.length * s.keystrokeMs; break;
-      case 'key': total += 200; break;
-      case 'back': total += 800; break;
+      case 'key': total += config.pacingSettleEstMs; break;
+      case 'back': total += config.pacingSettleEstMs; break;
       case 'done': break;
     }
   }
   return total;
+}
+
+/**
+ * Make a plan's estimated playback time fit `durationMs`.
+ *
+ * Reconnaissance LLMs are poor at the budget arithmetic — they typically
+ * over-pack (a 10 s budget comes back as a 13–14 s plan; the recording then
+ * overruns and the deliverable trips goals.md #2's ±10 % bright-line), and
+ * occasionally under-pack. We fix it deterministically, off-camera, AFTER any
+ * rehearsal walk:
+ *
+ *  - Over budget: uniformly scale down the *controllable* timings — scroll
+ *    durations + their trailing dwells, dwell durations, click anticipation,
+ *    type pre-pauses — keeping every step, its order, and its easing, and never
+ *    below sane floors. Fixed costs the Director incurs regardless (the
+ *    post-click/key/back page-settle wait, per-keystroke typing speed, the
+ *    per-step overhead) are not scaled.
+ *  - Well under budget (< 90 %): append one gentle closing `scroll` + `dwell`
+ *    sized to the gap (clamped to the step schema's bounds), before the final
+ *    `done` if there is one.
+ *
+ * "Fit the recording into the duration the user paid for" is mechanical, not a
+ * behaviour threshold — goals.md #6 carve-out.
+ */
+export function fitPlanToBudget(steps: PerformanceStep[], durationMs: number): PerformanceStep[] {
+  let fixedMs = 0;       // costs we can't shrink: post-action settle waits + typing speed + per-step overhead
+  let controllableMs = 0; // scroll/dwell/anticipation/preMs — the slack we can compress
+  for (const s of steps) {
+    if (s.kind !== 'done') fixedMs += config.pacingStepOverheadMs;
+    switch (s.kind) {
+      case 'dwell': controllableMs += s.durationMs; break;
+      case 'scroll': controllableMs += s.durationMs + s.dwellAfterMs; break;
+      case 'click': controllableMs += s.anticipationMs; fixedMs += config.pacingSettleEstMs; break;
+      case 'type': controllableMs += s.preMs; fixedMs += s.text.length * s.keystrokeMs; break;
+      case 'key': fixedMs += config.pacingSettleEstMs; break;
+      case 'back': fixedMs += config.pacingSettleEstMs; break;
+      case 'done': break;
+    }
+  }
+  const estimatedMs = fixedMs + controllableMs;
+
+  // Over budget: compress the controllable slack to whatever room the fixed
+  // costs leave. (If the fixed costs alone already exceed the budget there's
+  // nothing useful to do here — leave it; the Director's hard cap is the
+  // backstop.)
+  if (estimatedMs > durationMs && controllableMs > 0 && durationMs > fixedMs) {
+    const scale = (durationMs - fixedMs) / controllableMs;
+    if (scale < 1) {
+      return steps.map((s): PerformanceStep => {
+        switch (s.kind) {
+          case 'dwell':
+            return { ...s, durationMs: Math.max(100, Math.round(s.durationMs * scale)) };
+          case 'scroll':
+            return {
+              ...s,
+              durationMs: Math.max(200, Math.round(s.durationMs * scale)),
+              dwellAfterMs: Math.max(0, Math.round(s.dwellAfterMs * scale)),
+            };
+          case 'click':
+            return { ...s, anticipationMs: Math.max(0, Math.round(s.anticipationMs * scale)) };
+          case 'type':
+            return { ...s, preMs: Math.max(0, Math.round(s.preMs * scale)) };
+          default:
+            return s;
+        }
+      });
+    }
+  }
+
+  // Well under budget: pad with one gentle closing scroll + dwell sized to the
+  // gap (within the step schema's bounds), inserted before the trailing `done`.
+  // The two new steps carry their own per-step overhead, so net it out first.
+  if (estimatedMs < durationMs * 0.9) {
+    let gap = durationMs - estimatedMs - 2 * config.pacingStepOverheadMs;
+    const scrollMs = Math.min(2200, Math.max(600, Math.round(gap * 0.45)));
+    gap -= scrollMs;
+    const dwellAfterMs = 200;
+    gap -= dwellAfterMs;
+    const dwellMs = Math.min(8000, Math.max(300, gap));
+    const filler: PerformanceStep[] = [
+      { kind: 'scroll', deltaPx: 320, durationMs: scrollMs, easing: 'inOutQuad', dwellAfterMs, reasoning: 'closing browse to fill the requested recording duration' },
+      { kind: 'dwell', durationMs: dwellMs, reasoning: 'settle on the page before the recording ends' },
+    ];
+    const lastIsDone = steps.length > 0 && steps[steps.length - 1]!.kind === 'done';
+    return lastIsDone ? [...steps.slice(0, -1), ...filler, steps[steps.length - 1]!] : [...steps, ...filler];
+  }
+
+  return steps;
 }
 
 function stripCodeFence(s: string): string {

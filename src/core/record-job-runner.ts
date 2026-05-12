@@ -170,21 +170,26 @@ export class RecordJobRunner {
     // ------------------------------------ 3. Stop + trim
     const artifacts = await this.session.stop();
 
+    // Probe the raw video BEFORE trimming — its length tells us how far the
+    // recordVideo compositor clock lags wall time, which the trim corrects for.
+    const rawVideoMs = await videoDurationMs(artifacts.videoPath).catch(() => null);
+
     const tTrim = Date.now();
     let videoPath = artifacts.videoPath;
     if (artifacts.recording) {
       const out = resolve(req.outputDir, 'recording.webm');
-      await trimVideo(
-        artifacts.videoPath,
-        out,
-        artifacts.recording.startedAtMs,
-        artifacts.recording.endedAtMs,
-      );
+      const trim = videoRelativeTrimWindow(artifacts.recording, rawVideoMs, artifacts.actionLog.durationMs);
+      if (trim.startMs !== artifacts.recording.startedAtMs || trim.endMs !== artifacts.recording.endedAtMs) {
+        this.logger.info(
+          { rawVideoMs, sessionWallMs: artifacts.actionLog.durationMs, wallWindow: artifacts.recording, videoWindow: trim },
+          'recordVideo clock drift — trimming the recording by video-relative time',
+        );
+      }
+      await trimVideo(artifacts.videoPath, out, trim.startMs, trim.endMs);
       videoPath = out;
     }
     const trimMs = Date.now() - tTrim;
 
-    const rawVideoMs = await videoDurationMs(artifacts.videoPath).catch(() => null);
     const trimmedVideoMs = await videoDurationMs(videoPath).catch(() => null);
 
     const intentSatisfaction = computeIntentSatisfaction(
@@ -312,6 +317,40 @@ export function computeIntentSatisfaction(
     level,
     note,
   };
+}
+
+/**
+ * Map a wall-clock recording window onto the raw `recordVideo` .webm's own
+ * frame timeline.
+ *
+ * Playwright's compositor clock lags real time — startup gap before the first
+ * frame, plus dropped frames under page jank — so a ~40 s session can produce
+ * a ~38.8 s video. Trimming the wall-clock `[startedAtMs, endedAtMs]` straight
+ * out of the file then cuts ~2 s of valid content off the START (the start
+ * edge lands past where that content actually sits in the video) and bottoms
+ * out against EOF at the end — the deliverable ends up seconds short of
+ * `durationMs`. We approximate the video clock as wall time scaled by
+ * `f = rawVideoMs / sessionWallMs` (this folds the startup gap into a
+ * slightly-smaller `f`; the lag is roughly linear over the session, so that's
+ * close enough). Only applied when `f` is in a sane drift band (0.5–1.0);
+ * otherwise — no probe, no measurable drift, or a pathological reading — we
+ * trust the wall-clock numbers unchanged. See
+ * docs/findings/2026-05-12-recordvideo-clock-drift.md.
+ */
+export function videoRelativeTrimWindow(
+  window: { startedAtMs: number; endedAtMs: number },
+  rawVideoMs: number | null,
+  sessionWallMs: number,
+): { startMs: number; endMs: number } {
+  const { startedAtMs, endedAtMs } = window;
+  if (rawVideoMs === null || rawVideoMs <= 0 || sessionWallMs <= 0) {
+    return { startMs: startedAtMs, endMs: endedAtMs };
+  }
+  const f = rawVideoMs / sessionWallMs;
+  if (!(f >= 0.5 && f < 1.0)) {
+    return { startMs: startedAtMs, endMs: endedAtMs };
+  }
+  return { startMs: Math.round(startedAtMs * f), endMs: Math.round(endedAtMs * f) };
 }
 
 // (Helpers `descriptionsMatch` / `contentTokens` live in

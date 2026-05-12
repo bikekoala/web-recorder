@@ -148,6 +148,35 @@ const Schema = z.object({
   directorHardBudgetMult: z.number().min(1.0).max(2.0).default(1.2),
 
   /**
+   * Estimated wall-clock a `click` / `key` / `back` step costs *beyond* its
+   * own explicit pauses — i.e. the page-settle wait the PerformanceDirector
+   * does afterwards (`waitForVisualStability`, up to ~2.5 s for a navigation,
+   * near-zero for an inline toggle). Used by the reconnoiterer's `sumDurations`
+   * self-estimate AND surfaced to the planner prompt, so the plan it packs to
+   * fill `durationMs` matches what playback actually takes — without this the
+   * old hard-coded 400 ms undercounted a navigation click by ~1 s and the
+   * recording overran the requested duration. Pure pacing estimate, goals.md #6
+   * carve-out. Override with PACING_SETTLE_EST_MS.
+   */
+  pacingSettleEstMs: z.coerce.number().int().min(0).max(10000).default(1500),
+
+  /**
+   * Estimated wall-clock overhead the Director incurs *per step* on top of the
+   * step's own declared timings — mouse-move animations, Playwright
+   * actionability waits before a `clickSelector`, the post-click `expectAfter`
+   * probe, the recording-start `page_diagnostic`, scroll-animation overshoot,
+   * etc. None of it is in the step schema, but it adds up (~1 s across a ~10-step
+   * plan) and made recordings overrun `durationMs`. The reconnoiterer folds
+   * `n_steps × this` into its `sumDurations` / `fitPlanToBudget` accounting so
+   * the plan it packs to fill the window matches what playback actually takes.
+   * Pure pacing estimate, goals.md #6 carve-out. Override with
+   * PACING_STEP_OVERHEAD_MS. (~280 ms/step measured against the Recordly
+   * scenario — the recording overran `durationMs` by ~1 s on a ~9-step plan
+   * with this set to 150.)
+   */
+  pacingStepOverheadMs: z.coerce.number().int().min(0).max(2000).default(280),
+
+  /**
    * Typing rendering (catalog F2 + the gmaps "text appears instantly" finding).
    * - `typingPreMs`: pause AFTER focusing the input, BEFORE first keystroke.
    *   Real users glance at the empty field for a beat before starting.
@@ -251,6 +280,8 @@ const raw = {
   directorHardBudgetMult: process.env.DIRECTOR_HARD_BUDGET_MULT
     ? Number(process.env.DIRECTOR_HARD_BUDGET_MULT)
     : undefined,
+  pacingSettleEstMs: process.env.PACING_SETTLE_EST_MS,
+  pacingStepOverheadMs: process.env.PACING_STEP_OVERHEAD_MS,
   typingPreMinMs: process.env.TYPING_PRE_MIN_MS
     ? Number(process.env.TYPING_PRE_MIN_MS)
     : undefined,

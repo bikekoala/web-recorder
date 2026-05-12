@@ -139,9 +139,11 @@ export async function trimVideo(
  * element = the actual length of captured video — which can run *seconds short*
  * of the session's wall-clock (the compositor's frame timeline lags real time:
  * a ~2 s gap on a ~40 s session has been observed). So this is the deliverable's
- * real length, not a probe artifact — but it means a trim cut by wall-clock
- * timestamps is offset; see docs/findings (recordVideo clock drift). On a full
- * ffmpeg the trailing `time=…` from a real `-f null -` decode is preferred.
+ * real length, not a probe artifact. RecordJobRunner uses this lag (raw video
+ * length ÷ session wall time) to trim the recording by video-relative time
+ * rather than wall-clock time — see `videoRelativeTrimWindow` + docs/findings
+ * (recordVideo clock drift). On a full ffmpeg the trailing `time=…` from a real
+ * `-f null -` decode is preferred.
  * Imprecise (~50 ms) — fine for logging / sanity checks.
  */
 export async function videoDurationMs(inputPath: string): Promise<number | null> {

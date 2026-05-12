@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { LlmReconnoiterer, ReconError } from '../../../../src/adapters/recon/llm-reconnoiterer.js';
+import { fitPlanToBudget, LlmReconnoiterer, ReconError } from '../../../../src/adapters/recon/llm-reconnoiterer.js';
+import type { PerformanceStep } from '../../../../src/domain/performance.js';
 import { FakePageSession } from '../../../fakes/fake-page-session.js';
 import type { IBlockerDismisser, BlockerDismissalReport } from '../../../../src/ports/blocker-dismisser.js';
 import type { IPageSession, ObservedElement } from '../../../../src/ports/page-session.js';
@@ -56,8 +57,11 @@ describe('LlmReconnoiterer', () => {
     session.clickAtImpl = goLogin;
     session.clickSelectorImpl = goLogin;
     const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(llmDraftJson) });
+    // durationMs is below the 4-step draft's estimate, so fitPlanToBudget may
+    // compress it slightly — the assertions below don't depend on the timings
+    // (fitPlanToBudget is exercised on its own further down).
     const perf = await recon.recon(
-      { url: 'https://x.test/', prompt: 'click sign in then browse', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: Buffer.from([0x89]) },
+      { url: 'https://x.test/', prompt: 'click sign in then browse', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: Buffer.from([0x89]) },
       session,
     );
     expect(session.events.some((e) => e.kind === 'ariaSnapshot')).toBe(true);
@@ -180,8 +184,10 @@ describe('LlmReconnoiterer', () => {
     session.url = 'https://x.test/';
     const { client, create } = sequencedClient('Sure, here is the plan: ' + dwellOnlyDraft + ' Let me know if you need changes.');
     const recon = new LlmReconnoiterer({ model: 'test/model', client });
+    // durationMs < the draft's estimate → fitPlanToBudget may compress it slightly;
+    // the assertions below check the prose-wrapped-JSON recovery, not the timings.
     const perf = await recon.recon(
-      { url: 'https://x.test/', prompt: 'just look around', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
+      { url: 'https://x.test/', prompt: 'just look around', durationMs: 2500, viewport: { width: 1280, height: 720 }, screenshot: null },
       session,
     );
     expect(perf.steps.map((s) => s.kind)).toEqual(['dwell', 'dwell', 'done']);
@@ -197,7 +203,7 @@ describe('LlmReconnoiterer', () => {
     );
     const recon = new LlmReconnoiterer({ model: 'test/model', client });
     const perf = await recon.recon(
-      { url: 'https://x.test/', prompt: 'just look around', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
+      { url: 'https://x.test/', prompt: 'just look around', durationMs: 2500, viewport: { width: 1280, height: 720 }, screenshot: null },
       session,
     );
     expect(perf.steps.map((s) => s.kind)).toEqual(['dwell', 'dwell', 'done']);
@@ -290,5 +296,76 @@ describe('LlmReconnoiterer + blockerDismisser', () => {
     const recon = new LlmReconnoiterer({ model: 'test/model', client: fakeClient(goDraftJson), blockerDismisser: throwing });
     const perf = await recon.recon(reconInput, session);
     expect(perf.blockerDismissal).toEqual({ rounds: 0, dismissed: [], stillBlocked: true });
+  });
+});
+
+describe('fitPlanToBudget — keep the recording the length the user paid for', () => {
+  // Mirror the reconnoiterer's own estimate (config defaults: settle 1500,
+  // per-step overhead 280 on every non-done step).
+  const estimateMs = (steps: PerformanceStep[]): number => {
+    let t = 0;
+    for (const s of steps) {
+      if (s.kind !== 'done') t += 280;
+      switch (s.kind) {
+        case 'dwell': t += s.durationMs; break;
+        case 'scroll': t += s.durationMs + s.dwellAfterMs; break;
+        case 'click': t += s.anticipationMs + 1500; break;
+        case 'type': t += s.preMs + s.text.length * s.keystrokeMs; break;
+        case 'key': t += 1500; break;
+        case 'back': t += 1500; break;
+        case 'done': break;
+      }
+    }
+    return t;
+  };
+
+  it('compresses an over-packed plan toward the budget, keeping every step + easing', () => {
+    const steps: PerformanceStep[] = [
+      { kind: 'dwell', durationMs: 500, reasoning: 'absorb' },
+      { kind: 'click', target: { selector: 'a', bbox: { x: 0, y: 0, width: 1, height: 1 }, description: 'a' }, anticipationMs: 800, reasoning: 'tap', expectAfter: { urlContains: '/x' } },
+      { kind: 'scroll', deltaPx: 700, durationMs: 3000, easing: 'outQuart', dwellAfterMs: 400, reasoning: 'read' },
+      { kind: 'scroll', deltaPx: 700, durationMs: 3000, easing: 'inOutQuad', dwellAfterMs: 400, reasoning: 'read' },
+      { kind: 'dwell', durationMs: 3000, reasoning: 'linger' },
+      { kind: 'done', reasoning: 'fin' },
+    ];
+    // estimate ≈ 1400(overhead) + 500 + (800+1500) + 3400 + 3400 + 3000 ≈ 14 s for a 10 s budget
+    const out = fitPlanToBudget(steps, 10000);
+    expect(out.map((s) => s.kind)).toEqual(steps.map((s) => s.kind)); // no step added/removed
+    expect((out[2] as { easing: string }).easing).toBe('outQuart'); // easing preserved
+    // compressed down from ~14 s to roughly the budget (rounding ± a few ms),
+    // and not over-compressed.
+    expect(estimateMs(out)).toBeLessThan(11000);
+    expect(estimateMs(out)).toBeGreaterThan(8500);
+  });
+
+  it('pads a far-too-short plan with a closing scroll + dwell before the done', () => {
+    const steps: PerformanceStep[] = [
+      { kind: 'dwell', durationMs: 400, reasoning: 'absorb' },
+      { kind: 'dwell', durationMs: 1500, reasoning: 'read' },
+      { kind: 'done', reasoning: 'fin' },
+    ];
+    const out = fitPlanToBudget(steps, 10000); // estimate ~2.6 s ≪ 9 s
+    expect(out.map((s) => s.kind)).toEqual(['dwell', 'dwell', 'scroll', 'dwell', 'done']);
+    expect(out[out.length - 1]!.kind).toBe('done'); // padding goes BEFORE the done
+    expect(estimateMs(out)).toBeGreaterThan(9000);
+    // every step still satisfies the step schema's bounds
+    const fillerScroll = out[2] as Extract<PerformanceStep, { kind: 'scroll' }>;
+    expect(fillerScroll.durationMs).toBeGreaterThanOrEqual(200);
+    expect(fillerScroll.durationMs).toBeLessThanOrEqual(4000);
+    const fillerDwell = out[3] as Extract<PerformanceStep, { kind: 'dwell' }>;
+    expect(fillerDwell.durationMs).toBeGreaterThanOrEqual(100);
+    expect(fillerDwell.durationMs).toBeLessThanOrEqual(8000);
+  });
+
+  it('passes a plan that already fits straight through (no compress, no pad)', () => {
+    const steps: PerformanceStep[] = [
+      { kind: 'dwell', durationMs: 400, reasoning: 'absorb' },
+      { kind: 'scroll', deltaPx: 600, durationMs: 1800, easing: 'inOutQuad', dwellAfterMs: 200, reasoning: 'read' },
+      { kind: 'dwell', durationMs: 2000, reasoning: 'linger' },
+      { kind: 'done', reasoning: 'fin' },
+    ];
+    // Budget == the plan's own estimate ⇒ neither over (no compress) nor below
+    // 90 % (no pad) ⇒ the same array reference comes straight back.
+    expect(fitPlanToBudget(steps, estimateMs(steps))).toBe(steps);
   });
 });

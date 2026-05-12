@@ -1330,6 +1330,29 @@ The user's framing: *"不是页面加载完开始录制 而是『准备好了』
 
 ---
 
+## 0037 · Duration fidelity: fit-the-plan-to-budget + video-relative trim
+
+**Date**: 2026-05-12
+
+**Context**: `npm run eval` (the §0036-era self-eval tool) flagged the goals.md eval-#2 bright-line — "trimmed-video duration within ±10 % of `durationMs`" — intermittently violated on the canonical Recordly run: trimmed video came in at 8.8 s (−12 %), 11.0–12.4 s (+10…+24 %), etc. for a 10 s target. Two independent causes, both pre-existing (predate §0034/§0036, just never measured until `npm run eval`):
+1. **Recon over-packs the window.** The reconnoiterer LLM is poor at the budget arithmetic — a 10 s budget routinely comes back as a ~13–16 s plan. `Performance.totalEstimatedMs` was recomputed via a `sumDurations()` that hard-coded a click's post-action cost at 400 ms and ignored per-step overhead entirely, so it under-counted reality by ~1–2 s and nothing pushed back on an over-packed plan. The Director's hard cap (`durationMs × 1.2`) is too loose to catch a +20 % overrun (and it only checks *between* steps).
+2. **`recordVideo` clock drift.** Playwright's compositor clock lags wall time (startup gap + dropped frames under jank) — a ~40 s session can yield a ~38.8 s video. `RecordJobRunner` trimmed the *wall-clock* `[recording.startedAtMs, recording.endedAtMs]` straight out of the file → the start edge lands past where that content actually sits in the video, and the end clamps against EOF → the kept clip is ~2 s shorter than the content that's actually there. See [`docs/findings/2026-05-12-recordvideo-clock-drift.md`](./findings/2026-05-12-recordvideo-clock-drift.md).
+
+**Options considered**: (a) tighten `directorHardBudgetMult` — blunt, still ends mid-step abruptly, doesn't address drift; (b) closed-loop Director soft-alignment (steer the window to `durationMs` by adjusting dwells as it plays) — most robust but a meaningful change to a well-tested file with subtle test-timing concerns; (c) switch the recording layer to CDP screencast / xvfb+ffmpeg (goals.md #4 anticipates this) — would eliminate drift entirely, but a big change; **(d) fix it in two cheap, deterministic, off-camera places** — the recon trims/pads its own plan to fit, and the trim corrects for the measured drift. Picked (d). (b) and (c) stay tracked as the deeper levers.
+
+**Choice**:
+- **`fitPlanToBudget(steps, durationMs)`** in `LlmReconnoiterer`, applied AFTER the rehearsal walk, BEFORE building the `Performance`. Estimate playback (`sumDurations` — now: each step's declared timings + `config.pacingSettleEstMs` after every click/key/back + `config.pacingStepOverheadMs` per non-`done` step for the unlogged mouse-move / actionability-wait / `expectAfter`-probe / scroll-overshoot overhead). If the estimate runs over `durationMs`, uniformly **scale down the controllable timings** (scroll durations + their trailing dwells, dwell durations, click anticipation, type pre-pauses), keeping every step / order / easing, never below sane floors; the fixed costs (settle, per-step overhead, per-keystroke typing speed) aren't scaled. If it's well *under* (< 90 %), **append one gentle closing `scroll` + `dwell`** sized to the gap (within the step schema's bounds), before the trailing `done`. `Performance.totalEstimatedMs` is then `sumDurations` of the fitted plan ≈ `durationMs`. The recon prompt also gained a one-line note that a click costs ~1.5 s of settle on top of `anticipationMs` so the LLM packs less in the first place.
+- **`videoRelativeTrimWindow(window, rawVideoMs, sessionWallMs)`** in `RecordJobRunner`: probe the raw video's length before trimming; if it's measurably shorter than the session's wall time (`f = rawVideoMs / sessionWallMs` in [0.5, 1.0)), trim the *scaled* window `[startedAtMs·f, endedAtMs·f]` instead of the wall-clock one — approximating the video's own (lagging, roughly-linear) frame timeline. No probe / no drift / a pathological ratio → trim the wall-clock numbers unchanged.
+- New config knobs (goals.md #6 carve-out — pure pacing/timing estimates, not behaviour thresholds): `pacingSettleEstMs` (default 1500), `pacingStepOverheadMs` (default 280 — measured against the Recordly scenario).
+
+**Rationale**: serves goals.md #2 (the deliverable is the length the user paid for, no abrupt mid-step cut). "Fit the recording into the requested duration" and "trim by the video's own clock" are mechanical — they don't depend on the page or the task — so they're goals.md #6-compatible (no hardcoded "this counts as too slow" thresholds; the estimates live in config). Architecture stays swappable (#4): `fitPlanToBudget` is a pure function over `PerformanceStep[]`; the trim correction is a pure function over the recording window + two probed durations.
+
+**Consequences**: across repeated `npm run eval` runs the trimmed video now lands ~+4…+8 % (was −12…+24 %), inside the ±10 % bright-line, with the judge still `looks_human` (all 5 dims `pass`) — the uniform compression keeps the plan's shape and easings, it just trims slack. The per-step-overhead and settle constants are an empirical model — a slow-settling site or a much longer plan can still drift; the `f`-band trim correction handles the drift half regardless. Deeper fixes if this proves insufficient: a closed-loop Director soft-alignment (option b) and/or the CDP-screencast recording layer (option c) — both tracked.
+
+**Preserves**: §0034 (prophet pipeline — `fitPlanToBudget` runs in the same off-camera recon phase, after the walk), §0035, §0036, §0030/§0031/§0033, the `IReconnoiterer`/`IDirector`/`IPageSession` port signatures and the on-camera `Performance` shape (`fitPlanToBudget` only adjusts step timings / appends standard steps; the trim correction is internal to `RecordJobRunner`).
+
+---
+
 ## Template for new entries
 
 ```

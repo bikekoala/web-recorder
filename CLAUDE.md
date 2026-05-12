@@ -34,12 +34,13 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `IDirector` + PerformanceDirector (deterministic `Performance` playback + re-plan checkpoint, §0034) | ✅ |
 | PerformanceDirector graceful degradation — drops stale tail + gentle closing scroll when an `expectAfter` mismatch can't be re-planned (§0034) | ✅ |
 | `replanMinRemainingMs` gate (default 60s) — mid-recording re-plan only when enough budget remains; short recordings degrade instead (§0034) | ✅ |
+| Duration fidelity (§0037) — recon `fitPlanToBudget` compresses an over-packed plan / pads a too-short one to fit `durationMs` (off-camera, after the rehearsal walk; `sumDurations` now models the post-click settle + per-step overhead — `PACING_SETTLE_EST_MS`/`PACING_STEP_OVERHEAD_MS`), and `RecordJobRunner` trims by **video-relative** time (`videoRelativeTrimWindow` scales the wall-clock window by `rawVideoMs/sessionWallMs` to undo `recordVideo`'s lagging compositor clock). Trimmed-video duration now lands inside goals.md #2's ±10% | ✅ |
 | `Performance` domain type (pre-resolved, paced action sequence) | ✅ |
 | Centralized prompts in `src/prompts/` — only `reconnoiterer` (+ `recording-judge`) remain | ✅ |
 | Two model knobs that matter: `LLM_MODEL` (Stagehand internals) / `LLM_RECON_MODEL` (recon+re-plan) | ✅ |
 | `RecordJobRunner` (orchestrates setup → recon → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (127 passing) | ✅ |
+| Vitest unit tests (144 passing) | ✅ |
 | Action vocabulary: 7 primitives (click / scroll / dwell / type / key / back / done) | ✅ |
 | `IRecordingJudge` + LlmVisionJudge — automated 5-dim rubric naturalness grading via Gemini 3.1 Pro (§0030) | ✅ |
 | Naturalness rendering bundle — pre-typing pause, slower keystroke delay, inter-scroll micro-pause (§0031) | ✅ |
@@ -57,19 +58,19 @@ The **naturalness catalog** in [`docs/naturalness-catalog.md`](./docs/naturalnes
 
 ### Measured performance (Recordly README, "click 简中, slow scroll, 10s")
 
-Post-**§0036** (ref-tagged a11y snapshot target resolution), single integration run on macOS + OpenRouter (recon on `anthropic/claude-sonnet-4.6`, headless), `npm run prototype:stagehand` + `npm run judge`:
+Post-**§0036 + §0037** (ref-tagged a11y target resolution; duration fidelity), `npm run eval` on macOS + OpenRouter (recon on `anthropic/claude-sonnet-4.6`, headless) — figures are the spread over several runs:
 
 | Metric | Value |
 |---|---|
-| Pipeline | Prophet (§0034 + Task #21 + §0036): blocker-dismiss → `ariaSnapshot()` ref-tagged tree → LLM picks a draft (targets by `ref` + `targetDescription`) → resolve refs (deterministic; fuzzy fallback on a ref miss) → off-camera rehearsal walk → deterministic paced playback |
-| Trimmed video duration | 10.6 s (target 10 s, +6%) |
-| Reconnaissance (off-camera, incl. the rehearsal walk) | ~24 s (was ~49 s — the per-target `observe()` calls are gone; on this run the LLM picked a wrong `ref` for the 简中 link → one `resolveTargetCandidates` fallback call, then the rehearsal walk clicked it for real off-camera) |
-| Rehearsal trace | `{walkedSteps: 10, divergences: 0, reconverges: 0, truncated: false, timedOut: false}` |
-| On-camera recording | 10.6 s — no dead air |
+| Pipeline | Prophet (§0034 + Task #21 + §0036 + §0037): blocker-dismiss → `ariaSnapshot()` ref-tagged tree → LLM picks a draft (targets by `ref` + `targetDescription`) → resolve refs (deterministic; fuzzy fallback on a ref miss) → off-camera rehearsal walk → `fitPlanToBudget` (compress/pad to `durationMs`) → deterministic paced playback → video-relative trim |
+| Trimmed video duration | ~10.4–10.8 s (target 10 s, ~+4…+8%) — inside goals.md #2's ±10% (was −12…+24% before §0037) |
+| Reconnaissance (off-camera, incl. the rehearsal walk) | ~22–24 s (was ~49 s pre-§0036) |
+| Rehearsal trace | `{walkedSteps: 8–10, divergences: 0, reconverges: 0, truncated: false, timedOut: false}` |
+| On-camera recording | ~10.6–11.2 s — no dead air; ends on `budget` (the plan fills the window) |
 | Re-plans (on-camera) | 0 |
-| `intentSatisfaction` | **complete** — 1 click (简中, verified off-camera) + 3 scrolls |
+| `intentSatisfaction` | **complete** — 1 click (简中, verified off-camera) + 4–5 scrolls |
 | Video judge verdict (Gemini 3.1 Pro) | **`LOOKS_HUMAN`** — motionQuality / pacing / intentExecution / recovery / visualCoherence all `pass` |
-| Total wall-clock | ~42 s (was ~72 s) |
+| Total wall-clock | ~39–42 s (was ~72 s pre-§0036) |
 
 Note on goal #5: the aria tree is the recon prompt's big input now. `ariaSnapshot()` keeps it bounded: (1) **prune** content/wrapper noise from the `mode:'ai'` tree (`pruneAriaSnapshot` — drop `generic`/`paragraph`/`text`/`StaticText`/inline-formatting lines, keep links/buttons/inputs/headings/landmarks/lists/tables; ~25% off a GitHub repo page); (2) over `ARIA_SNAPSHOT_MAX_CHARS` (~100 KB ≈ ~25 k tokens) re-snapshot scoped to `<main>`; (3) still over → truncate to the top of the tree (line-boundary + a "scroll for more" note). `ARIA_SNAPSHOT_DEPTH=25` is the depth cap. **Still over budget** on the typical page (a ~14 k-token tree on Sonnet 4.6 ≈ ~$0.04 vs the $0.01 target — pruning helped but the real lever is a cheaper recon model; tracked, see ADR §0036).
 

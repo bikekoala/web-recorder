@@ -113,3 +113,17 @@ describe('blocker-dismiss config knobs', () => {
     expect(config.llmBlockerModelResolved).toBe('foo/vision');
   });
 });
+
+describe('pacing config knobs', () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
+
+  it('pacingSettleEstMs defaults to 1500 and honours PACING_SETTLE_EST_MS', async () => {
+    expect((await loadConfig({ PACING_SETTLE_EST_MS: undefined })).pacingSettleEstMs).toBe(1500);
+    expect((await loadConfig({ PACING_SETTLE_EST_MS: '2200' })).pacingSettleEstMs).toBe(2200);
+  });
+
+  it('pacingStepOverheadMs defaults to 280 and honours PACING_STEP_OVERHEAD_MS', async () => {
+    expect((await loadConfig({ PACING_STEP_OVERHEAD_MS: undefined })).pacingStepOverheadMs).toBe(280);
+    expect((await loadConfig({ PACING_STEP_OVERHEAD_MS: '90' })).pacingStepOverheadMs).toBe(90);
+  });
+});

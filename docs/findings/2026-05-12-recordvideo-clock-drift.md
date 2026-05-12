@@ -1,9 +1,20 @@
 # recordVideo's frame timeline drifts from the action-log wall clock
 
-**Status:** open. Surfaced by `npm run eval` (the §0036-era self-eval tool) on
-2026-05-12 — a canonical Recordly run got `trimmed-video duration 8.8 s (target
-10 s, −12 %)` → FAIL on the goals.md eval #2 bright-line, while the recording
-*window* (from action-log timestamps) was a healthy 10.9 s (+9 %).
+**Status:** addressed by ADR §0037 (2026-05-12). Surfaced by `npm run eval` (the
+§0036-era self-eval tool) on 2026-05-12 — a canonical Recordly run got
+`trimmed-video duration 8.8 s (target 10 s, −12 %)` → FAIL on the goals.md eval
+#2 bright-line, while the recording *window* (from action-log timestamps) was
+10.9 s (+9 %); other runs went the other way (+24 % window, recon over-packing).
+Two causes — the recon over-packing the window AND the trim using wall-clock
+timestamps against a video whose clock lags. **Fix shipped** (§0037): the recon
+trims/pads its own plan to fit `durationMs` (`fitPlanToBudget`, off-camera after
+the rehearsal walk; `sumDurations` now models the post-click settle +
+per-step overhead), and `RecordJobRunner` trims by **video-relative time** —
+scaling the wall-clock window by `f = rawVideoMs / sessionWallMs` when that
+ratio shows real drift (`videoRelativeTrimWindow`). After §0037 the canonical run
+lands ~+4…+8 % over repeated `npm run eval` runs, judge still `looks_human`.
+The notes below are the original analysis; the "Fix options" list is kept for the
+deeper levers not taken (closed-loop Director soft-alignment; CDP screencast).
 
 ## What's happening
 

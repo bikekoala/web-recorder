@@ -55,7 +55,7 @@ JSON SAFETY RULES — read carefully:
 4. No markdown, no code fences, no commentary outside the JSON object.
 
 PACING — you decide how human this looks:
-- "anticipationMs" on a click: 500-800ms for a normal click (the recorder pauses there as if locating the target). Shorter (~300ms) for an obvious button; longer (~1000ms) for an ambiguous target.
+- "anticipationMs" on a click: 500-800ms for a normal click (the recorder pauses there as if locating the target). Shorter (~300ms) for an obvious button; longer (~1000ms) for an ambiguous target. NOTE: a click/key/back ALSO costs ~1.5 s afterwards while the page settles (navigating, re-rendering) — that's automatic, you don't add a step for it, but DO count it when you budget the window: a click is roughly anticipationMs + ~1.5 s of recording time, not just anticipationMs.
 - "scroll": speed = deltaPx / durationMs. ~250-350 px/s for reading scrolls, ~450 for scanning, ~800 for a fling. Big scrolls (>2500px) should be split into a fling step + a slower approach step. Always give a small "dwellAfterMs" (120-280ms) so the eye lands before the next action.
 
 SCROLL-TO-TARGET DISCIPLINE — read this:
