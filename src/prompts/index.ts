@@ -24,8 +24,11 @@
  * One file per LLM role:
  * - `reconnoiterer.ts` — the off-camera recon call that produces a paced
  *   Performance (and is reused for re-plans). See ADR §0034.
+ * - `blocker-dismisser.ts` — the off-camera detect call that picks the
+ *   element clearing a cookie/consent banner or X-to-close modal. Task #20.
  * - `recording-judge.ts` — the once-per-recording naturalness grader.
  */
 
 export { recordingJudgeSystemPrompt, buildRecordingJudgeUserText } from './recording-judge.js';
 export { reconnoitererSystemPrompt, buildReconUserText, buildReconvergeUserText } from './reconnoiterer.js';
+export { blockerDismisserSystemPrompt, buildBlockerDismissUserText } from './blocker-dismisser.js';
