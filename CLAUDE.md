@@ -71,7 +71,7 @@ Post-**§0036** (ref-tagged a11y snapshot target resolution), single integration
 | Video judge verdict (Gemini 3.1 Pro) | **`LOOKS_HUMAN`** — motionQuality / pacing / intentExecution / recovery / visualCoherence all `pass` |
 | Total wall-clock | ~42 s (was ~72 s) |
 
-Note on goal #5: the aria tree is the recon prompt's big input now (~1450 lines / ~23 k tokens for a GitHub repo page; a Wikipedia featured article is ~775 KB even `mode:'ai'`-pruned). `ariaSnapshot()` caps it — over `ARIA_SNAPSHOT_MAX_CHARS` (~100 KB) it re-snapshots scoped to `<main>` and, if still over, truncates to the top of the tree (line-boundary + a "scroll for more" note). `ARIA_SNAPSHOT_DEPTH=25` is the other cap.
+Note on goal #5: the aria tree is the recon prompt's big input now. `ariaSnapshot()` keeps it bounded: (1) **prune** content/wrapper noise from the `mode:'ai'` tree (`pruneAriaSnapshot` — drop `generic`/`paragraph`/`text`/`StaticText`/inline-formatting lines, keep links/buttons/inputs/headings/landmarks/lists/tables; ~25% off a GitHub repo page); (2) over `ARIA_SNAPSHOT_MAX_CHARS` (~100 KB ≈ ~25 k tokens) re-snapshot scoped to `<main>`; (3) still over → truncate to the top of the tree (line-boundary + a "scroll for more" note). `ARIA_SNAPSHOT_DEPTH=25` is the depth cap. **Still over budget** on the typical page (a ~14 k-token tree on Sonnet 4.6 ≈ ~$0.04 vs the $0.01 target — pruning helped but the real lever is a cheaper recon model; tracked, see ADR §0036).
 
 Known remaining recon-plan-quality gap: the recon LLM is **not great at picking the right `ref` out of a thousand-line tree** (it picked a wrong one for the 简中 link on the canonical run — the `targetDescription` fallback caught it; on Wikipedia "Cat → Felidae" both the ref and the `observe()` fallback miss → `intentSatisfaction: unknown`). Giant pages (Wikipedia featured articles) are the open case — the tree is too big to navigate one-shot and `stagehand.observe()` can't ingest it either; needs a dedicated pass (smarter region pick / a non-`observe()` fallback / accept `unknown`). See [`docs/findings/2026-05-11-robustness-sweep-1.md`](./docs/findings/2026-05-11-robustness-sweep-1.md). `RECON_REHEARSE=false` skips the walk (fast dev iteration).
 
@@ -94,6 +94,15 @@ npm run prototype:stagehand
 # Grade a finished recording.webm against the 5-dimension naturalness rubric.
 # Writes judgment.json next to the video. See ADR §0030.
 npm run judge -- <video-path> "<user-prompt>" --duration-ms 10000
+
+# Self-eval — run the pipeline on one scenario (canonical Recordly by default;
+# EVAL_URL / EVAL_PROMPT / EVAL_DURATION_MS to override), judge the recording,
+# print a structured assessment against docs/goals.md's evaluation criteria +
+# the operator canaries. Bright-line specs (duration ±10% / wall-clock <60s /
+# disk <100MB) hard-fail (exit 1); quality/robustness is flagged as CONCERNS for
+# review (exit 0). Use this after a change to check "did I regress something?"
+# without watching the video. (`npm run regression` is the multi-site version.)
+npm run eval
 
 # Verify the recording pipeline alone (no LLM, no Stagehand)
 npm run smoke:recording

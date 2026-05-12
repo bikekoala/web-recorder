@@ -77,6 +77,40 @@ export function rankCandidates(items: RankableCandidate[]): RankableCandidate[] 
   return [...deduped.filter((c) => c.interactive), ...deduped.filter((c) => !c.interactive)];
 }
 
+/**
+ * ARIA-tree node roles that carry no actionable / structural value for the recon
+ * planner — wrappers, prose, inline formatting. Dropping their lines from a
+ * `mode:'ai'` snapshot cuts a content page's tree several× (most of a page is
+ * `generic` divs + `text`/`StaticText` content) without losing what the planner
+ * needs: links, buttons, inputs, headings, landmarks, lists, tables/rows/cells
+ * (Wikipedia infobox rows carry "Family: Felidae"-type names), dialogs, tabs, …
+ */
+const ARIA_PRUNE_DROP_ROLES = new Set([
+  'generic', 'paragraph', 'text', 'StaticText', 'LineBreak', 'separator',
+  'emphasis', 'strong', 'code', 'subscript', 'superscript', 'deletion',
+  'insertion', 'mark', 'time', 'blockquote', 'caption', 'definition',
+]);
+
+/**
+ * Prune content/wrapper noise from a Playwright `mode:'ai'` aria tree. Each line
+ * is `<indent>- <role> "name" [attrs] [ref=eN]` (or a property line like
+ * `<indent>- /url: …`); drop lines whose role is in {@link ARIA_PRUNE_DROP_ROLES},
+ * keep everything else (property lines like `/url:` are kept — no leading role
+ * word — they tell the planner where a link goes). Kept lines retain their
+ * original indentation; orphaned nesting is harmless (the LLM reads each
+ * `- role "name" [ref=eN]` line on its own). Pure — exported for unit testing.
+ */
+export function pruneAriaSnapshot(snapshot: string): string {
+  if (!snapshot) return snapshot;
+  const out: string[] = [];
+  for (const line of snapshot.split('\n')) {
+    const m = /^\s*- ([A-Za-z]+)\b/.exec(line);
+    if (m && ARIA_PRUNE_DROP_ROLES.has(m[1]!)) continue;
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
 export interface StagehandPageSessionConfig extends PageSessionConfig {
   /** Stagehand verbose level (0|1|2). 1 prints high-level steps. */
   verbose?: 0 | 1 | 2;
@@ -508,18 +542,25 @@ export class StagehandPageSession implements IPageSession {
       const page = this.requirePage();
       const depth = opts.depth ?? config.ariaSnapshotDepth;
       const max = config.ariaSnapshotMaxChars;
-      let snap = await page.ariaSnapshot({ mode: 'ai', depth });
+      // Prune content/wrapper noise — the planner needs "what can I act on / where
+      // am I", not the prose. Cuts a content page's tree several× → cheaper recon
+      // prompt (goal #5) AND a smaller haystack for ref-picking. (Even mode:'ai'
+      // keeps generic divs + text content, for agents that want them — we don't.)
+      const rawSnap = await page.ariaSnapshot({ mode: 'ai', depth });
+      let snap = pruneAriaSnapshot(rawSnap);
+      if (snap.length !== rawSnap.length) {
+        this.logger.info({ rawChars: rawSnap.length, prunedChars: snap.length }, 'ariaSnapshot: pruned content/wrapper noise');
+      }
       if (snap.length > max) {
-        // Too big for the planner prompt (a Wikipedia featured article, a long
-        // docs page): a thousands-of-lines tree is hard to pick a ref out of and
-        // a token sink. First scope to the main content region — drops the global
-        // nav / sidebar / footer, so what's left starts with the actual content
-        // (hatnotes, infoboxes, the intro — where "click X" targets near the top
-        // of a page live). Refs from a scoped ariaSnapshot still resolve via
+        // Still too big for the planner prompt (a Wikipedia featured article):
+        // scope to the main content region — drops the global nav / sidebar /
+        // footer, so what's left starts with the actual content (hatnotes,
+        // infoboxes, the intro — where "click X" targets near the top of a page
+        // live). Refs from a scoped ariaSnapshot still resolve via
         // page.locator('aria-ref=eN').
         const mainLoc = page.locator('main, [role="main"]').first();
         if ((await mainLoc.count().catch(() => 0)) > 0) {
-          const scoped = await mainLoc.ariaSnapshot({ mode: 'ai', depth }).catch(() => '');
+          const scoped = pruneAriaSnapshot(await mainLoc.ariaSnapshot({ mode: 'ai', depth }).catch(() => ''));
           if (scoped.length > 0 && scoped.length < snap.length) {
             this.logger.info({ fullChars: snap.length, scopedChars: scoped.length }, 'ariaSnapshot: page large — scoped to <main>');
             snap = scoped;
