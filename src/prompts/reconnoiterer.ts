@@ -35,26 +35,29 @@ And for a \`click\` step, ALSO give (when the node has any):
 OUTPUT — strict JSON, single object, exactly this shape:
 {
   "prompt": "<echo the user's intent>",
-  "durationMs": <the budget you were given>,
+  "durationMs": <the budget you were given — a single integer>,
   "steps": [ <step>, ... ],
-  "totalEstimatedMs": <sum of your steps' durations — make it close to durationMs>,
+  "totalEstimatedMs": <a single computed integer in ms, e.g. \`9450\`. Sum the steps' durations yourself and emit the RESULT — DO NOT emit an arithmetic expression like \`500 + 800 + 280 + 1500\`; that is not valid JSON and will be rejected.>,
   "rationale": "<1-3 sentences: why this plan>"
 }
 
 Each step is exactly one of:
-  { "kind": "click",  "ref": "<id from the tree, e.g. e7>", "targetDescription": "<plain English of that node>", "targetText"?: "<that node's exact visible text, e.g. Felidae — omit if it shows no text>", "anticipationMs": <0..3000>, "reasoning": "<short>", "expectAfter"?: {"urlContains"?: "...", "visibleText"?: ["..."]} }
-  { "kind": "scroll", "deltaPx": <int, |value| 50..4000, positive = down>, "durationMs": <200..4000>, "easing": "inOutQuad"|"outQuart"|"outExpo"|"linear", "dwellAfterMs": <0..2000>, "reasoning": "<short>" }
-  { "kind": "type",   "ref": "<id from the tree, e.g. e11>", "targetDescription": "<plain English of that input>", "text": "<text to type>", "preMs": <0..2000>, "keystrokeMs": <0..500>, "reasoning": "<short>" }
-  { "kind": "key",    "key": "Enter"|"Escape"|"Tab"|"ArrowDown"|"ArrowUp"|"ArrowLeft"|"ArrowRight"|"Backspace", "reasoning": "<short>", "expectAfter"?: {...} }
-  { "kind": "dwell",  "durationMs": <100..8000>, "reasoning": "<short, e.g. 'reading the README intro'>" }
-  { "kind": "back",   "reasoning": "<short>", "expectAfter"?: {...} }
-  { "kind": "done",   "reasoning": "<short>" }
+  { "kind": "click",  "ref": "<id from the tree, e.g. e7>", "targetDescription": "<plain English of that node>", "targetText"?: "<that node's exact visible text, e.g. Felidae — omit if it shows no text>", "anticipationMs": <0..3000>, "reasoning": "<short — one clause, under 200 chars>", "expectAfter"?: {"urlContains"?: "...", "visibleText"?: ["..."]} }
+  { "kind": "scroll", "deltaPx": <int, |value| 50..4000, positive = down>, "durationMs": <200..4000>, "easing": "inOutQuad"|"outQuart"|"outExpo"|"linear", "dwellAfterMs": <0..2000>, "reasoning": "<short — one clause, under 200 chars>" }
+  { "kind": "type",   "ref": "<id from the tree, e.g. e11>", "targetDescription": "<plain English of that input>", "text": "<text to type>", "preMs": <0..2000>, "keystrokeMs": <0..500>, "reasoning": "<short — one clause, under 200 chars>" }
+  { "kind": "key",    "key": "Enter"|"Escape"|"Tab"|"ArrowDown"|"ArrowUp"|"ArrowLeft"|"ArrowRight"|"Backspace", "reasoning": "<short — one clause, under 200 chars>", "expectAfter"?: {...} }
+  { "kind": "dwell",  "durationMs": <100..8000>, "reasoning": "<short — one clause, under 200 chars, e.g. 'reading the README intro'>" }
+  { "kind": "back",   "reasoning": "<short — one clause, under 200 chars>", "expectAfter"?: {...} }
+  { "kind": "done",   "reasoning": "<short — one clause, under 200 chars>" }
 
 JSON SAFETY RULES — read carefully:
 1. Output must be valid RFC 8259 JSON parseable by JSON.parse.
 2. Use ONLY ASCII double-quote characters (") to delimit JSON strings.
 3. NEVER place a double-quote character INSIDE a string value. If the user's prompt contains a quoted phrase using ASCII " " or CJK guillemets/brackets, DO NOT preserve those quotes — paraphrase into plain unquoted English in your reasoning.
 4. No markdown, no code fences, no commentary outside the JSON object.
+5. \`"reasoning"\` on EACH step is a SHORT phrase — one clause, ideally under ~80 characters, never over ~200. It is a label for the step, NOT a place to narrate the whole plan. Do NOT pour a paragraph of explanation into a single step's reasoning — that breaks the JSON shape (the model often loses track of brackets mid-paragraph and never closes the steps array). Each step gets its own short reasoning; the OVERALL plan's explanation goes ONLY in the top-level \`rationale\` field.
+6. Emit ALL the steps for the plan — do NOT stop after one step. The \`steps\` array MUST close with \`]\` and the outer object MUST close with \`}\`. Re-check the closing punctuation before ending your response.
+7. EVERY numeric value (durationMs, totalEstimatedMs, deltaPx, anticipationMs, preMs, keystrokeMs, dwellAfterMs, etc.) is a single JSON number literal — \`9450\`, \`-300\`, \`1.5\`. NEVER an arithmetic expression (\`500 + 800\`), variable, percentage string, or math equation. JSON.parse rejects all of those.
 
 PACING — you decide how human this looks:
 - "anticipationMs" on a click: 500-800ms for a normal click (the recorder pauses there as if locating the target). Shorter (~300ms) for an obvious button; longer (~1000ms) for an ambiguous target. NOTE: a click/key/back ALSO costs ~1.5 s afterwards while the page settles (navigating, re-rendering) — that's automatic, you don't add a step for it, but DO count it when you budget the window: a click is roughly anticipationMs + ~1.5 s of recording time, not just anticipationMs.

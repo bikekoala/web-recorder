@@ -52,27 +52,27 @@ export const ScrollStepSchema = z.object({
   durationMs: z.number().int().min(200).max(4000),
   easing: ScrollEasingSchema,
   dwellAfterMs: z.number().int().min(0).max(2000),
-  reasoning: z.string().min(1),
+  reasoning: z.string().min(1).max(300),
 });
 export const KeyStepSchema = z.object({
   kind: z.literal('key'),
   key: PerformanceKeySchema,
-  reasoning: z.string().min(1),
+  reasoning: z.string().min(1).max(300),
   expectAfter: ExpectAfterSchema.optional(),
 });
 export const DwellStepSchema = z.object({
   kind: z.literal('dwell'),
   durationMs: z.number().int().min(100).max(8000),
-  reasoning: z.string().min(1),
+  reasoning: z.string().min(1).max(300),
 });
 export const BackStepSchema = z.object({
   kind: z.literal('back'),
-  reasoning: z.string().min(1),
+  reasoning: z.string().min(1).max(300),
   expectAfter: ExpectAfterSchema.optional(),
 });
 export const DoneStepSchema = z.object({
   kind: z.literal('done'),
-  reasoning: z.string().min(1),
+  reasoning: z.string().min(1).max(300),
 });
 
 export const PerformanceStepSchema = z.discriminatedUnion('kind', [
@@ -80,7 +80,7 @@ export const PerformanceStepSchema = z.discriminatedUnion('kind', [
     kind: z.literal('click'),
     target: ResolvedTargetSchema,
     anticipationMs: z.number().int().min(0).max(3000),
-    reasoning: z.string().min(1),
+    reasoning: z.string().min(1).max(300),
     expectAfter: ExpectAfterSchema.optional(),
   }),
   z.object({
@@ -89,7 +89,7 @@ export const PerformanceStepSchema = z.discriminatedUnion('kind', [
     text: z.string().min(1),
     preMs: z.number().int().min(0).max(2000),
     keystrokeMs: z.number().int().min(0).max(500),
-    reasoning: z.string().min(1),
+    reasoning: z.string().min(1).max(300),
   }),
   ScrollStepSchema,
   KeyStepSchema,

@@ -47,7 +47,7 @@ export const ReconDraftClickStepSchema = z.object({
    */
   targetText: z.string().optional(),
   anticipationMs: z.number().int().min(0).max(3000),
-  reasoning: z.string().min(1),
+  reasoning: z.string().min(1).max(300),
   expectAfter: ExpectAfterSchema.optional(),
 });
 
@@ -58,7 +58,7 @@ export const ReconDraftTypeStepSchema = z.object({
   text: z.string().min(1),
   preMs: z.number().int().min(0).max(2000),
   keystrokeMs: z.number().int().min(0).max(500),
-  reasoning: z.string().min(1),
+  reasoning: z.string().min(1).max(300),
 });
 
 export const ReconDraftStepSchema = z.discriminatedUnion('kind', [

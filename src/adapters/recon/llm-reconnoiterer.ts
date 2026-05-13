@@ -387,7 +387,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
           {
             role: 'user',
             content:
-              'REMINDER: your previous response was not valid JSON. Respond with ONLY a single JSON object — no prose, no markdown, nothing before or after it.',
+              'REMINDER: your previous response was not valid JSON. Respond with ONLY a single JSON object — no prose, no markdown, nothing before or after it. Common failure modes I have just seen: (a) writing a paragraph of narrative inside one step\'s `reasoning` field — keep each `reasoning` to one short clause and put any overall explanation in the top-level `rationale` field; (b) emitting an arithmetic expression in a number field like `"totalEstimatedMs": 500 + 800 + 1500` — compute the sum yourself and emit a single integer literal like `"totalEstimatedMs": 2800`.',
           },
         ],
         { allowRetry: false },
@@ -418,6 +418,15 @@ export class LlmReconnoiterer implements IReconnoiterer {
     }
 
     if (opts.allowRetry) return retryWithReminder();
+    // Dump diagnostics BEFORE throwing — the slice in the error message hides
+    // whether `raw` is short (truncated by max_tokens) or long-but-malformed.
+    // For triage we want both the total length and a tail snippet (truncated
+    // mid-string ends in mid-word; well-formed-but-noisy ends in closing
+    // braces or trailing prose).
+    this.logger.warn(
+      { rawLen: raw.length, head: raw.slice(0, 200), tail: raw.slice(-200) },
+      'recon JSON parse failed (about to throw) — full-length + tail of raw response for triage',
+    );
     throw new ReconError(`recon JSON parse failed (after retry): ${raw.slice(0, 200)}`);
   }
 }
