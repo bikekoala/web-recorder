@@ -151,7 +151,10 @@ export class LlmReconnoiterer implements IReconnoiterer {
             ],
             response_format: { type: 'json_object' },
             temperature: 0.2,
-            max_tokens: 3000,
+            // 4000 (was 3000): aligned with the initial recon bump above —
+            // F1's natural-filler instruction encourages longer plans, and a
+            // reconverge for the remaining tail can still be sizeable.
+            max_tokens: 4000,
           });
           raw2 = completion.choices[0]?.message?.content ?? '';
         } catch (err) {
@@ -362,7 +365,14 @@ export class LlmReconnoiterer implements IReconnoiterer {
         messages,
         response_format: { type: 'json_object' },
         temperature: 0.2,
-        max_tokens: 4000,
+        // 6000 (was 4000): post-F1's DURATION & SCOPE prompt encourages the
+        // recon LLM to plan more natural-filler steps for under-budget intents
+        // ("just observe" / "看看就行" / etc.), and a Chinese-reasoning plan
+        // for a 15-25 s budget can blow past 4000 tokens — gmaps natural in
+        // the regression suite truncated mid-step and threw ReconError. Same
+        // shape as commit 2b5da0a (judge: 2000 → 4000). See ADR §0040 +
+        // docs/findings/2026-05-13-plan-duration-fit.md for the F1 context.
+        max_tokens: 6000,
       });
       raw = completion.choices[0]?.message?.content ?? '';
     } catch (err) {
