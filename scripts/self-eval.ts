@@ -74,6 +74,24 @@ function assess(result: RunResult, judge: RecordingJudgeReport | { error: string
   const sat = m.intentSatisfaction;
   rows.push({ status: sat.level === 'complete' ? 'ok' : 'warn', label: 'intentSatisfaction', value: `${sat.level} — ${sat.clicksExecuted} click(s), ${sat.scrollsExecuted} scroll(s)`, note: sat.level === 'complete' ? undefined : `${sat.note} — check whether the missed target was actually on the page (goals.md #3 — '${sat.level}' must reflect reality, not a resolution failure we could have avoided)` });
 
+  // plan/duration fit — surfaced by the F1 corrector (ADR §0040). CONCERNS
+  // not hard-fail: the trimmed-duration line is already the hard goal-#2 gate,
+  // and a `compressed-hard` plan may still trim into ±10% via the Director's
+  // soft-align. This field tells the operator *why* a duration miss happened.
+  const fit = m.planDurationFit;
+  if (fit) {
+    const ok = fit.status === 'ok';
+    rows.push({
+      status: ok ? 'ok' : 'warn',
+      label: 'planDurationFit',
+      value: `${fit.status} — ratio ${fit.ratio.toFixed(2)} (est ${fmtMs(fit.estimatedMs)} / target ${fmtMs(fit.targetMs)})`,
+      note: ok ? undefined :
+        fit.status === 'underfilled'
+          ? "the recon LLM's plan is shorter than durationMs by more than the tolerance — A did not (or could not) fill the time naturally; the recording will run short. Check the rationale: A may have flagged a prompt/duration irreconcilability (goal #3 transparent miss), or A may simply have under-planned (recon-quality miss)."
+          : "the recon LLM over-planned beyond the tolerance and B compressed best-effort; pacing may be tighter than natural. If the trimmed-duration line is OK this is just a diagnostic.",
+    });
+  }
+
   // on-camera re-plan = a frozen frame ≈ a stall (#2)
   rows.push({ status: m.replanCount > 0 ? 'warn' : 'ok', label: 'on-camera re-plans', value: String(m.replanCount), note: m.replanCount > 0 ? 'each re-plan freezes the frame for a full recon — a near-stall' : undefined });
   rows.push({ status: ['done', 'budget'].includes(result.directorReport.endReason) ? 'ok' : 'warn', label: 'director endReason', value: result.directorReport.endReason });
