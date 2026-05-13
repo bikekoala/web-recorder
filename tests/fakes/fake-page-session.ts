@@ -113,8 +113,17 @@ export class FakePageSession implements IPageSession {
     this.record('back', null);
     await new Promise((r) => setTimeout(r, 50));
   }
+  /**
+   * Optional test hook — if set, awaited by `waitForVisualStability` AFTER
+   * recording the event. Use it to simulate a real page-settle delay (e.g.
+   * `() => new Promise((r) => setTimeout(r, 2000))` for a slow navigation), so
+   * tests of the Director's duration soft-alignment see `elapsedActual` grow.
+   * Default no-op (instant), matching how the real adapter behaves on a calm page.
+   */
+  waitForVisualStabilityImpl: (() => Promise<void> | void) | null = null;
   async waitForVisualStability(opts?: { quietMs?: number; maxMs?: number }) {
     this.record('stable', opts);
+    if (this.waitForVisualStabilityImpl) await this.waitForVisualStabilityImpl();
   }
   async currentUrl(): Promise<string> { return this.url; }
 

@@ -7,14 +7,25 @@ import type { IReconnoiterer } from '../../ports/reconnoiterer.js';
 
 interface PerformanceDirectorOpts {
   replanner: IReconnoiterer;
+  /**
+   * Closed-loop duration soft-alignment (§0039) — default `true`. When on, each
+   * `dwell` step's length is nudged at playback time so the recording tracks the
+   * proportional `durationMs` schedule (shorten when running over, lengthen when
+   * under, both bounded). Pass `false` in tests that assert on exact `dwell`
+   * durations (the fakes' instant `waitForVisualStability` doesn't match the
+   * pacing model the alignment compares against).
+   */
+  softAlign?: boolean;
 }
 
 export class PerformanceDirector implements IDirector {
   private readonly replanner: IReconnoiterer;
+  private readonly softAlign: boolean;
   private readonly logger = rootLogger.child({ component: 'PerformanceDirector' });
 
   constructor(opts: PerformanceDirectorOpts) {
     this.replanner = opts.replanner;
+    this.softAlign = opts.softAlign ?? true;
   }
 
   async run(performance: Performance, session: IPageSession): Promise<DirectorReport> {
@@ -25,6 +36,13 @@ export class PerformanceDirector implements IDirector {
     let workingSteps: PerformanceStep[] = [...performance.steps];
     let stepsExecuted = 0;
     let replanCount = 0;
+    // Soft-alignment bookkeeping: the declared (self-stated) timing of the steps
+    // rendered so far. The recording should be at ~(renderedDeclaredMs /
+    // totalDeclaredMs) of `durationMs` by now; the gap vs the real elapsed time
+    // (which also carries the unlogged settle / per-step overhead) is what each
+    // `dwell` absorbs. Always accumulates the PLANNED dwell duration, not the
+    // adjusted one, so it stays on the declared schedule.
+    let renderedDeclaredMs = 0;
 
     let i = 0;
     while (i < workingSteps.length) {
@@ -37,12 +55,17 @@ export class PerformanceDirector implements IDirector {
         stepsExecuted += 1;
         return { totalMs: Date.now() - startedAt, stepsExecuted, replanCount, endReason: 'done' };
       }
+      const dwellMs =
+        step.kind === 'dwell' && this.softAlign
+          ? alignedDwellMs(step.durationMs, renderedDeclaredMs, totalDeclaredMs(workingSteps), performance.durationMs, Date.now() - startedAt)
+          : undefined;
       try {
-        await this.renderStep(step, session);
+        await this.renderStep(step, session, dwellMs !== undefined ? { dwellMs } : undefined);
       } catch (err) {
         this.logger.warn({ err, kind: step.kind }, 'step render failed — stopping');
         return { totalMs: Date.now() - startedAt, stepsExecuted, replanCount, endReason: 'error' };
       }
+      renderedDeclaredMs += declaredMs(step);
       stepsExecuted += 1;
 
       // §0034 re-plan checkpoint — only on steps that carry an expectAfter.
@@ -120,10 +143,14 @@ export class PerformanceDirector implements IDirector {
     return { totalMs: Date.now() - startedAt, stepsExecuted, replanCount, endReason: 'done' };
   }
 
-  private async renderStep(step: PerformanceStep, session: IPageSession): Promise<void> {
+  private async renderStep(
+    step: PerformanceStep,
+    session: IPageSession,
+    opts?: { dwellMs?: number },
+  ): Promise<void> {
     switch (step.kind) {
       case 'dwell':
-        await session.wait(step.durationMs);
+        await session.wait(opts?.dwellMs ?? step.durationMs);
         return;
       case 'scroll':
         await session.scroll(step.deltaPx, { durationMs: step.durationMs, easing: step.easing });
@@ -245,6 +272,57 @@ export class PerformanceDirector implements IDirector {
 }
 
 // ---------------------------------------------------------------- helpers
+
+/**
+ * A step's *declared* (self-stated) playback time — the timings the recon put
+ * in the step, NOT the unlogged settle / per-step overhead. Used only by the
+ * soft-alignment proportional schedule. (`fitPlanToBudget` makes the sum of
+ * these + the fixed costs ≈ `durationMs`.)
+ */
+function declaredMs(step: PerformanceStep): number {
+  switch (step.kind) {
+    case 'dwell': return step.durationMs;
+    case 'scroll': return step.durationMs + step.dwellAfterMs;
+    case 'click': return step.anticipationMs;
+    case 'type': return step.preMs + step.text.length * step.keystrokeMs;
+    case 'key':
+    case 'back':
+    case 'done': return 0;
+  }
+}
+
+function totalDeclaredMs(steps: ReadonlyArray<PerformanceStep>): number {
+  let total = 0;
+  for (const s of steps) total += declaredMs(s);
+  return total;
+}
+
+/**
+ * Pick the wall-clock duration for a `dwell` step so the recording tracks the
+ * proportional `durationMs` schedule. `renderedDeclared` is the declared timing
+ * of steps already played; after this dwell the recording "should" be at
+ * `(renderedDeclared + plannedDwell) / totalDeclared` of `durationMs`. Aim the
+ * dwell at that point given the real `elapsedActual` (which also carries the
+ * settle/overhead the declared schedule omits) — shortening it if we're over
+ * (down to `config.directorDwellMinMs`), lengthening it if we're under (by at
+ * most `config.directorDwellStretchMaxMs` beyond the plan, so a tiny dwell can't
+ * balloon). The Director's hard-budget cap is the ultimate backstop.
+ */
+function alignedDwellMs(
+  plannedDwell: number,
+  renderedDeclared: number,
+  totalDeclared: number,
+  durationMs: number,
+  elapsedActual: number,
+): number {
+  if (totalDeclared <= 0) return plannedDwell;
+  const targetAfterDwell = ((renderedDeclared + plannedDwell) / totalDeclared) * durationMs;
+  const ideal = Math.round(targetAfterDwell - elapsedActual);
+  return Math.max(
+    config.directorDwellMinMs,
+    Math.min(ideal, plannedDwell + config.directorDwellStretchMaxMs),
+  );
+}
 
 function stepExpectAfter(step: PerformanceStep): ExpectAfter | null {
   return (step.kind === 'click' || step.kind === 'key' || step.kind === 'back')

@@ -148,6 +148,21 @@ const Schema = z.object({
   directorHardBudgetMult: z.number().min(1.0).max(2.0).default(1.2),
 
   /**
+   * Soft-alignment (closed-loop duration steering, §0039): as the
+   * PerformanceDirector plays, it nudges each `dwell` step's length so the
+   * recording tracks the proportional `durationMs` schedule — shorten when
+   * playback is running over (the per-step settle/overhead ate into the
+   * budget), lengthen when it's running under (capped). `directorDwellMinMs`
+   * is the floor an adjusted dwell can be shortened to; `directorDwellStretchMaxMs`
+   * caps how much one dwell can be lengthened beyond its planned duration (no
+   * dwell ever pushes the recording past `durationMs` regardless). Pure pacing
+   * parameters, goals.md #6 carve-out. Override with DIRECTOR_DWELL_MIN_MS /
+   * DIRECTOR_DWELL_STRETCH_MAX_MS.
+   */
+  directorDwellMinMs: z.coerce.number().int().min(0).max(8000).default(100),
+  directorDwellStretchMaxMs: z.coerce.number().int().min(0).max(8000).default(2000),
+
+  /**
    * Estimated wall-clock a `click` / `key` / `back` step costs *beyond* its
    * own explicit pauses — i.e. the page-settle wait the PerformanceDirector
    * does afterwards (`waitForVisualStability`, up to ~2.5 s for a navigation,
@@ -280,6 +295,8 @@ const raw = {
   directorHardBudgetMult: process.env.DIRECTOR_HARD_BUDGET_MULT
     ? Number(process.env.DIRECTOR_HARD_BUDGET_MULT)
     : undefined,
+  directorDwellMinMs: process.env.DIRECTOR_DWELL_MIN_MS,
+  directorDwellStretchMaxMs: process.env.DIRECTOR_DWELL_STRETCH_MAX_MS,
   pacingSettleEstMs: process.env.PACING_SETTLE_EST_MS,
   pacingStepOverheadMs: process.env.PACING_STEP_OVERHEAD_MS,
   typingPreMinMs: process.env.TYPING_PRE_MIN_MS

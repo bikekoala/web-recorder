@@ -35,13 +35,13 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `IDirector` + PerformanceDirector (deterministic `Performance` playback + re-plan checkpoint, §0034) | ✅ |
 | PerformanceDirector graceful degradation — drops stale tail + gentle closing scroll when an `expectAfter` mismatch can't be re-planned (§0034) | ✅ |
 | `replanMinRemainingMs` gate (default 60s) — mid-recording re-plan only when enough budget remains; short recordings degrade instead (§0034) | ✅ |
-| Duration fidelity (§0037) — recon `fitPlanToBudget` compresses an over-packed plan / pads a too-short one to fit `durationMs` (off-camera, after the rehearsal walk; `sumDurations` now models the post-click settle + per-step overhead — `PACING_SETTLE_EST_MS`/`PACING_STEP_OVERHEAD_MS`), and `RecordJobRunner` trims by **video-relative** time (`videoRelativeTrimWindow` scales the wall-clock window by `rawVideoMs/sessionWallMs` to undo `recordVideo`'s lagging compositor clock). Trimmed-video duration now lands inside goals.md #2's ±10% | ✅ |
+| Duration fidelity (§0037 + §0039) — recon `fitPlanToBudget` compresses an over-packed plan / pads a too-short one to fit `durationMs` (off-camera, after the rehearsal walk; `sumDurations` models the post-click settle + per-step overhead — `PACING_SETTLE_EST_MS`/`PACING_STEP_OVERHEAD_MS`), `RecordJobRunner` trims by **video-relative** time (`videoRelativeTrimWindow` scales the wall-clock window by `rawVideoMs/sessionWallMs` to undo `recordVideo`'s lagging compositor clock), and the **Director soft-aligns** on-camera (§0039): each `dwell` is nudged shorter/longer at playback time so the recording tracks the proportional `durationMs` schedule — `PerformanceDirector({ softAlign })` default on, bounds `DIRECTOR_DWELL_MIN_MS`/`DIRECTOR_DWELL_STRETCH_MAX_MS`. Trimmed-video duration lands ~`durationMs` (`endReason: done`, ~+0%) | ✅ |
 | `Performance` domain type (pre-resolved, paced action sequence) | ✅ |
 | Centralized prompts in `src/prompts/` — only `reconnoiterer` (+ `recording-judge`) remain | ✅ |
 | Two model knobs that matter: `LLM_MODEL` (Stagehand internals) / `LLM_RECON_MODEL` (recon+re-plan) | ✅ |
 | `RecordJobRunner` (orchestrates setup → recon → director → trim) | ✅ |
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (151 passing) | ✅ |
+| Vitest unit tests (155 passing) | ✅ |
 | Action vocabulary: 7 primitives (click / scroll / dwell / type / key / back / done) | ✅ |
 | `IRecordingJudge` + LlmVisionJudge — automated 5-dim rubric naturalness grading via Gemini 3.1 Pro (§0030) | ✅ |
 | Naturalness rendering bundle — pre-typing pause, slower keystroke delay, inter-scroll micro-pause (§0031) | ✅ |
@@ -63,11 +63,11 @@ Post-**§0036 + §0037** (ref-tagged a11y target resolution; duration fidelity),
 
 | Metric | Value |
 |---|---|
-| Pipeline | Prophet (§0034 + Task #21 + §0036 + §0037): blocker-dismiss → `ariaSnapshot()` ref-tagged tree → LLM picks a draft (targets by `ref` + `targetDescription`) → resolve refs (deterministic; fuzzy fallback on a ref miss) → off-camera rehearsal walk → `fitPlanToBudget` (compress/pad to `durationMs`) → deterministic paced playback → video-relative trim |
-| Trimmed video duration | ~10.4–10.8 s (target 10 s, ~+4…+8%) — inside goals.md #2's ±10% (was −12…+24% before §0037) |
+| Pipeline | Prophet (§0034 + Task #21 + §0036 + §0037 + §0038 + §0039): blocker-dismiss → `ariaSnapshot()` ref-tagged tree → LLM picks a draft (targets by `ref` + `targetText` + `targetDescription`) → resolve refs (deterministic; visible-text then fuzzy fallback on a ref miss; dropped → `unresolvedTargets`) → off-camera rehearsal walk → `fitPlanToBudget` (compress/pad to `durationMs`) → deterministic paced playback, soft-aligning dwells to fill `durationMs` → video-relative trim |
+| Trimmed video duration | ~10.0 s (target 10 s, ~+0%) — the Director soft-aligns the closing dwells to fill exactly (§0039); was ~+4…+12% w/ §0037 alone, −12…+24% before that |
 | Reconnaissance (off-camera, incl. the rehearsal walk) | ~22–24 s (was ~49 s pre-§0036) |
 | Rehearsal trace | `{walkedSteps: 8–10, divergences: 0, reconverges: 0, truncated: false, timedOut: false}` |
-| On-camera recording | ~10.6–11.2 s — no dead air; ends on `budget` (the plan fills the window) |
+| On-camera recording | ~10.0 s — no dead air; `endReason: done` (the soft-aligned closing dwell lands it on `durationMs`; §0039) |
 | Re-plans (on-camera) | 0 |
 | `intentSatisfaction` | **complete** — 1 click (简中, verified off-camera) + 4–5 scrolls |
 | Video judge verdict (Gemini 3.1 Pro) | **`LOOKS_HUMAN`** — motionQuality / pacing / intentExecution / recovery / visualCoherence all `pass` |

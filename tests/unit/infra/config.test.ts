@@ -126,4 +126,13 @@ describe('pacing config knobs', () => {
     expect((await loadConfig({ PACING_STEP_OVERHEAD_MS: undefined })).pacingStepOverheadMs).toBe(280);
     expect((await loadConfig({ PACING_STEP_OVERHEAD_MS: '90' })).pacingStepOverheadMs).toBe(90);
   });
+
+  it('directorDwellMinMs / directorDwellStretchMaxMs default to 100 / 2000 and honour their env vars', async () => {
+    const def = await loadConfig({ DIRECTOR_DWELL_MIN_MS: undefined, DIRECTOR_DWELL_STRETCH_MAX_MS: undefined });
+    expect(def.directorDwellMinMs).toBe(100);
+    expect(def.directorDwellStretchMaxMs).toBe(2000);
+    const overridden = await loadConfig({ DIRECTOR_DWELL_MIN_MS: '0', DIRECTOR_DWELL_STRETCH_MAX_MS: '3500' });
+    expect(overridden.directorDwellMinMs).toBe(0);
+    expect(overridden.directorDwellStretchMaxMs).toBe(3500);
+  });
 });
