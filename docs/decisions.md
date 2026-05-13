@@ -1393,6 +1393,24 @@ The user's framing: *"不是页面加载完开始录制 而是『准备好了』
 
 ---
 
+## 0040 · F1: plan/duration fit (`durationMs` is a first-class constraint in A; B becomes a ±X% surface)
+
+**Date**: 2026-05-13
+
+**Context**: 7-run review (1 eval + 6 regression) post §0037+§0039 showed `fitPlanToBudget` (B) was being asked to invent natural content when the recon LLM (A) under-planned (gmaps "JUST observe" 15 s → trimmed 6.6 s, −56 %, B's mechanical scroll+dwell pad clearly inadequate), and was standing aside when A over-planned with too many steps (youtube distracting 25 s → 24 steps, reconMs 61.8 s blowing goal #5). Same architectural seam, two failure directions: A had no hard contract on durationMs + no parsimony incentive, B was carrying semantic load it shouldn't carry. See [`docs/findings/2026-05-13-plan-duration-fit.md`](./findings/2026-05-13-plan-duration-fit.md) and [`docs/superpowers/specs/2026-05-13-plan-duration-fit-design.md`](./superpowers/specs/2026-05-13-plan-duration-fit-design.md).
+
+**Options considered**: (A) extend B — loop the scroll+dwell append for large gaps. Point-fix that puts more content-invention load on the mechanical layer identified as the wrong layer; directly contradicts the "no hardcoded logic" project memory. (B) detect prohibited actions via regex ("no drag", "just observe") and skip the padder. Hardcoded heuristic, same objection. (C) **make durationMs a first-class constraint in A, demote B to a ±X% corrector** — move the semantic seam to where the semantic knowledge lives. Picked (C).
+
+**Choice**: Make `durationMs` a **first-class constraint in A** (the recon system prompt gains a DURATION & SCOPE section: ±10% discipline expressed in the same per-step cost model the runner uses; A identifies prohibitions in the user prompt itself — no regex on our side; A fills under-budget plans with natural exploration tied to the page, not mechanical filler; irreconcilable prompt/duration mismatches go into `rationale`). Demote B (`fitPlanToBudget`) to a **±X% corrector** (default 20%, config `planDurationFitToleranceRatio`; env `PLAN_DURATION_FIT_TOLERANCE_RATIO`): the scale-down compress branch (kept) fires for slightly-over plans; the well-under-budget mechanical scroll+dwell pad branch is **deleted**. Out-of-band cases surface as a structured `Performance.planDurationFit.status` (`ok` / `compressed-hard` / `underfilled`) which `RunMetrics.planDurationFit` mirrors and `npm run eval` flags as CONCERNS. The reconverge user-text gains a `Remaining durationMs budget: ~Xms` line so a mid-walk re-plan also scales to the remaining window. C (PerformanceDirector §0039 soft-align ±2 s) is untouched.
+
+**Rationale**: serves goals.md #3 (gmaps −56% is now a transparent `underfilled` rather than a silent duration miss), #6 (AI-first — natural filler is A's job, only A has the prompt + page + prohibition context to answer "what would a real person do in the spare time?"), #2 (B's pad invented a mechanical scroll that looked robotic). No new LLM calls — goal #5 preserved. The seam move is symmetric with §0036 (moved target-resolution from a mechanical `observe()` re-match to a structured LLM output): the wrong mechanical layer was carrying semantic load, the fix moves the decision to the layer that has the context.
+
+**Consequences**: A's plan is the only place "what natural filler looks like for THIS prompt on THIS page" lives; B becomes deterministic and small (scale-down compress + status surface, no content invention). A run that genuinely can't fit (e.g. "just glance" + 60 s) becomes a transparent goal-#3 `underfilled` rather than a silent miss. F2 (recon plan-size budget, "steps/sec") and F3 (intentSatisfaction honesty re: prohibitions) remain open, tracked separately. Unit test count 157 → 173 (new config, schema, fitPlanToBudget, RunMetrics, and prompt tests added in F1). **Validation** deferred to Task 8 (npm run eval + regression); pre-F1 canonical numbers (§0039: `intentSatisfaction: complete`, `LOOKS_HUMAN`, trimmed +0%) are the baseline — regression to those is a blocker.
+
+**Preserves**: §0034 (prophet pipeline), §0035, §0036, §0037 (compress branch kept; video-relative trim unchanged), §0038, §0039 (soft-align Director untouched), §0030/§0031/§0033, the `IReconnoiterer`/`IDirector`/`IPageSession` port signatures, the on-camera `Performance` step shapes.
+
+---
+
 ## Template for new entries
 
 ```
