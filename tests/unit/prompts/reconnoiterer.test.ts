@@ -89,6 +89,31 @@ describe('reconnoitererSystemPrompt — F1 DURATION & SCOPE section', () => {
   });
 });
 
+describe('reconnoitererSystemPrompt — READING RHYTHM + END-OF-CONTENT (wild-prompts sweep follow-up)', () => {
+  it('contains a READING RHYTHM section that names the scroll→DWELL pattern', () => {
+    expect(reconnoitererSystemPrompt).toContain('READING RHYTHM');
+    expect(reconnoitererSystemPrompt).toMatch(/scroll\s*→\s*DWELL/);
+    expect(reconnoitererSystemPrompt).toMatch(/1800-3500/); // reading-dwell range
+  });
+
+  it('flags metronomic uniform scrolls as the anti-pattern (Wikipedia run #4 finding)', () => {
+    expect(reconnoitererSystemPrompt).toMatch(/metronomic/i);
+    expect(reconnoitererSystemPrompt).toMatch(/robot scanning|judge flags it/i);
+  });
+
+  it('distinguishes dwellAfterMs (eye-landing) from a separate DWELL step (reading)', () => {
+    // The Wikipedia failure was conflating these. The prompt must explicitly
+    // call out that dwellAfterMs is NOT reading time.
+    expect(reconnoitererSystemPrompt).toMatch(/dwellAfterMs.*NOT reading|NOT reading time/i);
+  });
+
+  it('contains an END-OF-CONTENT section that forbids the multi-second static stare', () => {
+    expect(reconnoitererSystemPrompt).toContain('END-OF-CONTENT');
+    expect(reconnoitererSystemPrompt).toMatch(/DO NOT.*(static|motionless).*dwell.*bottom/i);
+    expect(reconnoitererSystemPrompt).toMatch(/(end|done|click into).*interesting/i);
+  });
+});
+
 describe('buildReconvergeUserText — F1 remaining-budget hint', () => {
   it('mentions the remaining durationMs budget when given one', () => {
     const text = buildReconvergeUserText({

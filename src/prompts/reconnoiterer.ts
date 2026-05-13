@@ -61,7 +61,7 @@ JSON SAFETY RULES — read carefully:
 
 PACING — you decide how human this looks:
 - "anticipationMs" on a click: 500-800ms for a normal click (the recorder pauses there as if locating the target). Shorter (~300ms) for an obvious button; longer (~1000ms) for an ambiguous target. NOTE: a click/key/back ALSO costs ~1.5 s afterwards while the page settles (navigating, re-rendering) — that's automatic, you don't add a step for it, but DO count it when you budget the window: a click is roughly anticipationMs + ~1.5 s of recording time, not just anticipationMs.
-- "scroll": speed = deltaPx / durationMs. ~250-350 px/s for reading scrolls, ~450 for scanning, ~800 for a fling. Big scrolls (>2500px) should be split into a fling step + a slower approach step. Always give a small "dwellAfterMs" (120-280ms) so the eye lands before the next action.
+- "scroll": speed = deltaPx / durationMs. ~250-350 px/s for reading scrolls, ~450 for scanning, ~800 for a fling. Big scrolls (>2500px) should be split into a fling step + a slower approach step. \`dwellAfterMs\` (120-280ms) is the EYE-LANDING pause — the moment the eye settles after motion. It is NOT reading time. Reading is a separate \`dwell\` step that FOLLOWS the scroll.
 
 SCROLL-TO-TARGET DISCIPLINE — read this:
 - Think in viewport-heights: one screenful ≈ 720 px. To bring a target into view, scroll ROUGHLY to where you think it is — do not overshoot. NEVER plan a "scroll way past it, then scroll back up" two-step dance to position something; that reads as a robot hunting.
@@ -69,6 +69,16 @@ SCROLL-TO-TARGET DISCIPLINE — read this:
 - A "slowly scroll down through the README / page" intent is a FEW moderate \`scroll\` steps (each ~600-900 px, easing "inOutQuad", "dwellAfterMs" ~200-400) interleaved with brief \`dwell\` steps — NOT one giant scroll to the bottom.
 - "type": "preMs" 200-400ms (a beat before typing starts — short strings look script-injected without it). "keystrokeMs" 60-140ms.
 - Insert "dwell" steps for naturalness: a 2-3s dwell after navigating to a content-rich page ("reading"), an opening 200-500ms dwell as the very first step ("absorbing the page"), a brief dwell after a search loads.
+
+READING RHYTHM (for prompts whose intent is to read / browse a long page):
+- The cadence a human reads at is \`scroll → DWELL 1800-3500ms (read what just came into view) → scroll → DWELL 1800-3500ms → …\`. That dwell is a SEPARATE \`dwell\` step, not the scroll's tiny \`dwellAfterMs\`.
+- A metronomic rhythm — small uniform scroll about every second — reads as robot scanning, not human reading. The judge flags it. Vary the dwell durations a bit too (e.g. 2200ms, 3400ms, 2800ms, 4000ms) so the cadence isn't perfectly periodic.
+- Each scroll should be a substantive chunk (~500-900 px) — i.e. roughly one paragraph the reader can actually consume during the following dwell. Many tiny ~150 px scrolls + short dwellAfterMs is the metronome anti-pattern, even if the total adds up to the same distance.
+- For a long article: 4-6 \`(scroll, dwell)\` pairs over 20 s is natural; 11 small scrolls every second is not.
+
+END-OF-CONTENT — don't stare:
+- If you reach the bottom of meaningful content with budget remaining, you have two natural choices: (1) click into something interesting on the page (a top result, a comment thread, a linked article), or (2) end with \`done\`. DO NOT plan a multi-second static \`dwell\` at the literal bottom of the page just to consume time — that 5-second motionless stare reads as the agent giving up.
+- A brief 1-2 s dwell AT a content section worth lingering on is fine. A 4-5 s dwell at the bottom of an empty footer or below the last result is not.
 
 DURATION & SCOPE (hard constraint — supersedes the soft ~15% mention in PACING):
 - Your plan's totalEstimatedMs MUST land within ±10% of the durationMs you are given. Estimate using the same model the runner uses:
