@@ -422,4 +422,64 @@ describe('LlmReconnoiterer — giant-page handling (targetText fallback + transp
     expect(perf.unresolvedTargets![0]).toContain('the Felidae taxobox link');
     expect(perf.unresolvedTargets![0]).toMatch(/page tree too large/i);
   });
+
+  // The original draft's click resolves fine, but the rehearsal walk diverges and
+  // the reconverge LLM gives back a click-LESS plan (recon-quality variance — the
+  // §0038/§0039-era "intentSatisfaction: unknown on the GitHub language link" case):
+  // the walk's recovery dropped the requested action ⇒ name it (don't go `unknown`).
+  it('reconverge produced a click-less plan ⇒ the original requested target is named in `unresolvedTargets`', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x.test/';
+    session.resolveAriaRefResults = { eOK: { selector: 'a#build', description: 'build', bbox: { x: 0, y: 0, width: 10, height: 10 } } };
+    session.resolveTargetCandidatesResult = []; // the walk's dead-click recovery sweep finds nothing → it must reconverge
+    // (no clickAtImpl ⇒ the walk's click leaves the URL unchanged ⇒ expectAfter unmet + page unchanged ⇒ divergence)
+    const initialDraft = JSON.stringify({
+      prompt: 'open the build folder', durationMs: 5000, totalEstimatedMs: 1700, rationale: 'one click',
+      steps: [
+        { kind: 'click', ref: 'eOK', targetDescription: 'the build folder link', anticipationMs: 100, reasoning: 'open build', expectAfter: { urlContains: '/build' } },
+        { kind: 'done', reasoning: 'done' },
+      ],
+    });
+    const clicklessReconverge = JSON.stringify({
+      steps: [
+        { kind: 'scroll', deltaPx: 300, durationMs: 1000, easing: 'inOutQuad', dwellAfterMs: 200, reasoning: 'browse instead' },
+        { kind: 'done', reasoning: 'gave up on the click' },
+      ],
+    });
+    const { client } = sequencedClient(initialDraft, clicklessReconverge);
+    const recon = new LlmReconnoiterer({ model: 'm', client });
+    const perf = await recon.recon({ url: 'https://x.test/', prompt: 'open the build folder', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
+    expect(perf.steps.some((s) => s.kind === 'click')).toBe(false);     // the walk's recovery lost the click
+    expect(perf.unresolvedTargets).toHaveLength(1);
+    expect(perf.unresolvedTargets![0]).toContain('the build folder link');
+    expect(perf.unresolvedTargets![0]).toMatch(/rehearsal walk/i);
+    expect(perf.rehearsal?.reconverges).toBe(1);
+  });
+
+  // A reconverge step that itself doesn't resolve is also surfaced (not just the
+  // initial draft's drops — §0038 only covered those).
+  it('reconverge emits a click whose ref/desc both miss ⇒ that target is in `unresolvedTargets`', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://x.test/';
+    session.resolveAriaRefResults = { eOK: { selector: 'a#build', description: 'build', bbox: { x: 0, y: 0, width: 10, height: 10 } } }; // eRecover not present → null
+    session.resolveByVisibleTextResult = null;
+    session.resolveTargetCandidatesResult = [];
+    const initialDraft = JSON.stringify({
+      prompt: 'open the build folder', durationMs: 5000, totalEstimatedMs: 1700, rationale: 'one click',
+      steps: [
+        { kind: 'click', ref: 'eOK', targetDescription: 'the build folder link', anticipationMs: 100, reasoning: 'open build', expectAfter: { urlContains: '/build' } },
+        { kind: 'done', reasoning: 'done' },
+      ],
+    });
+    const reconvergeWithUnresolvableClick = JSON.stringify({
+      steps: [
+        { kind: 'click', ref: 'eRecover', targetDescription: 'the build directory entry', anticipationMs: 100, reasoning: 'try a different element' },
+        { kind: 'done', reasoning: 'done' },
+      ],
+    });
+    const { client } = sequencedClient(initialDraft, reconvergeWithUnresolvableClick);
+    const recon = new LlmReconnoiterer({ model: 'm', client });
+    const perf = await recon.recon({ url: 'https://x.test/', prompt: 'open the build folder', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
+    expect(perf.unresolvedTargets).toEqual(['the build directory entry']);
+  });
 });

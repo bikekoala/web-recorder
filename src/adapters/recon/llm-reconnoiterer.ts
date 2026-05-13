@@ -114,10 +114,10 @@ export class LlmReconnoiterer implements IReconnoiterer {
     // The aria tree was too big to show in full → the ref-picking was working
     // off a truncated view; say so when we surface what we couldn't locate.
     const treeTruncated = snapshot.includes(ARIA_SNAPSHOT_TRUNCATION_MARKER);
-    const unresolvedTargets =
-      unresolved.length > 0 && treeTruncated
-        ? unresolved.map((d) => `${d} (page tree too large to analyze in full)`)
-        : unresolved;
+    // Click/type targets the reconverge LLM (during the rehearsal walk) emitted
+    // but couldn't be resolved either — accumulated so they're surfaced too, not
+    // just the initial draft's drops (the §0038 fix only covered the latter).
+    const reconvergeUnresolved: string[] = [];
 
     // Off-camera rehearsal walk (config.reconRehearse). Verifies the draft
     // against the live page, reconverging on divergence; afterwards we reset
@@ -178,10 +178,9 @@ export class LlmReconnoiterer implements IReconnoiterer {
           this.logger.warn({ err: parsed.error.message.slice(0, 200) }, 'reconverge draft failed schema');
           return [];
         }
-        // A reconverge step that won't resolve is just dropped here (the walk's
-        // truncated/timedOut flags already flag a struggling reconverge); only
-        // the initial recon's drops feed `unresolvedTargets`.
-        return (await this.resolveDraftSteps(parsed.data.steps, ctx.session)).steps;
+        const { steps, unresolved: u } = await this.resolveDraftSteps(parsed.data.steps, ctx.session);
+        reconvergeUnresolved.push(...u);
+        return steps;
       };
       let result: Awaited<ReturnType<typeof rehearse>>;
       try {
@@ -216,6 +215,26 @@ export class LlmReconnoiterer implements IReconnoiterer {
     // before we hand it off (goals.md #2). "Fit the recording into the budget"
     // is mechanical — goals.md #6 carve-out.
     finalSteps = fitPlanToBudget(finalSteps, input.durationMs);
+
+    // What requested intent we couldn't actually plan — surfaced so the metric
+    // is honest (`unmet`/`partial` naming the target, never silent `unknown`):
+    //  - the initial draft's unresolvable click/type targets, and the
+    //    reconverge's (§0038 + this fix);
+    //  - and, as a backstop, if the rehearsal walk's recovery ended up with NO
+    //    click/type step at all even though the draft asked for one, name those
+    //    too (the reconverge gave a click-less plan — recon-quality variance).
+    const annotateMiss = (d: string): string =>
+      treeTruncated ? `${d} (page tree too large to analyze in full)` : d;
+    let unresolvedTargets = [...new Set([...unresolved, ...reconvergeUnresolved])].map(annotateMiss);
+    const requestedActingDescriptions = draft.steps.flatMap((s) =>
+      s.kind === 'click' || s.kind === 'type' ? [s.targetDescription] : [],
+    );
+    const finalHasActing = finalSteps.some((s) => s.kind === 'click' || s.kind === 'type');
+    if (unresolvedTargets.length === 0 && requestedActingDescriptions.length > 0 && !finalHasActing) {
+      unresolvedTargets = [...new Set(requestedActingDescriptions)].map(
+        (d) => `${d} (the rehearsal walk's recovery couldn't keep this in the plan)`,
+      );
+    }
 
     const candidate: Performance = {
       prompt: draft.prompt,
