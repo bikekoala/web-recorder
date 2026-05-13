@@ -162,5 +162,22 @@ export const PerformanceSchema = z.object({
    * silently `unknown`. See docs/superpowers/specs/2026-05-12-transparent-giant-page-handling-design.md.
    */
   unresolvedTargets: z.array(z.string().min(1)).optional(),
+  /**
+   * Outcome of `fitPlanToBudget` (the F1 ±X% corrector — see ADR §0040). The
+   * structured transparency channel that replaces the old silent
+   * scroll+dwell pad: `compressed-hard` means the LLM over-planned by more
+   * than the tolerance and B compressed (best-effort) to land it; `underfilled`
+   * means the LLM under-planned by more than the tolerance and B refused to
+   * invent filler — the recording will run short, surfaced here so
+   * `intentSatisfaction` / the eval canary can flag it instead of pretending
+   * the duration was hit. `ok` covers both "within tolerance" and the
+   * still-OK light-compress case. Mirrored verbatim into `RunMetrics`.
+   */
+  planDurationFit: z.object({
+    estimatedMs: z.number().int().nonnegative(),
+    targetMs: z.number().int().nonnegative(),
+    ratio: z.number(),
+    status: z.enum(['ok', 'compressed-hard', 'underfilled']),
+  }).optional(),
 });
 export type Performance = z.infer<typeof PerformanceSchema>;

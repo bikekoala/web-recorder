@@ -95,3 +95,41 @@ describe('BlockerDismissDecisionSchema', () => {
     expect(() => BlockerDismissDecisionSchema.parse({ blocker: true, dismissTargetDescription: '' })).toThrow();
   });
 });
+
+describe('PerformanceSchema.planDurationFit', () => {
+  const basePerf = {
+    prompt: 'click X',
+    durationMs: 10000,
+    steps: [{ kind: 'dwell' as const, durationMs: 1000, reasoning: 'r' }],
+    totalEstimatedMs: 1280,
+    rationale: 'r',
+  };
+
+  it('accepts a Performance with planDurationFit { ok }', () => {
+    const out = PerformanceSchema.parse({
+      ...basePerf,
+      planDurationFit: { estimatedMs: 1280, targetMs: 10000, ratio: 0.128, status: 'ok' },
+    });
+    expect(out.planDurationFit?.status).toBe('ok');
+  });
+
+  it('accepts each of `ok` / `compressed-hard` / `underfilled` status values', () => {
+    for (const status of ['ok', 'compressed-hard', 'underfilled'] as const) {
+      expect(() => PerformanceSchema.parse({
+        ...basePerf,
+        planDurationFit: { estimatedMs: 1, targetMs: 1, ratio: 1, status },
+      })).not.toThrow();
+    }
+  });
+
+  it('rejects an unknown status', () => {
+    expect(() => PerformanceSchema.parse({
+      ...basePerf,
+      planDurationFit: { estimatedMs: 1, targetMs: 1, ratio: 1, status: 'padded' as unknown as 'ok' },
+    })).toThrow();
+  });
+
+  it('omitting planDurationFit is fine (optional)', () => {
+    expect(() => PerformanceSchema.parse(basePerf)).not.toThrow();
+  });
+});
