@@ -34,12 +34,18 @@ export const ReconDraftClickStepSchema = z.object({
   targetDescription: z.string().min(1),
   /**
    * The element's exact visible text ("Felidae", "Sign in"), if it has any —
-   * the LLM copies it character-for-character; omitted for icon-only elements.
-   * Used as a deterministic fallback when the `ref` misses: a Playwright
+   * the LLM copies it character-for-character; for an icon-only node it has no
+   * text. Used as a deterministic fallback when the `ref` misses: a Playwright
    * role/text lookup, no LLM, no DOM serialization — so it works even on huge
    * pages where the `observe()`-based `targetDescription` fallback overflows.
+   *
+   * The schema accepts any string (and "" / whitespace) so an LLM that emits
+   * `"targetText": ""` instead of omitting the key for an icon-only node still
+   * parses; an empty/blank value is just treated as "no visible text" downstream
+   * (`resolveDraftSteps` skips the visible-text lookup when `targetText` is
+   * falsy). Not `.min(1)` — that turned a benign `""` into a hard `ReconError`.
    */
-  targetText: z.string().min(1).optional(),
+  targetText: z.string().optional(),
   anticipationMs: z.number().int().min(0).max(3000),
   reasoning: z.string().min(1),
   expectAfter: ExpectAfterSchema.optional(),

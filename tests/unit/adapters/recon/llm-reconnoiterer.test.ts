@@ -384,6 +384,25 @@ describe('LlmReconnoiterer — giant-page handling (targetText fallback + transp
     rationale: 'one click',
   });
 
+  it('a draft whose icon-only click carries `"targetText": ""` parses fine and resolves via the ref (no ReconError)', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://maps.test/';
+    session.resolveAriaRefResults = { eSearchBtn: { selector: 'button[aria-label="Search"]', description: 'Search', bbox: { x: 5, y: 5, width: 20, height: 20 } } };
+    const go = () => { session.url = 'https://maps.test/search'; };
+    session.clickAtImpl = go; session.clickSelectorImpl = go;
+    const draft = JSON.stringify({
+      prompt: 'search New York', durationMs: 5000, totalEstimatedMs: 2000, rationale: 'tap the search button',
+      steps: [
+        { kind: 'click', ref: 'eSearchBtn', targetDescription: 'the search button (magnifier icon)', targetText: '', anticipationMs: 300, reasoning: 'icon-only button — no text' },
+        { kind: 'done', reasoning: 'done' },
+      ],
+    });
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(draft) });
+    const perf = await recon.recon({ url: 'https://maps.test/', prompt: 'search New York', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
+    expect(perf.steps.find((s) => s.kind === 'click')).toMatchObject({ target: { selector: 'button[aria-label="Search"]' } });
+    expect(perf.unresolvedTargets).toBeUndefined();
+  });
+
   it('ref miss → resolves the click by visible text (deterministic fallback), keeps the LLM description', async () => {
     const session = new FakePageSession();
     session.url = 'https://wiki.test/Cat';

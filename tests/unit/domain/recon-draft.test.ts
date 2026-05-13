@@ -32,6 +32,13 @@ describe('ReconDraft schema', () => {
   it('rejects a click step with no targetDescription', () => {
     expect(() => ReconDraftStepSchema.parse({ kind: 'click', ref: 'e7', anticipationMs: 600, reasoning: 'x' })).toThrow();
   });
+  it('accepts a click step with an optional `targetText` — including the empty string an LLM emits for an icon-only node', () => {
+    expect(ReconDraftStepSchema.parse({ ...clickDraft, targetText: 'Felidae' })).toMatchObject({ targetText: 'Felidae' });
+    // an LLM that writes `"targetText": ""` instead of omitting the key must NOT
+    // blow up the whole recon — `""` is just "no visible text" downstream.
+    expect(() => ReconDraftStepSchema.parse({ ...clickDraft, targetText: '' })).not.toThrow();
+    expect(ReconDraftStepSchema.parse(clickDraft)).not.toHaveProperty('targetText'); // omitted ⇒ absent
+  });
   it('rejects a type step with no ref', () => {
     expect(() => ReconDraftStepSchema.parse({ kind: 'type', targetDescription: 'd', text: 'x', preMs: 0, keystrokeMs: 0, reasoning: 'x' })).toThrow();
   });
