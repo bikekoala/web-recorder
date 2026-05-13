@@ -298,6 +298,30 @@ describe('RecordJobRunner — prophet wiring', () => {
     expect(kinds).toContain('stop');
   });
 
+  it('RunMetrics.planDurationFit mirrors Performance.planDurationFit verbatim (F1)', async () => {
+    // Drive a run where the reconnoiterer returns a Performance whose
+    // planDurationFit is a known fixture; assert RunMetrics carries it
+    // verbatim. The runner's contract for F1 (ADR §0040).
+    const session = new FakePageSession();
+    const performance: Performance = {
+      ...perf([{ kind: 'done', reasoning: 'noop' }]),
+      planDurationFit: { estimatedMs: 8500, targetMs: 10000, ratio: 0.85, status: 'ok' },
+    };
+    const recon = new FakeReconnoiterer([performance]);
+    const director = new StubDirector({ totalMs: 10, stepsExecuted: 1, replanCount: 0, endReason: 'done' });
+    const runner = new RecordJobRunner(session, recon, director);
+    const result = await runner.run({
+      url: 'https://test.example/',
+      prompt: 'do nothing',
+      durationMs: 10_000,
+      outputDir: '/tmp/web-recorder-test-output',
+    });
+    expect(result.metrics.planDurationFit?.estimatedMs).toBe(8500);
+    expect(result.metrics.planDurationFit?.targetMs).toBe(10000);
+    expect(result.metrics.planDurationFit?.ratio).toBe(0.85);
+    expect(result.metrics.planDurationFit?.status).toBe('ok');
+  });
+
   it('runs end-to-end with a no-op Performance', async () => {
     const session = new FakePageSession();
     const recon = new FakeReconnoiterer([perf([{ kind: 'done', reasoning: 'noop' }])]);

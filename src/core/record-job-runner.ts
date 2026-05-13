@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 import type { ActionLogEntry, RecordingWindow } from '../domain/action-log.js';
 import { countMatchedHints } from '../domain/intent-matching.js';
-import type { BlockerDismissalReport, Performance, PerformanceStep, RehearsalTrace } from '../domain/performance.js';
+import type { BlockerDismissalReport, Performance, PerformanceStep, PlanDurationFit, RehearsalTrace } from '../domain/performance.js';
 import { trimVideo, videoDurationMs } from '../infra/ffmpeg.js';
 import { logger as rootLogger } from '../infra/logger.js';
 import type { DirectorReport, IDirector } from '../ports/director.js';
@@ -110,6 +110,17 @@ export interface RunMetrics {
    * of the user's intent was never attempted; `intentSatisfaction` reflects it.
    */
   unresolvedTargets: string[];
+  /**
+   * Outcome of `fitPlanToBudget` (F1, ADR §0040) — mirrored verbatim from
+   * `performance.planDurationFit`. `status: 'compressed-hard'` means A
+   * over-planned beyond tolerance and B compressed it; `'underfilled'` means
+   * A under-planned beyond tolerance and B refused to invent filler (the
+   * recording will run short — `trimmedVideoMs` vs `durationMs` will show
+   * it, but this field tells you *why* without inspecting steps). `'ok'` for
+   * within-tolerance (silent compress allowed for the slightly-over case).
+   * Optional only because adapters with very old fixtures may omit it.
+   */
+  planDurationFit?: PlanDurationFit;
 }
 
 export interface IntentSatisfaction {
@@ -223,7 +234,15 @@ export class RecordJobRunner {
       rehearsal: performance.rehearsal ?? null,
       blockerDismissal: performance.blockerDismissal ?? null,
       unresolvedTargets,
+      ...(performance.planDurationFit ? { planDurationFit: performance.planDurationFit } : {}),
     };
+
+    if (performance.planDurationFit && performance.planDurationFit.status !== 'ok') {
+      this.logger.warn(
+        { planDurationFit: performance.planDurationFit },
+        `plan/duration fit out of tolerance (${performance.planDurationFit.status}) — the recording may not land in ±10% (goals.md #2)`,
+      );
+    }
 
     if (intentSatisfaction.level === 'unmet' || intentSatisfaction.level === 'partial') {
       this.logger.warn(
