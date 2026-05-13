@@ -114,6 +114,25 @@ function assess(result: RunResult, judge: RecordingJudgeReport | { error: string
       const ev = d.evidence.map((e) => `@${e.atSecond}s: ${e.observation}`).join(' | ') || '(no evidence)';
       rows.push({ status: 'warn', label: `  judge:${k}`, value: d.level, note: ev });
     }
+
+    // F3 cross-check (docs/findings/2026-05-13-wild-prompts-sweep.md P2):
+    // intentSatisfaction counts click EVENTS, the judge watches whether those
+    // clicks actually ACCOMPLISHED the intent. When the metric says `complete`
+    // but the judge's intentExecution dimension says `fail`, the metric is
+    // lying — the click(s) ran but the deliverable didn't satisfy the prompt
+    // (github trending: A clicked the date dropdown but never selected
+    // 'This week'). Surface the disagreement loudly instead of letting it
+    // hide between two adjacent ✓/⚠ rows.
+    const ie = judge.judgment.dimensions.intentExecution;
+    if (sat.level === 'complete' && ie.level !== 'pass') {
+      const ev = ie.evidence.map((e) => `@${e.atSecond}s: ${e.observation}`).join(' | ') || '(no evidence)';
+      rows.push({
+        status: 'warn',
+        label: 'intent cross-check',
+        value: `DISAGREE — metric says \`complete\`, judge says \`${ie.level}\``,
+        note: `the deterministic metric counts click EVENTS, not click EFFECTS — the recording's clicks ran but the visual outcome did NOT fully satisfy the prompt. Judge evidence: ${ev}. The judge is the ground truth here (goals.md #3 — F3 follow-up parked).`,
+      });
+    }
   }
 
   // ── Operator canaries ──────────────────────────────────────────────────────
