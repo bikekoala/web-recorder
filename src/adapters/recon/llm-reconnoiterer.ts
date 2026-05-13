@@ -365,14 +365,15 @@ export class LlmReconnoiterer implements IReconnoiterer {
         messages,
         response_format: { type: 'json_object' },
         temperature: 0.2,
-        // 6000 (was 4000): post-F1's DURATION & SCOPE prompt encourages the
-        // recon LLM to plan more natural-filler steps for under-budget intents
-        // ("just observe" / "看看就行" / etc.), and a Chinese-reasoning plan
-        // for a 15-25 s budget can blow past 4000 tokens — gmaps natural in
-        // the regression suite truncated mid-step and threw ReconError. Same
-        // shape as commit 2b5da0a (judge: 2000 → 4000). See ADR §0040 +
-        // docs/findings/2026-05-13-plan-duration-fit.md for the F1 context.
-        max_tokens: 6000,
+        // 8000 (was 6000, originally 4000): post-F1's DURATION & SCOPE prompt
+        // encourages the recon LLM to plan more natural-filler steps; on
+        // open-ended Chinese prompts (gmaps "just observe" / "看一眼就好") the
+        // model's reasoning fields can run past 6000 tokens occasionally and
+        // truncate mid-response → ReconError. 8000 gives breathing room
+        // without being lavish. Real fix is F2 (plan-size budget — "steps per
+        // second" + "reasoning under N chars"), which would let the cap go
+        // back down; for now, just give it room.
+        max_tokens: 8000,
       });
       raw = completion.choices[0]?.message?.content ?? '';
     } catch (err) {
