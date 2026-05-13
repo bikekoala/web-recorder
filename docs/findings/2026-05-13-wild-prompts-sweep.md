@@ -138,3 +138,57 @@ system fails on across **shape-of-prompt**: open-ended navigation,
 multi-action-with-state, simple-list-scan, long-form-read. Each shape reveals a
 different seam. F1's transparency layer means every seam now reports itself in
 `run.json` / `judgment.json` instead of producing a misleading video.
+
+## Post-§0041 validation re-run (github trending, same prompt)
+
+After landing `goto` (§0041), re-ran the github root → trending case:
+
+- A planned `goto https://github.com/trending` cleanly. Trimmed video 10.1 s
+  (+1 %), 8 steps, `replanCount: 0`, `endReason: done`, 4/5 judge dimensions
+  pass (motionQuality, pacing, intentExecution, recovery all `pass`).
+- One new failure: **judge:visualCoherence `fail`** — *"page instantly
+  transitions from the GitHub homepage to the Trending page without any
+  visible UI interaction"*. The judge reads the hard navigation as synthetic.
+- Also: `planDurationFit: compressed-hard` (est 13.1 s / target 10 s, ratio
+  1.31) — A planned a touch over budget; B compressed best-effort. Same
+  axis as P5; not new.
+
+### P6 — goto renders as a hard teleport (visualCoherence)
+
+**What happened**. With `goto` available, A correctly skipped the
+unwinnable header-search dance and routed directly to /trending. The video
+shows the home page, then one frame later the trending page. The judge
+flagged it as the only un-explained transition in the recording.
+
+**Why this is real**. The recording window is the page viewport only — the
+browser chrome (address bar, tabs) is not in frame, so we can't *show*
+the user "typing the URL." From inside the viewport, a goto looks the
+same as a teleport. Goal #1 (looks human) needs more than mechanical
+correctness here: a real user types the URL, the page goes blank for a
+beat, the new page paints. We get the second beat for free (the actual
+navigation), but the first beat (the "user is reaching for the address
+bar" moment) is absent.
+
+**Possible levers — not yet picked**.
+- (i) Brief pre-goto pause on the current page (longer `anticipationMs`
+  default, so the user appears to "think" before navigating) — small,
+  pure-prompt or pure-Director knob, gives the cut more breathing room.
+- (ii) Small mouse drift toward the top edge of the viewport before the
+  goto fires (suggests the user reaching upward toward the address bar
+  — visible cursor motion at goto time). Director-level.
+- (iii) Accept the limitation: goto is what it is when the address bar
+  is off-screen; weight the visualCoherence judge dimension less for
+  recordings that contain a goto, or have the judge prompt acknowledge
+  goto as a legitimate primitive. Prompt-level on the judge side.
+- (iv) Re-frame the recording window to include the chrome (browser-
+  level recording instead of page-level). Largest move; touches the
+  recording pipeline, not just the planner.
+
+**Smallest fix that helps**: (i) — bump goto's default anticipationMs
+floor in the recon prompt (e.g. ≥1500 ms) so A leaves a visible "user
+pausing to type" beat before the cut, then maybe (ii) as a follow-up.
+(iv) is a real but disproportionate move for one prompt shape.
+
+**Validation point**. The goto step itself works: 10.1 s trimmed,
+`endReason: done`, intentExecution `pass`. P6 is a naturalness polish
+gap, not a primitive correctness gap.
