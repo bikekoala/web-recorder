@@ -192,6 +192,23 @@ const Schema = z.object({
   pacingStepOverheadMs: z.coerce.number().int().min(0).max(2000).default(280),
 
   /**
+   * `fitPlanToBudget`'s silent-correction window. When the LLM's plan is more
+   * than this ratio off the target durationMs, fitPlanToBudget no longer
+   * silently scales — it surfaces a structured `planDurationFit.status` of
+   * `compressed-hard` (over) or `underfilled` (under) onto the Performance,
+   * which `RunMetrics.planDurationFit` mirrors and the eval canary flags.
+   *
+   * Within the window, the existing scale-down compress still runs when the
+   * plan is slightly over budget; mechanical scroll+dwell padding when under
+   * was removed in F1 (only the recon LLM owns content invention now). Pure
+   * pacing tolerance, goals.md #6 carve-out. Default 0.20 = ±20 %, deliberately
+   * looser than the recon LLM's own ±10 % discipline so the surface mostly
+   * fires only on systemic LLM mis-sizing, not on routine variance. Override
+   * with PLAN_DURATION_FIT_TOLERANCE_RATIO.
+   */
+  planDurationFitToleranceRatio: z.coerce.number().min(0).max(1).default(0.20),
+
+  /**
    * Typing rendering (catalog F2 + the gmaps "text appears instantly" finding).
    * - `typingPreMs`: pause AFTER focusing the input, BEFORE first keystroke.
    *   Real users glance at the empty field for a beat before starting.
@@ -299,6 +316,7 @@ const raw = {
   directorDwellStretchMaxMs: process.env.DIRECTOR_DWELL_STRETCH_MAX_MS,
   pacingSettleEstMs: process.env.PACING_SETTLE_EST_MS,
   pacingStepOverheadMs: process.env.PACING_STEP_OVERHEAD_MS,
+  planDurationFitToleranceRatio: process.env.PLAN_DURATION_FIT_TOLERANCE_RATIO,
   typingPreMinMs: process.env.TYPING_PRE_MIN_MS
     ? Number(process.env.TYPING_PRE_MIN_MS)
     : undefined,

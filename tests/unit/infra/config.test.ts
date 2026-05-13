@@ -135,4 +135,9 @@ describe('pacing config knobs', () => {
     expect(overridden.directorDwellMinMs).toBe(0);
     expect(overridden.directorDwellStretchMaxMs).toBe(3500);
   });
+
+  it('planDurationFitToleranceRatio defaults to 0.20 and honours PLAN_DURATION_FIT_TOLERANCE_RATIO', async () => {
+    expect((await loadConfig({ PLAN_DURATION_FIT_TOLERANCE_RATIO: undefined })).planDurationFitToleranceRatio).toBeCloseTo(0.20);
+    expect((await loadConfig({ PLAN_DURATION_FIT_TOLERANCE_RATIO: '0.10' })).planDurationFitToleranceRatio).toBeCloseTo(0.10);
+  });
 });
