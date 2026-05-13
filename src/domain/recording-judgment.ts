@@ -107,17 +107,21 @@ export type RecordingJudgment = z.infer<typeof RecordingJudgmentSchema>;
 /**
  * The full judge return — judgment + metadata the script writes alongside.
  * Kept separate from the LLM's JSON shape so we can decorate without
- * touching prompt validation.
+ * touching prompt validation. Promoted to a Zod schema so the persisted
+ * `judgment.json` (see docs/output-layout.md) crosses the fs boundary
+ * cleanly (Hard Rule #2). The TS type is `z.infer<...>` of the schema —
+ * one source of truth.
  */
-export interface RecordingJudgeReport {
-  judgment: RecordingJudgment;
-  modelId: string;
+export const RecordingJudgeReportSchema = z.object({
+  judgment: RecordingJudgmentSchema,
+  modelId: z.string().min(1),
   /** End-to-end latency of the judge call, including upload. */
-  latencyMs: number;
+  latencyMs: z.number().int().nonnegative(),
   /** Path to the video that was judged, absolute. */
-  videoPath: string;
+  videoPath: z.string().min(1),
   /** User's original prompt, copied for traceability. */
-  userPrompt: string;
+  userPrompt: z.string().min(1),
   /** Seconds duration of the trimmed video that was judged. */
-  videoDurationSec: number;
-}
+  videoDurationSec: z.number().nonnegative(),
+});
+export type RecordingJudgeReport = z.infer<typeof RecordingJudgeReportSchema>;

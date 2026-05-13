@@ -28,6 +28,7 @@ import { RecordJobRunner, type RunResult } from '../src/core/record-job-runner.j
 import { config } from '../src/infra/config.js';
 import { logger } from '../src/infra/logger.js';
 import { buildRunDir } from '../src/infra/run-dir.js';
+import { writeJudgmentReport } from '../src/infra/run-record-writer.js';
 
 const URL = process.env.EVAL_URL ?? 'https://github.com/webadderallorg/Recordly';
 const PROMPT = process.env.EVAL_PROMPT ?? '点击页面上的"简体中文"链接，然后慢慢向下滑动浏览内容';
@@ -156,7 +157,7 @@ async function main(): Promise<void> {
 
   let result: RunResult;
   try {
-    result = await runner.run({ url: URL, prompt: PROMPT, durationMs: DURATION_MS, outputDir });
+    result = await runner.run({ url: URL, prompt: PROMPT, durationMs: DURATION_MS, outputDir, headless: HEADLESS });
   } catch (err) {
     try { await session.stop(); } catch { /* ignore */ }
     throw err;
@@ -170,6 +171,18 @@ async function main(): Promise<void> {
   } catch (err) {
     judge = { error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) };
     log.warn({ err }, 'judge call failed — continuing without it');
+  }
+
+  // Persist the judge verdict next to recording.webm + run.json so it's
+  // reviewable post-hoc (see docs/output-layout.md). Best-effort — a write
+  // failure shouldn't sink the eval (the verdict is in stdout / the structured
+  // log either way).
+  if (!('error' in judge)) {
+    try {
+      await writeJudgmentReport(outputDir, judge);
+    } catch (err) {
+      log.warn({ err }, 'failed to write judgment.json');
+    }
   }
 
   let videoBytes = 0;

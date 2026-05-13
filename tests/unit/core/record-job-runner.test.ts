@@ -1,7 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { ActionLogEntry, RecordingWindow } from '../../../src/domain/action-log.js';
 import type { Performance } from '../../../src/domain/performance.js';
+import { RunRecordSchema } from '../../../src/domain/run-record.js';
 import { computeIntentSatisfaction, RecordJobRunner, videoRelativeTrimWindow } from '../../../src/core/record-job-runner.js';
 import type { DirectorReport, IDirector } from '../../../src/ports/director.js';
 import type { IPageSession } from '../../../src/ports/page-session.js';
@@ -339,5 +344,85 @@ describe('RecordJobRunner — prophet wiring', () => {
     expect(result.metrics.rehearsal).toBeNull();
     // No blocker dismisser → metrics.blockerDismissal is null.
     expect(result.metrics.blockerDismissal).toBeNull();
+  });
+});
+
+describe('RecordJobRunner — writes run.json with a parseable RunRecord', () => {
+  // Real tempdir so the writer's fs.writeFile actually lands the file; the
+  // other runner tests use a hardcoded /tmp path that may or may not exist
+  // and rely on the runner's best-effort try/catch to swallow the ENOENT.
+  // Here we want the actual on-disk artifact.
+  let dir: string;
+  beforeAll(async () => { dir = await mkdtemp(join(tmpdir(), 'web-recorder-run-json-test-')); });
+  afterAll(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  it('writes run.json containing the full RunRecord (request + performance + metrics + directorReport + config + timings)', async () => {
+    const session = new FakePageSession();
+    const performance: Performance = {
+      ...perf([clickStep('the sign-in link'), scrollStep(), { kind: 'done', reasoning: 'finished' }]),
+      planDurationFit: { estimatedMs: 9500, targetMs: 10000, ratio: 0.95, status: 'ok' },
+    };
+    const recon = new FakeReconnoiterer([performance]);
+    const director = new StubDirector({ totalMs: 9500, stepsExecuted: 3, replanCount: 0, endReason: 'done' });
+    const runner = new RecordJobRunner(session, recon, director);
+
+    await runner.run({
+      url: 'https://example.com/page',
+      prompt: '点击 sign-in 然后慢慢滚动',
+      durationMs: 10_000,
+      outputDir: dir,
+      headless: true,
+    });
+
+    const raw = await readFile(join(dir, 'run.json'), 'utf8');
+    const parsed = RunRecordSchema.parse(JSON.parse(raw));
+
+    // schemaVersion is stamped.
+    expect(parsed.schemaVersion).toBe(1);
+    // Input is preserved verbatim, INCLUDING the original user prompt — this
+    // is the whole reason `run.json` exists (see docs/output-layout.md).
+    expect(parsed.request.url).toBe('https://example.com/page');
+    expect(parsed.request.prompt).toBe('点击 sign-in 然后慢慢滚动');
+    expect(parsed.request.durationMs).toBe(10_000);
+    expect(parsed.request.headless).toBe(true);
+    expect(parsed.request.viewport).toEqual({ width: 1280, height: 720 });
+    // Performance round-trips — A's rationale + per-step reasoning + the F1
+    // planDurationFit transparency channel are all there to read.
+    expect(parsed.performance.rationale).toBe(performance.rationale);
+    expect(parsed.performance.steps).toHaveLength(3);
+    expect(parsed.performance.planDurationFit).toEqual({
+      estimatedMs: 9500, targetMs: 10000, ratio: 0.95, status: 'ok',
+    });
+    // Metrics + director report are present.
+    expect(parsed.metrics.plannedSteps).toBe(3);
+    expect(parsed.directorReport.endReason).toBe('done');
+    // Config snapshot is non-empty and redacts the apiKey.
+    expect(Object.keys(parsed.config).length).toBeGreaterThan(5);
+    expect(parsed.config).not.toHaveProperty('openrouterApiKey');
+    // Timings are valid ISO strings (Zod schema enforces datetime — parse
+    // would have thrown if they weren't).
+    expect(parsed.timings.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(parsed.timings.endedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('omits headless from run.json when the request did not provide it', async () => {
+    const session = new FakePageSession();
+    const recon = new FakeReconnoiterer([perf([{ kind: 'done', reasoning: 'noop' }])]);
+    const director = new StubDirector({ totalMs: 10, stepsExecuted: 1, replanCount: 0, endReason: 'done' });
+    const runner = new RecordJobRunner(session, recon, director);
+
+    const sub = await mkdtemp(join(tmpdir(), 'web-recorder-run-json-noheadless-'));
+    try {
+      await runner.run({
+        url: 'https://example.com/',
+        prompt: 'noop',
+        durationMs: 5_000,
+        outputDir: sub,
+      });
+      const parsed = RunRecordSchema.parse(JSON.parse(await readFile(join(sub, 'run.json'), 'utf8')));
+      expect(parsed.request.headless).toBeUndefined();
+    } finally {
+      await rm(sub, { recursive: true, force: true });
+    }
   });
 });

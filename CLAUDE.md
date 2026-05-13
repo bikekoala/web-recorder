@@ -55,6 +55,8 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 
 Architectural decisions live in [`docs/decisions.md`](./docs/decisions.md). Update it whenever a decision is made or revised.
 
+Every recording run writes a self-contained directory under `output/`. The file layout — `run.json` as the canonical entry point, `recording.webm` + `recording-raw.webm`, `action-log.json`, `judgment.json` — is documented in [`docs/output-layout.md`](./docs/output-layout.md). **For a future AI session continuing in this codebase: that's the file to read when inspecting a past run.**
+
 The **naturalness catalog** in [`docs/naturalness-catalog.md`](./docs/naturalness-catalog.md) tracks every observable behavior that contributes to "this looks like a human, not a robot." Every new natural-feeling feature (or gap) flips a status row there.
 
 ### Measured performance (Recordly README, "click 简中, slow scroll, 10s")

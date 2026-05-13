@@ -5,6 +5,12 @@ import { countMatchedHints } from '../domain/intent-matching.js';
 import type { BlockerDismissalReport, Performance, PerformanceStep, PlanDurationFit, RehearsalTrace } from '../domain/performance.js';
 import { trimVideo, videoDurationMs } from '../infra/ffmpeg.js';
 import { logger as rootLogger } from '../infra/logger.js';
+import {
+  captureConfigSnapshot,
+  renameRawVideo,
+  RUN_JSON_SCHEMA_VERSION,
+  writeRunRecord,
+} from '../infra/run-record-writer.js';
 import type { DirectorReport, IDirector } from '../ports/director.js';
 import type { IPageSession } from '../ports/page-session.js';
 import type { IReconnoiterer } from '../ports/reconnoiterer.js';
@@ -47,6 +53,13 @@ export interface RunRequest {
   durationMs: number;
   /** Output directory for video + log artifacts. Created if missing. */
   outputDir: string;
+  /**
+   * Optional flag the runner records into `run.json.request.headless` for
+   * traceability. Doesn't affect the runner's behavior — the session is
+   * already constructed by the caller (which is where headless takes effect).
+   * When unknown, omit and `run.json` will simply not carry the field.
+   */
+  headless?: boolean;
 }
 
 export interface RunResult {
@@ -146,6 +159,7 @@ export class RecordJobRunner {
 
   async run(req: RunRequest): Promise<RunResult> {
     const wallClockT0 = Date.now();
+    const startedAtIso = new Date(wallClockT0).toISOString();
 
     // ----------------------------------- 1. Setup
     const tSetup = Date.now();
@@ -253,9 +267,47 @@ export class RecordJobRunner {
       this.logger.info({ intentSatisfaction }, 'intent satisfaction summary');
     }
 
+    // ------------------------------------ 4. Persist run record + tidy filenames
+    // (see docs/output-layout.md). Rename Playwright's `page@<hash>.webm` to a
+    // stable name first, so the path we record in the run.json log is the
+    // post-rename one and matches what a human / future AI session will see in
+    // the directory.
+    const trimmed = artifacts.recording !== null;
+    const rawVideoPath = await renameRawVideo(artifacts.videoPath, trimmed).catch((err) => {
+      this.logger.warn({ err, rawPath: artifacts.videoPath }, 'raw video rename failed — keeping original name');
+      return artifacts.videoPath;
+    });
+    // When there was no trim, the raw video IS the deliverable; the rename moved
+    // it to `recording.webm`. Sync `videoPath` to wherever the raw landed.
+    if (!trimmed) videoPath = rawVideoPath;
+
+    const endedAtIso = new Date().toISOString();
+    try {
+      await writeRunRecord(req.outputDir, {
+        schemaVersion: RUN_JSON_SCHEMA_VERSION,
+        request: {
+          url: req.url,
+          prompt: req.prompt,
+          durationMs: req.durationMs,
+          viewport: artifacts.viewport,
+          ...(req.headless !== undefined ? { headless: req.headless } : {}),
+        },
+        performance,
+        metrics,
+        directorReport,
+        config: captureConfigSnapshot(),
+        timings: { startedAt: startedAtIso, endedAt: endedAtIso },
+      });
+    } catch (err) {
+      // Persisting run.json is best-effort — if it fails, the recording is
+      // already done and the in-memory RunResult is still valid. Surface the
+      // failure but don't fail the job.
+      this.logger.warn({ err }, 'failed to write run.json — recording itself is fine');
+    }
+
     return {
       videoPath,
-      rawVideoPath: artifacts.videoPath,
+      rawVideoPath,
       actionLogPath: artifacts.actionLogPath,
       performance,
       metrics,

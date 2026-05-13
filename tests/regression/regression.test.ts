@@ -74,6 +74,7 @@ describe('regression suite', () => {
           prompt: p.text,
           durationMs: c.durationMs,
           outputDir,
+          headless: false,
         });
 
         // Always print full diagnostics — videos + metrics are the report.
