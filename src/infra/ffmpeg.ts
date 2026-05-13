@@ -54,10 +54,13 @@ export async function findFfmpeg(): Promise<string> {
     );
   }
 
-  const dir = entries.find((e) => e.startsWith('ffmpeg-'));
+  // Playwright's ffmpeg dir is usually `ffmpeg-N` (e.g. `ffmpeg-1011`), but on
+  // older macOS it ships under `ffmpeg_mac12_special-N` (frozen for mac12).
+  // Match both prefixes; the inner binary name is still the same set below.
+  const dir = entries.find((e) => /^ffmpeg[-_]/.test(e));
   if (!dir) {
     throw new FfmpegError(
-      `No ffmpeg-* directory under ${cacheDir}. Run "npx playwright install ffmpeg".`,
+      `No ffmpeg-* / ffmpeg_* directory under ${cacheDir}. Run "npx playwright install ffmpeg".`,
     );
   }
 
