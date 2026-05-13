@@ -6,6 +6,7 @@ import {
   ResolvedTargetSchema,
   type Performance,
   type PerformanceStep,
+  type PlanDurationFit,
   type RehearsalTrace,
 } from '../../domain/performance.js';
 import {
@@ -214,7 +215,8 @@ export class LlmReconnoiterer implements IReconnoiterer {
     // the plan deterministically so it fits the duration the user paid for
     // before we hand it off (goals.md #2). "Fit the recording into the budget"
     // is mechanical — goals.md #6 carve-out.
-    finalSteps = fitPlanToBudget(finalSteps, input.durationMs);
+    const fitOutcome = fitPlanToBudget(finalSteps, input.durationMs);
+    finalSteps = fitOutcome.steps;
 
     // What requested intent we couldn't actually plan — surfaced so the metric
     // is honest (`unmet`/`partial` naming the target, never silent `unknown`):
@@ -245,6 +247,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
       ...(rehearsalTrace ? { rehearsal: rehearsalTrace } : {}),
       ...(blockerDismissal ? { blockerDismissal } : {}),
       ...(unresolvedTargets.length > 0 ? { unresolvedTargets } : {}),
+      planDurationFit: fitOutcome.fit,
     };
     const validation = PerformanceSchema.safeParse(candidate);
     if (!validation.success) {
@@ -254,7 +257,14 @@ export class LlmReconnoiterer implements IReconnoiterer {
       this.logger.warn({ unresolvedTargets, treeTruncated }, 'recon dropped requested click/type step(s) — target(s) not locatable on the page');
     }
     this.logger.info(
-      { stepCount: validation.data.steps.length, totalEstimatedMs: validation.data.totalEstimatedMs, durationMs: input.durationMs, rehearsal: rehearsalTrace, unresolvedTargets: unresolvedTargets.length || undefined },
+      {
+        stepCount: validation.data.steps.length,
+        totalEstimatedMs: validation.data.totalEstimatedMs,
+        durationMs: input.durationMs,
+        rehearsal: rehearsalTrace,
+        unresolvedTargets: unresolvedTargets.length || undefined,
+        planDurationFit: fitOutcome.fit,
+      },
       'recon complete',
     );
     return validation.data;
@@ -436,28 +446,37 @@ function sumDurations(steps: PerformanceStep[]): number {
 }
 
 /**
- * Make a plan's estimated playback time fit `durationMs`.
+ * F1 corrector: the ±X% tolerance window for the LLM's plan duration.
  *
- * Reconnaissance LLMs are poor at the budget arithmetic — they typically
- * over-pack (a 10 s budget comes back as a 13–14 s plan; the recording then
- * overruns and the deliverable trips goals.md #2's ±10 % bright-line), and
- * occasionally under-pack. We fix it deterministically, off-camera, AFTER any
- * rehearsal walk:
+ * Reconnaissance LLMs mis-size the playback window — typically over-pack
+ * ("a 10 s budget back as 13–14 s"), occasionally under-pack. F1 makes
+ * `durationMs` a first-class constraint **in the recon prompt itself** (A
+ * owns natural filler — only A has the prompt + page + prohibition context
+ * for "what a real person would do in the spare time"). This function (B)
+ * is no longer a content-inventor; it is a deterministic ±X% corrector that
+ * SURFACES out-of-band misses to `RunMetrics.planDurationFit` instead of
+ * silently papering over them. The well-under-budget mechanical scroll+dwell
+ * pad branch that used to live here was **removed in F1** — see ADR §0040 +
+ * docs/superpowers/specs/2026-05-13-plan-duration-fit-design.md.
  *
- *  - Over budget: uniformly scale down the *controllable* timings — scroll
- *    durations + their trailing dwells, dwell durations, click anticipation,
- *    type pre-pauses — keeping every step, its order, and its easing, and never
- *    below sane floors. Fixed costs the Director incurs regardless (the
- *    post-click/key/back page-settle wait, per-keystroke typing speed, the
- *    per-step overhead) are not scaled.
- *  - Well under budget (< 90 %): append one gentle closing `scroll` + `dwell`
- *    sized to the gap (clamped to the step schema's bounds), before the final
- *    `done` if there is one.
+ * Behavior, where TOL = config.planDurationFitToleranceRatio (default 0.20):
+ *   ratio = estimated / durationMs
+ *   |ratio - 1| <= TOL  → status 'ok'; if estimated > durationMs, run the
+ *                         per-step compress (kept) to land it inside ±10%;
+ *                         otherwise return steps as-is (B does not pad).
+ *   ratio > 1 + TOL     → status 'compressed-hard'; run the per-step compress
+ *                         (best-effort). Surface for the canary.
+ *   ratio < 1 - TOL     → status 'underfilled'; return steps as-is. B never
+ *                         invents filler — that is A's job. Surface for the
+ *                         canary; the trimmed-duration line will hard-fail.
  *
  * "Fit the recording into the duration the user paid for" is mechanical, not a
- * behaviour threshold — goals.md #6 carve-out.
+ * behaviour threshold — goals.md #6 carve-out (pacing carve-out).
  */
-export function fitPlanToBudget(steps: PerformanceStep[], durationMs: number): PerformanceStep[] {
+export function fitPlanToBudget(
+  steps: PerformanceStep[],
+  durationMs: number,
+): { steps: PerformanceStep[]; fit: PlanDurationFit } {
   let fixedMs = 0;       // costs we can't shrink: post-action settle waits + typing speed + per-step overhead
   let controllableMs = 0; // scroll/dwell/anticipation/preMs — the slack we can compress
   for (const s of steps) {
@@ -473,54 +492,55 @@ export function fitPlanToBudget(steps: PerformanceStep[], durationMs: number): P
     }
   }
   const estimatedMs = fixedMs + controllableMs;
+  // durationMs=0 is a degenerate input; treat as "fits fine" — the Director's hard cap is the real backstop.
+  const ratio = durationMs > 0 ? estimatedMs / durationMs : 1;
+  const TOL = config.planDurationFitToleranceRatio;
 
-  // Over budget: compress the controllable slack to whatever room the fixed
-  // costs leave. (If the fixed costs alone already exceed the budget there's
-  // nothing useful to do here — leave it; the Director's hard cap is the
-  // backstop.)
-  if (estimatedMs > durationMs && controllableMs > 0 && durationMs > fixedMs) {
-    const scale = (durationMs - fixedMs) / controllableMs;
-    if (scale < 1) {
-      return steps.map((s): PerformanceStep => {
-        switch (s.kind) {
-          case 'dwell':
-            return { ...s, durationMs: Math.max(100, Math.round(s.durationMs * scale)) };
-          case 'scroll':
-            return {
-              ...s,
-              durationMs: Math.max(200, Math.round(s.durationMs * scale)),
-              dwellAfterMs: Math.max(0, Math.round(s.dwellAfterMs * scale)),
-            };
-          case 'click':
-            return { ...s, anticipationMs: Math.max(0, Math.round(s.anticipationMs * scale)) };
-          case 'type':
-            return { ...s, preMs: Math.max(0, Math.round(s.preMs * scale)) };
-          default:
-            return s;
-        }
-      });
+  // Compress helper — the existing per-step scale-down, lifted verbatim so
+  // both the inside-tolerance "slightly over" case and the out-of-tolerance
+  // 'compressed-hard' case share it.
+  const compressIfPossible = (): PerformanceStep[] => {
+    if (estimatedMs > durationMs && controllableMs > 0 && durationMs > fixedMs) {
+      const scale = (durationMs - fixedMs) / controllableMs;
+      if (scale < 1) {
+        return steps.map((s): PerformanceStep => {
+          switch (s.kind) {
+            case 'dwell':
+              return { ...s, durationMs: Math.max(100, Math.round(s.durationMs * scale)) };
+            case 'scroll':
+              return {
+                ...s,
+                durationMs: Math.max(200, Math.round(s.durationMs * scale)),
+                dwellAfterMs: Math.max(0, Math.round(s.dwellAfterMs * scale)),
+              };
+            case 'click':
+              return { ...s, anticipationMs: Math.max(0, Math.round(s.anticipationMs * scale)) };
+            case 'type':
+              return { ...s, preMs: Math.max(0, Math.round(s.preMs * scale)) };
+            default:
+              return s;
+          }
+        });
+      }
     }
+    return steps;
+  };
+
+  // Out-of-tolerance over: compress (best-effort) + surface as compressed-hard.
+  if (ratio > 1 + TOL) {
+    return { steps: compressIfPossible(), fit: { estimatedMs, targetMs: durationMs, ratio, status: 'compressed-hard' } };
   }
 
-  // Well under budget: pad with one gentle closing scroll + dwell sized to the
-  // gap (within the step schema's bounds), inserted before the trailing `done`.
-  // The two new steps carry their own per-step overhead, so net it out first.
-  if (estimatedMs < durationMs * 0.9) {
-    let gap = durationMs - estimatedMs - 2 * config.pacingStepOverheadMs;
-    const scrollMs = Math.min(2200, Math.max(600, Math.round(gap * 0.45)));
-    gap -= scrollMs;
-    const dwellAfterMs = 200;
-    gap -= dwellAfterMs;
-    const dwellMs = Math.min(8000, Math.max(300, gap));
-    const filler: PerformanceStep[] = [
-      { kind: 'scroll', deltaPx: 320, durationMs: scrollMs, easing: 'inOutQuad', dwellAfterMs, reasoning: 'closing browse to fill the requested recording duration' },
-      { kind: 'dwell', durationMs: dwellMs, reasoning: 'settle on the page before the recording ends' },
-    ];
-    const lastIsDone = steps.length > 0 && steps[steps.length - 1]!.kind === 'done';
-    return lastIsDone ? [...steps.slice(0, -1), ...filler, steps[steps.length - 1]!] : [...steps, ...filler];
+  // Out-of-tolerance under: surface as underfilled. F1 explicitly forbids B
+  // from inventing filler — A owns natural filler (durationMs is now a
+  // first-class constraint in the recon prompt). Return steps untouched.
+  if (ratio < 1 - TOL) {
+    return { steps, fit: { estimatedMs, targetMs: durationMs, ratio, status: 'underfilled' } };
   }
 
-  return steps;
+  // Inside tolerance: still allow a light compress when the plan is slightly
+  // over (so C's ±2 s soft-align can land it inside ±10%); never pad.
+  return { steps: compressIfPossible(), fit: { estimatedMs, targetMs: durationMs, ratio, status: 'ok' } };
 }
 
 function stripCodeFence(s: string): string {

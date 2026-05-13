@@ -300,9 +300,8 @@ describe('LlmReconnoiterer + blockerDismisser', () => {
   });
 });
 
-describe('fitPlanToBudget — keep the recording the length the user paid for', () => {
-  // Mirror the reconnoiterer's own estimate (config defaults: settle 1500,
-  // per-step overhead 280 on every non-done step).
+describe('fitPlanToBudget — ±20% corrector + structured status (F1)', () => {
+  // Mirror the reconnoiterer's own estimate. Same defaults as before.
   const estimateMs = (steps: PerformanceStep[]): number => {
     let t = 0;
     for (const s of steps) {
@@ -320,7 +319,25 @@ describe('fitPlanToBudget — keep the recording the length the user paid for', 
     return t;
   };
 
-  it('compresses an over-packed plan toward the budget, keeping every step + easing', () => {
+  // ── status: 'ok' — within the tolerance window ───────────────────────────
+  it('passes a plan that already fits straight through, status ok', () => {
+    const steps: PerformanceStep[] = [
+      { kind: 'dwell', durationMs: 400, reasoning: 'absorb' },
+      { kind: 'scroll', deltaPx: 600, durationMs: 1800, easing: 'inOutQuad', dwellAfterMs: 200, reasoning: 'read' },
+      { kind: 'dwell', durationMs: 2000, reasoning: 'linger' },
+      { kind: 'done', reasoning: 'fin' },
+    ];
+    const out = fitPlanToBudget(steps, estimateMs(steps));
+    expect(out.steps).toBe(steps); // same reference — no work needed
+    expect(out.fit.status).toBe('ok');
+    expect(out.fit.targetMs).toBe(estimateMs(steps));
+    expect(out.fit.estimatedMs).toBe(estimateMs(steps));
+    expect(out.fit.ratio).toBeCloseTo(1);
+  });
+
+  it('slightly-over (still inside +20%) compresses + still reports ok', () => {
+    // estimate ≈ 1400(overhead) + 500 + (800+1500) + 3400 + 3400 + 3000 ≈ 14 s
+    // Budget 12 s → ratio ≈ 1.17, inside ±20% → still 'ok' but compressed.
     const steps: PerformanceStep[] = [
       { kind: 'dwell', durationMs: 500, reasoning: 'absorb' },
       { kind: 'click', target: { selector: 'a', bbox: { x: 0, y: 0, width: 1, height: 1 }, description: 'a' }, anticipationMs: 800, reasoning: 'tap', expectAfter: { urlContains: '/x' } },
@@ -329,45 +346,62 @@ describe('fitPlanToBudget — keep the recording the length the user paid for', 
       { kind: 'dwell', durationMs: 3000, reasoning: 'linger' },
       { kind: 'done', reasoning: 'fin' },
     ];
-    // estimate ≈ 1400(overhead) + 500 + (800+1500) + 3400 + 3400 + 3000 ≈ 14 s for a 10 s budget
-    const out = fitPlanToBudget(steps, 10000);
-    expect(out.map((s) => s.kind)).toEqual(steps.map((s) => s.kind)); // no step added/removed
-    expect((out[2] as { easing: string }).easing).toBe('outQuart'); // easing preserved
-    // compressed down from ~14 s to roughly the budget (rounding ± a few ms),
-    // and not over-compressed.
-    expect(estimateMs(out)).toBeLessThan(11000);
-    expect(estimateMs(out)).toBeGreaterThan(8500);
+    const out = fitPlanToBudget(steps, 12000);
+    expect(out.fit.status).toBe('ok');
+    expect(out.steps.map((s) => s.kind)).toEqual(steps.map((s) => s.kind)); // every step kept
+    expect(estimateMs(out.steps)).toBeLessThan(12500);
+    expect(estimateMs(out.steps)).toBeGreaterThan(10500); // not over-compressed
   });
 
-  it('pads a far-too-short plan with a closing scroll + dwell before the done', () => {
+  // ── status: 'compressed-hard' — ratio > 1 + TOL ───────────────────────────
+  it('far-over (ratio > 1.20) compresses and reports compressed-hard', () => {
+    // Same ~14 s plan against a 10 s budget → ratio 1.40 → compressed-hard
+    const steps: PerformanceStep[] = [
+      { kind: 'dwell', durationMs: 500, reasoning: 'absorb' },
+      { kind: 'click', target: { selector: 'a', bbox: { x: 0, y: 0, width: 1, height: 1 }, description: 'a' }, anticipationMs: 800, reasoning: 'tap', expectAfter: { urlContains: '/x' } },
+      { kind: 'scroll', deltaPx: 700, durationMs: 3000, easing: 'outQuart', dwellAfterMs: 400, reasoning: 'read' },
+      { kind: 'scroll', deltaPx: 700, durationMs: 3000, easing: 'inOutQuad', dwellAfterMs: 400, reasoning: 'read' },
+      { kind: 'dwell', durationMs: 3000, reasoning: 'linger' },
+      { kind: 'done', reasoning: 'fin' },
+    ];
+    const out = fitPlanToBudget(steps, 10000);
+    expect(out.fit.status).toBe('compressed-hard');
+    expect(out.fit.ratio).toBeGreaterThan(1.20);
+    expect(out.steps.map((s) => s.kind)).toEqual(steps.map((s) => s.kind)); // no step added
+    expect((out.steps[2] as { easing: string }).easing).toBe('outQuart'); // easing preserved
+    expect(estimateMs(out.steps)).toBeLessThan(11000); // compressed to ~budget
+    expect(estimateMs(out.steps)).toBeGreaterThan(8500);
+  });
+
+  // ── status: 'underfilled' — ratio < 1 - TOL, NO PAD ───────────────────────
+  it('far-under (ratio < 0.80) is returned as-is — no mechanical pad — and reports underfilled', () => {
+    // Plan estimate ~2.6 s; budget 10 s; ratio 0.26 → underfilled. PAD BRANCH
+    // REMOVED in F1: the returned `steps` must equal the input verbatim (no
+    // appended scroll/dwell). A's job to fill the time naturally; B refuses.
     const steps: PerformanceStep[] = [
       { kind: 'dwell', durationMs: 400, reasoning: 'absorb' },
       { kind: 'dwell', durationMs: 1500, reasoning: 'read' },
       { kind: 'done', reasoning: 'fin' },
     ];
-    const out = fitPlanToBudget(steps, 10000); // estimate ~2.6 s ≪ 9 s
-    expect(out.map((s) => s.kind)).toEqual(['dwell', 'dwell', 'scroll', 'dwell', 'done']);
-    expect(out[out.length - 1]!.kind).toBe('done'); // padding goes BEFORE the done
-    expect(estimateMs(out)).toBeGreaterThan(9000);
-    // every step still satisfies the step schema's bounds
-    const fillerScroll = out[2] as Extract<PerformanceStep, { kind: 'scroll' }>;
-    expect(fillerScroll.durationMs).toBeGreaterThanOrEqual(200);
-    expect(fillerScroll.durationMs).toBeLessThanOrEqual(4000);
-    const fillerDwell = out[3] as Extract<PerformanceStep, { kind: 'dwell' }>;
-    expect(fillerDwell.durationMs).toBeGreaterThanOrEqual(100);
-    expect(fillerDwell.durationMs).toBeLessThanOrEqual(8000);
+    const out = fitPlanToBudget(steps, 10000);
+    expect(out.steps).toBe(steps); // same array reference — B added nothing
+    expect(out.fit.status).toBe('underfilled');
+    expect(out.fit.ratio).toBeLessThan(0.80);
+    expect(out.fit.targetMs).toBe(10000);
   });
 
-  it('passes a plan that already fits straight through (no compress, no pad)', () => {
+  it('inside-tolerance under-plan (ratio in [0.80, 1.00)) is ok, untouched', () => {
+    // Plan estimate ~8.4 s; budget 10 s; ratio 0.84 → inside tolerance → ok, untouched.
     const steps: PerformanceStep[] = [
       { kind: 'dwell', durationMs: 400, reasoning: 'absorb' },
       { kind: 'scroll', deltaPx: 600, durationMs: 1800, easing: 'inOutQuad', dwellAfterMs: 200, reasoning: 'read' },
-      { kind: 'dwell', durationMs: 2000, reasoning: 'linger' },
+      { kind: 'dwell', durationMs: 4000, reasoning: 'linger' },
+      { kind: 'scroll', deltaPx: 400, durationMs: 1200, easing: 'inOutQuad', dwellAfterMs: 100, reasoning: 'continue' },
       { kind: 'done', reasoning: 'fin' },
     ];
-    // Budget == the plan's own estimate ⇒ neither over (no compress) nor below
-    // 90 % (no pad) ⇒ the same array reference comes straight back.
-    expect(fitPlanToBudget(steps, estimateMs(steps))).toBe(steps);
+    const out = fitPlanToBudget(steps, 10000);
+    expect(out.fit.status).toBe('ok');
+    expect(out.steps).toBe(steps); // untouched (under-tol, no compress, no pad)
   });
 });
 

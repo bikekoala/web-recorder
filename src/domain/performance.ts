@@ -141,6 +141,26 @@ export const BlockerDismissDecisionSchema = z.object({
 }).passthrough();
 export type BlockerDismissDecision = z.infer<typeof BlockerDismissDecisionSchema>;
 
+/**
+ * Structured outcome of `fitPlanToBudget` (the F1 ±X% corrector — ADR §0040).
+ * The transparency channel that replaces the old scroll+dwell pad:
+ *   `compressed-hard` — the LLM over-planned by more than the tolerance and B
+ *     compressed (best-effort) to land it inside the window;
+ *   `underfilled`     — the LLM under-planned by more than the tolerance and B
+ *     refused to invent filler; the recording will run short, surfaced here so
+ *     `intentSatisfaction` / the eval canary can flag it instead of pretending
+ *     the duration was hit;
+ *   `ok`              — within tolerance, or a light compress kept it there.
+ * Mirrored verbatim onto `Performance.planDurationFit` and `RunMetrics`.
+ */
+export const PlanDurationFitSchema = z.object({
+  estimatedMs: z.number().int().nonnegative(),
+  targetMs: z.number().int().nonnegative(),
+  ratio: z.number(),
+  status: z.enum(['ok', 'compressed-hard', 'underfilled']),
+});
+export type PlanDurationFit = z.infer<typeof PlanDurationFitSchema>;
+
 export const PerformanceSchema = z.object({
   prompt: z.string().min(1),
   durationMs: z.number().int().positive(),
@@ -163,21 +183,10 @@ export const PerformanceSchema = z.object({
    */
   unresolvedTargets: z.array(z.string().min(1)).optional(),
   /**
-   * Outcome of `fitPlanToBudget` (the F1 ±X% corrector — see ADR §0040). The
-   * structured transparency channel that replaces the old silent
-   * scroll+dwell pad: `compressed-hard` means the LLM over-planned by more
-   * than the tolerance and B compressed (best-effort) to land it; `underfilled`
-   * means the LLM under-planned by more than the tolerance and B refused to
-   * invent filler — the recording will run short, surfaced here so
-   * `intentSatisfaction` / the eval canary can flag it instead of pretending
-   * the duration was hit. `ok` covers both "within tolerance" and the
-   * still-OK light-compress case. Mirrored verbatim into `RunMetrics`.
+   * Outcome of `fitPlanToBudget` (the F1 ±X% corrector — see ADR §0040).
+   * See {@link PlanDurationFitSchema} for field semantics. Mirrored verbatim
+   * into `RunMetrics`.
    */
-  planDurationFit: z.object({
-    estimatedMs: z.number().int().nonnegative(),
-    targetMs: z.number().int().nonnegative(),
-    ratio: z.number(),
-    status: z.enum(['ok', 'compressed-hard', 'underfilled']),
-  }).optional(),
+  planDurationFit: PlanDurationFitSchema.optional(),
 });
 export type Performance = z.infer<typeof PerformanceSchema>;
