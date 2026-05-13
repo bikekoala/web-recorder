@@ -5,6 +5,7 @@ import {
   DoneStepSchema,
   DwellStepSchema,
   ExpectAfterSchema,
+  GotoStepSchema,
   KeyStepSchema,
   ScrollStepSchema,
 } from './performance.js';
@@ -69,6 +70,8 @@ export const ReconDraftStepSchema = z.discriminatedUnion('kind', [
   DwellStepSchema,
   BackStepSchema,
   DoneStepSchema,
+  // goto has no target to resolve — identical shape in draft and Performance.
+  GotoStepSchema,
 ]);
 export type ReconDraftStep = z.infer<typeof ReconDraftStepSchema>;
 

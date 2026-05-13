@@ -48,6 +48,7 @@ Each step is exactly one of:
   { "kind": "key",    "key": "Enter"|"Escape"|"Tab"|"ArrowDown"|"ArrowUp"|"ArrowLeft"|"ArrowRight"|"Backspace", "reasoning": "<short — one clause, under 200 chars>", "expectAfter"?: {...} }
   { "kind": "dwell",  "durationMs": <100..8000>, "reasoning": "<short — one clause, under 200 chars, e.g. 'reading the README intro'>" }
   { "kind": "back",   "reasoning": "<short — one clause, under 200 chars>", "expectAfter"?: {...} }
+  { "kind": "goto",   "url": "<absolute URL on the SAME host as the starting URL>", "anticipationMs": <0..3000>, "reasoning": "<short — one clause, under 200 chars>", "expectAfter"?: {...} }
   { "kind": "done",   "reasoning": "<short — one clause, under 200 chars>" }
 
 JSON SAFETY RULES — read carefully:
@@ -60,7 +61,7 @@ JSON SAFETY RULES — read carefully:
 7. EVERY numeric value (durationMs, totalEstimatedMs, deltaPx, anticipationMs, preMs, keystrokeMs, dwellAfterMs, etc.) is a single JSON number literal — \`9450\`, \`-300\`, \`1.5\`. NEVER an arithmetic expression (\`500 + 800\`), variable, percentage string, or math equation. JSON.parse rejects all of those.
 
 PACING — you decide how human this looks:
-- "anticipationMs" on a click: 500-800ms for a normal click (the recorder pauses there as if locating the target). Shorter (~300ms) for an obvious button; longer (~1000ms) for an ambiguous target. NOTE: a click/key/back ALSO costs ~1.5 s afterwards while the page settles (navigating, re-rendering) — that's automatic, you don't add a step for it, but DO count it when you budget the window: a click is roughly anticipationMs + ~1.5 s of recording time, not just anticipationMs.
+- "anticipationMs" on a click: 500-800ms for a normal click (the recorder pauses there as if locating the target). Shorter (~300ms) for an obvious button; longer (~1000ms) for an ambiguous target. NOTE: a click/key/back/goto ALSO costs ~1.5 s afterwards while the page settles (navigating, re-rendering) — that's automatic, you don't add a step for it, but DO count it when you budget the window: a click/goto is roughly anticipationMs + ~1.5 s of recording time, not just anticipationMs.
 - "scroll": speed = deltaPx / durationMs. ~250-350 px/s for reading scrolls, ~450 for scanning, ~800 for a fling. Big scrolls (>2500px) should be split into a fling step + a slower approach step. \`dwellAfterMs\` (120-280ms) is the EYE-LANDING pause — the moment the eye settles after motion. It is NOT reading time. Reading is a separate \`dwell\` step that FOLLOWS the scroll.
 
 SCROLL-TO-TARGET DISCIPLINE — read this:
@@ -80,10 +81,16 @@ END-OF-CONTENT — don't stare:
 - If you reach the bottom of meaningful content with budget remaining, you have two natural choices: (1) click into something interesting on the page (a top result, a comment thread, a linked article), or (2) end with \`done\`. DO NOT plan a multi-second static \`dwell\` at the literal bottom of the page just to consume time — that 5-second motionless stare reads as the agent giving up.
 - A brief 1-2 s dwell AT a content section worth lingering on is fine. A 4-5 s dwell at the bottom of an empty footer or below the last result is not.
 
+WHEN TO USE \`goto\` (direct URL navigation — ADR §0041):
+- Use \`goto\` when the user's intent names or strongly implies a destination URL AND no obvious click path exists on the current page in budget. Example: starting at \`github.com\`, the user says "看本周热门项目" — you know the URL is \`github.com/trending\`, but the homepage's nav doesn't expose it as a click. Plan \`{ "kind": "goto", "url": "https://github.com/trending", "anticipationMs": 800, ... }\` instead of hunting through dropdown menus.
+- A \`goto\` plays as: \`anticipationMs\` of stillness (the user typing the URL — silent on camera; ~600-1200ms is natural) → the page loads. Cost is ~anticipationMs + ~1500ms of recording time (same as a click).
+- Prefer \`click\` over \`goto\` when a visible link/button leads to the destination — that's what a real user does first. \`goto\` is the "I know the URL, just go there" shortcut, not the default tool.
+- HARD CONSTRAINT — same-host only: the \`goto\` URL's hostname MUST equal the starting URL's hostname (paths and query strings are free to differ). \`github.com → github.com/trending\` ✓; \`github.com → docs.github.com\` ✗ (different subdomain — use a click); \`github.com → google.com\` ✗ (different site — never). Cross-host gotos are dropped by the runner.
+
 DURATION & SCOPE (hard constraint — supersedes the soft ~15% mention in PACING):
 - Your plan's totalEstimatedMs MUST land within ±10% of the durationMs you are given. Estimate using the same model the runner uses:
     each non-\`done\` step: +~280ms (per-step overhead the Director can't avoid)
-    click:                +anticipationMs + ~1500ms (anticipation pause + the post-action page-settle wait)
+    click / goto:         +anticipationMs + ~1500ms (anticipation pause + the post-action page-settle wait)
     key / back:           +~1500ms (post-action page-settle wait)
     dwell:                +durationMs
     scroll:               +durationMs + dwellAfterMs

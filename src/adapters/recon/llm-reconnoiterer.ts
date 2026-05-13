@@ -108,7 +108,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
     // won't resolve (nor by visible text, nor by `observe()` description) drops
     // its step — and lands in `unresolved` so the dropped intent is reported
     // transparently. Other kinds pass straight through.
-    const { steps: resolvedSteps, unresolved } = await this.resolveDraftSteps(draft.steps, session);
+    const { steps: resolvedSteps, unresolved } = await this.resolveDraftSteps(draft.steps, session, input.url);
     if (resolvedSteps.length === 0) {
       throw new ReconError('recon produced zero usable steps after ref resolution');
     }
@@ -184,7 +184,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
           this.logger.warn({ err: parsed.error.message.slice(0, 200) }, 'reconverge draft failed schema');
           return [];
         }
-        const { steps, unresolved: u } = await this.resolveDraftSteps(parsed.data.steps, ctx.session);
+        const { steps, unresolved: u } = await this.resolveDraftSteps(parsed.data.steps, ctx.session, input.url);
         reconvergeUnresolved.push(...u);
         return steps;
       };
@@ -233,10 +233,16 @@ export class LlmReconnoiterer implements IReconnoiterer {
     const annotateMiss = (d: string): string =>
       treeTruncated ? `${d} (page tree too large to analyze in full)` : d;
     let unresolvedTargets = [...new Set([...unresolved, ...reconvergeUnresolved])].map(annotateMiss);
+    // `goto` is an acting step too — if A planned to navigate but the walk's
+    // recovery dropped it (e.g. cross-host enforcement, or reconverge picked a
+    // pure read-plan), surface the lost navigation the same way we surface a
+    // lost click. The `targetDescription` for a goto is its destination URL.
     const requestedActingDescriptions = draft.steps.flatMap((s) =>
-      s.kind === 'click' || s.kind === 'type' ? [s.targetDescription] : [],
+      s.kind === 'click' || s.kind === 'type' ? [s.targetDescription]
+        : s.kind === 'goto' ? [`goto ${s.url}`]
+        : [],
     );
-    const finalHasActing = finalSteps.some((s) => s.kind === 'click' || s.kind === 'type');
+    const finalHasActing = finalSteps.some((s) => s.kind === 'click' || s.kind === 'type' || s.kind === 'goto');
     if (unresolvedTargets.length === 0 && requestedActingDescriptions.length > 0 && !finalHasActing) {
       unresolvedTargets = [...new Set(requestedActingDescriptions)].map(
         (d) => `${d} (the rehearsal walk's recovery couldn't keep this in the plan)`,
@@ -296,10 +302,30 @@ export class LlmReconnoiterer implements IReconnoiterer {
   private async resolveDraftSteps(
     draftSteps: ReconDraftStep[],
     session: IPageSession,
+    startingUrl: string,
   ): Promise<{ steps: PerformanceStep[]; unresolved: string[] }> {
     const resolved: PerformanceStep[] = [];
     const unresolved: string[] = [];
+    const startingHost = safeHostname(startingUrl);
     for (const step of draftSteps) {
+      // goto: same-host enforcement (ADR §0041). Cross-host gotos are dropped
+      // and surfaced via `unresolvedTargets` — A shouldn't be teleporting away
+      // from the user's intended site. Same-host gotos pass through; the
+      // Director plays them as `wait(anticipationMs)` + `session.goto(url)` +
+      // `waitForVisualStability()`.
+      if (step.kind === 'goto') {
+        const targetHost = safeHostname(step.url);
+        if (!targetHost || !startingHost || targetHost !== startingHost) {
+          this.logger.warn(
+            { stepUrl: step.url, startingUrl, targetHost, startingHost },
+            'recon planned a cross-host goto — dropping (same-host only per ADR §0041)',
+          );
+          unresolved.push(`goto ${step.url} (cross-host — same-host rule per ADR §0041)`);
+          continue;
+        }
+        resolved.push(step);
+        continue;
+      }
       if (step.kind !== 'click' && step.kind !== 'type') {
         resolved.push(step);
         continue;
@@ -450,6 +476,15 @@ export class LlmReconnoiterer implements IReconnoiterer {
  * overrun the requested duration; see
  * docs/findings/2026-05-12-recordvideo-clock-drift.md.
  */
+/**
+ * Best-effort URL hostname extraction. Returns `null` on any parse error —
+ * callers treat null as "can't compare" and conservatively reject the
+ * navigation (ADR §0041 same-host rule). Never throws.
+ */
+function safeHostname(url: string): string | null {
+  try { return new URL(url).hostname; } catch { return null; }
+}
+
 function sumDurations(steps: PerformanceStep[]): number {
   let total = 0;
   for (const s of steps) {
@@ -461,6 +496,9 @@ function sumDurations(steps: PerformanceStep[]): number {
       case 'type': total += s.preMs + s.text.length * s.keystrokeMs; break;
       case 'key': total += config.pacingSettleEstMs; break;
       case 'back': total += config.pacingSettleEstMs; break;
+      // goto: same shape as click — `anticipationMs` while the user types the
+      // URL, then `pacingSettleEstMs` for the page-load settle. ADR §0041.
+      case 'goto': total += s.anticipationMs + config.pacingSettleEstMs; break;
       case 'done': break;
     }
   }
@@ -510,6 +548,8 @@ export function fitPlanToBudget(
       case 'type': controllableMs += s.preMs; fixedMs += s.text.length * s.keystrokeMs; break;
       case 'key': fixedMs += config.pacingSettleEstMs; break;
       case 'back': fixedMs += config.pacingSettleEstMs; break;
+      // goto: same shape as click — anticipationMs is controllable, settle is fixed.
+      case 'goto': controllableMs += s.anticipationMs; fixedMs += config.pacingSettleEstMs; break;
       case 'done': break;
     }
   }
@@ -536,6 +576,8 @@ export function fitPlanToBudget(
                 dwellAfterMs: Math.max(0, Math.round(s.dwellAfterMs * scale)),
               };
             case 'click':
+              return { ...s, anticipationMs: Math.max(0, Math.round(s.anticipationMs * scale)) };
+            case 'goto':
               return { ...s, anticipationMs: Math.max(0, Math.round(s.anticipationMs * scale)) };
             case 'type':
               return { ...s, preMs: Math.max(0, Math.round(s.preMs * scale)) };

@@ -74,6 +74,27 @@ export const DoneStepSchema = z.object({
   kind: z.literal('done'),
   reasoning: z.string().min(1).max(300),
 });
+/**
+ * `goto` step — direct address-bar navigation (ADR §0041 / P1 in the
+ * wild-prompts sweep). A real user types a URL they know directly into the
+ * URL bar instead of hunting for a click path. The Director plays this as
+ *   `wait(anticipationMs)` (the "typing the URL" beat — silent on camera)
+ *   → `session.goto(url)`
+ *   → `session.waitForVisualStability()`
+ * The recording window covers the wait → load transition; visually it's
+ * indistinguishable from a click-driven page change (the URL bar isn't
+ * captured in the viewport recording). Use when the user's intent names or
+ * implies a destination URL and there's no easy click path on the current
+ * page in budget. Cross-origin gotos are dropped by the runner — a recon
+ * LLM shouldn't be teleporting away from the user's intended site.
+ */
+export const GotoStepSchema = z.object({
+  kind: z.literal('goto'),
+  url: z.string().url(),
+  anticipationMs: z.number().int().min(0).max(3000),
+  reasoning: z.string().min(1).max(300),
+  expectAfter: ExpectAfterSchema.optional(),
+});
 
 export const PerformanceStepSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -96,6 +117,7 @@ export const PerformanceStepSchema = z.discriminatedUnion('kind', [
   DwellStepSchema,
   BackStepSchema,
   DoneStepSchema,
+  GotoStepSchema,
 ]);
 export type PerformanceStep = z.infer<typeof PerformanceStepSchema>;
 

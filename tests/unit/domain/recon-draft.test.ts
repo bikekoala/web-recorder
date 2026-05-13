@@ -9,6 +9,7 @@ const keyStep = { kind: 'key' as const, key: 'Enter' as const, reasoning: 'submi
 const dwellStep = { kind: 'dwell' as const, durationMs: 2400, reasoning: 'reading' };
 const backStep = { kind: 'back' as const, reasoning: 'return' };
 const doneStep = { kind: 'done' as const, reasoning: 'all done' };
+const gotoStep = { kind: 'goto' as const, url: 'https://github.com/trending', anticipationMs: 800, reasoning: 'go directly to trending' };
 
 const validDraft = {
   prompt: 'sign in then read',
@@ -22,9 +23,22 @@ describe('ReconDraft schema', () => {
     expect(ReconDraftSchema.parse(validDraft)).toMatchObject({ steps: expect.any(Array) });
   });
   it('accepts each draft step kind', () => {
-    for (const s of [clickDraft, typeDraft, scrollStep, keyStep, dwellStep, backStep, doneStep]) {
+    for (const s of [clickDraft, typeDraft, scrollStep, keyStep, dwellStep, backStep, doneStep, gotoStep]) {
       expect(ReconDraftStepSchema.parse(s)).toBeTruthy();
     }
+  });
+
+  it('accepts a goto step (ADR §0041) with the shared shape across draft and Performance', () => {
+    expect(ReconDraftStepSchema.parse(gotoStep)).toEqual(PerformanceStepSchema.parse(gotoStep));
+  });
+
+  it('rejects a goto step without a valid URL', () => {
+    expect(() => ReconDraftStepSchema.parse({ ...gotoStep, url: 'not a url' })).toThrow();
+  });
+
+  it('rejects a goto step missing anticipationMs', () => {
+    const noAnticipation = { kind: 'goto', url: 'https://github.com/trending', reasoning: 'go' } as unknown;
+    expect(() => ReconDraftStepSchema.parse(noAnticipation)).toThrow();
   });
   it('rejects a click step with no ref', () => {
     expect(() => ReconDraftStepSchema.parse({ kind: 'click', targetDescription: 'd', anticipationMs: 600, reasoning: 'x' })).toThrow();

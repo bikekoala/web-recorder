@@ -174,6 +174,16 @@ export class PerformanceDirector implements IDirector {
         await session.goBack();
         await this.settle(session);
         return;
+      case 'goto':
+        // ADR §0041 — direct URL navigation, played on-camera. The
+        // `anticipationMs` wait represents the user typing the URL into the
+        // address bar (silent in the viewport recording — URL bar is browser
+        // chrome, not in the captured frame). Then we navigate and wait for
+        // the page to settle, just like a click that navigates.
+        if (step.anticipationMs > 0) await session.wait(step.anticipationMs);
+        await session.goto(step.url);
+        await this.settle(session);
+        return;
       case 'done':
         return;
     }
@@ -280,10 +290,17 @@ export class PerformanceDirector implements IDirector {
  * these + the fixed costs ≈ `durationMs`.)
  */
 function declaredMs(step: PerformanceStep): number {
+  // Same shape as the recon estimator (`sumDurations` in the LLM adapter):
+  // anticipationMs for click/goto (the planner's pause-before-act), the
+  // explicit durations for dwell/scroll/type, zero for instant key/back/done.
+  // The runner-side per-step overhead and the post-action settle estimate
+  // are NOT included here — they're the unlogged costs the soft-align
+  // arithmetic accounts for separately. (ADR §0039 / §0041.)
   switch (step.kind) {
     case 'dwell': return step.durationMs;
     case 'scroll': return step.durationMs + step.dwellAfterMs;
     case 'click': return step.anticipationMs;
+    case 'goto': return step.anticipationMs;
     case 'type': return step.preMs + step.text.length * step.keystrokeMs;
     case 'key':
     case 'back':

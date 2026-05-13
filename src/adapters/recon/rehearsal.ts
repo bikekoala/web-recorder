@@ -151,7 +151,7 @@ export async function rehearse(
     // Let a navigation-capable step settle before we observe the post-state —
     // otherwise we'd rewrite expectAfter from a mid-navigation snapshot.
     // (Not after `type`: typing into a field doesn't navigate.)
-    if (step.kind === 'click' || step.kind === 'key' || step.kind === 'back') {
+    if (step.kind === 'click' || step.kind === 'key' || step.kind === 'back' || step.kind === 'goto') {
       await session.waitForVisualStability({ maxMs: 3000 }).catch(() => {});
     }
 
@@ -326,7 +326,7 @@ function pageSignature(diag: PageDiagnostic | null): string {
 }
 
 function stepExpectAfter(step: PerformanceStep): ExpectAfter | null {
-  return step.kind === 'click' || step.kind === 'key' || step.kind === 'back'
+  return step.kind === 'click' || step.kind === 'key' || step.kind === 'back' || step.kind === 'goto'
     ? step.expectAfter ?? null
     : null;
 }
@@ -388,6 +388,12 @@ async function renderActingStepInstant(step: PerformanceStep, session: IPageSess
     case 'back':
       await session.goBack();
       return;
+    case 'goto':
+      // ADR §0041 — direct address-bar navigation. Off-camera here (the
+      // rehearsal walk is always off-camera); the Director plays the same
+      // step on-camera by waiting `anticipationMs` first, then calling goto.
+      await session.goto(step.url);
+      return;
     default:
       throw new Error(`renderActingStepInstant called with non-acting kind: ${step.kind}`);
   }
@@ -425,6 +431,8 @@ function sumWalkedDeclaredMs(steps: PerformanceStep[]): number {
       case 'key': total += config.pacingSettleEstMs; break;
       case 'back': total += config.pacingSettleEstMs; break;
       case 'type': total += s.preMs + s.text.length * s.keystrokeMs; break;
+      // goto: same cost shape as click (ADR §0041).
+      case 'goto': total += s.anticipationMs + config.pacingSettleEstMs; break;
       case 'done': break;
     }
   }
@@ -448,8 +456,8 @@ async function rewriteExpectAfter(
   diag: PageDiagnostic | null,
   session: IPageSession,
 ): Promise<PerformanceStep> {
-  // Only click/key/back carry expectAfter.
-  if (step.kind !== 'click' && step.kind !== 'key' && step.kind !== 'back') return step;
+  // Only click/key/back/goto carry expectAfter.
+  if (step.kind !== 'click' && step.kind !== 'key' && step.kind !== 'back' && step.kind !== 'goto') return step;
 
   const next: { urlContains?: string; visibleText?: string[] } = {};
 

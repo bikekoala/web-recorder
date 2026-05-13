@@ -114,6 +114,29 @@ describe('reconnoitererSystemPrompt — READING RHYTHM + END-OF-CONTENT (wild-pr
   });
 });
 
+describe('reconnoitererSystemPrompt — `goto` step kind (ADR §0041)', () => {
+  it('lists `goto` in the action vocabulary', () => {
+    expect(reconnoitererSystemPrompt).toMatch(/"kind":\s*"goto"/);
+    expect(reconnoitererSystemPrompt).toMatch(/"url":/);
+    expect(reconnoitererSystemPrompt).toMatch(/"anticipationMs":/);
+  });
+
+  it('explains when to prefer goto over click (URL known, no click path in budget)', () => {
+    expect(reconnoitererSystemPrompt).toContain('WHEN TO USE');
+    expect(reconnoitererSystemPrompt).toMatch(/Prefer\s+`?click`?.*over.*`?goto`?/i);
+  });
+
+  it('imposes a same-host hard constraint and warns cross-host gotos get dropped', () => {
+    expect(reconnoitererSystemPrompt).toMatch(/same-host/i);
+    expect(reconnoitererSystemPrompt).toMatch(/hostname MUST equal/i);
+    expect(reconnoitererSystemPrompt).toMatch(/dropped by the runner/i);
+  });
+
+  it('includes goto in the DURATION & SCOPE estimator (anticipationMs + ~1500ms)', () => {
+    expect(reconnoitererSystemPrompt).toMatch(/click\s*\/\s*goto/);
+  });
+});
+
 describe('buildReconvergeUserText — F1 remaining-budget hint', () => {
   it('mentions the remaining durationMs budget when given one', () => {
     const text = buildReconvergeUserText({

@@ -536,3 +536,60 @@ describe('LlmReconnoiterer — giant-page handling (targetText fallback + transp
     expect(perf.unresolvedTargets).toEqual(['the build directory entry']);
   });
 });
+
+describe('LlmReconnoiterer — `goto` step (ADR §0041)', () => {
+  it('passes a same-host goto through to the Performance and accounts for it in totalEstimatedMs', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://github.com/';
+    const draft = JSON.stringify({
+      prompt: 'go to trending', durationMs: 10000, totalEstimatedMs: 6000, rationale: 'know the URL',
+      steps: [
+        { kind: 'goto', url: 'https://github.com/trending', anticipationMs: 800, reasoning: 'address-bar navigate' },
+        { kind: 'dwell', durationMs: 2000, reasoning: 'read the page' },
+        { kind: 'done', reasoning: 'done' },
+      ],
+    });
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(draft) });
+    const perf = await recon.recon({ url: 'https://github.com/', prompt: 'go to trending', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
+    expect(perf.steps[0]).toMatchObject({ kind: 'goto', url: 'https://github.com/trending', anticipationMs: 800 });
+    // sumDurations should include anticipationMs (800) + settle (1500) + step overhead × 2 non-done steps.
+    expect(perf.totalEstimatedMs).toBeGreaterThanOrEqual(800 + 1500 + 2000);
+    expect(perf.unresolvedTargets).toBeUndefined();
+  });
+
+  it('drops a cross-host goto and surfaces it in unresolvedTargets (same-host hard rule)', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://github.com/';
+    const draft = JSON.stringify({
+      prompt: 'go elsewhere', durationMs: 8000, totalEstimatedMs: 3000, rationale: 'teleport',
+      steps: [
+        { kind: 'goto', url: 'https://google.com/search', anticipationMs: 500, reasoning: 'jump sites' },
+        { kind: 'dwell', durationMs: 1000, reasoning: 'wait' },
+        { kind: 'done', reasoning: 'done' },
+      ],
+    });
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(draft) });
+    const perf = await recon.recon({ url: 'https://github.com/', prompt: 'go elsewhere', durationMs: 8000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
+    expect(perf.steps.some((s) => s.kind === 'goto')).toBe(false);
+    expect(perf.unresolvedTargets).toEqual([
+      'goto https://google.com/search (cross-host — same-host rule per ADR §0041)',
+    ]);
+  });
+
+  it('does NOT drop a same-path-different-query goto (same hostname is the bar, not exact URL)', async () => {
+    const session = new FakePageSession();
+    session.url = 'https://github.com/search?q=foo';
+    const draft = JSON.stringify({
+      prompt: 'change the query', durationMs: 6000, totalEstimatedMs: 3500, rationale: 'narrow search',
+      steps: [
+        { kind: 'goto', url: 'https://github.com/search?q=trending&type=repositories', anticipationMs: 400, reasoning: 'refine' },
+        { kind: 'dwell', durationMs: 1500, reasoning: 'read results' },
+        { kind: 'done', reasoning: 'done' },
+      ],
+    });
+    const recon = new LlmReconnoiterer({ model: 'm', client: fakeClient(draft) });
+    const perf = await recon.recon({ url: 'https://github.com/search?q=foo', prompt: 'change the query', durationMs: 6000, viewport: { width: 1280, height: 720 }, screenshot: null }, session);
+    expect(perf.steps.some((s) => s.kind === 'goto')).toBe(true);
+    expect(perf.unresolvedTargets).toBeUndefined();
+  });
+});

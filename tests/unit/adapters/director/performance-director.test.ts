@@ -125,6 +125,21 @@ describe('PerformanceDirector — deterministic playback', () => {
     expect(session.events.some((e) => e.kind === 'wait' && e.payload === 1234)).toBe(true);
   });
 
+  it('renders a goto step: anticipation wait → session.goto(url) → settle (ADR §0041)', async () => {
+    const session = new FakePageSession();
+    const director = new PerformanceDirector({ replanner: new FakeReconnoiterer(), softAlign: false });
+    await director.run(perf([
+      { kind: 'goto', url: 'https://github.com/trending', anticipationMs: 800, reasoning: 'go directly' },
+      { kind: 'done', reasoning: 'fin' },
+    ]), session);
+    // Anticipation wait recorded.
+    expect(session.events.some((e) => e.kind === 'wait' && e.payload === 800)).toBe(true);
+    // goto called with the right URL (the FakePageSession records `goto`
+    // events with the URL as payload).
+    const gotoEvents = session.events.filter((e) => e.kind === 'goto' && e.payload === 'https://github.com/trending');
+    expect(gotoEvents.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('stops with endReason "budget" if the steps overrun durationMs * hardBudgetMult', async () => {
     const session = new FakePageSession();
     const director = new PerformanceDirector({ replanner: new FakeReconnoiterer(), softAlign: false });
