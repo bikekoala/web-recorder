@@ -1,5 +1,6 @@
 import type { ExpectAfter, PerformanceStep, RehearsalTrace } from '../../domain/performance.js';
 import type { PageDiagnostic } from '../../domain/action-log.js';
+import { config } from '../../infra/config.js';
 import type { Logger } from '../../infra/logger.js';
 import type { IPageSession } from '../../ports/page-session.js';
 
@@ -29,6 +30,10 @@ export interface ReconvergeContext {
   divergedStep: PerformanceStep;
   intent: string;
   observedUrl: string;
+  /** Sum of declared durations for all steps already in `walked` at the time of
+   *  divergence — lets the reconverge callback tell the LLM how much of the
+   *  durationMs budget has been consumed (F1 remaining-budget hint). */
+  walkedDeclaredMs: number;
 }
 
 export interface RehearsalOpts {
@@ -72,6 +77,7 @@ export async function rehearse(
           divergedStep,
           intent: opts.intent,
           observedUrl,
+          walkedDeclaredMs: sumWalkedDeclaredMs(walked),
         });
       } catch (err) {
         logger.warn({ err }, 'reconverge failed');
@@ -385,6 +391,44 @@ async function renderActingStepInstant(step: PerformanceStep, session: IPageSess
     default:
       throw new Error(`renderActingStepInstant called with non-acting kind: ${step.kind}`);
   }
+}
+
+/**
+ * Sum the "declared" durations of the steps already walked — mirrors
+ * `sumDurations()` in `llm-reconnoiterer.ts` (the runner's canonical
+ * estimator) so the LLM's mental model and our budget accounting stay in
+ * lockstep. Used to feed the `walkedDeclaredMs` hint on reconverge so the
+ * LLM knows how much of the durationMs budget is already consumed and how
+ * much remains (F1 remaining-budget hint).
+ *
+ *   every non-done step: + config.pacingStepOverheadMs
+ *   dwell:  durationMs
+ *   scroll: durationMs + dwellAfterMs
+ *   click:  anticipationMs + config.pacingSettleEstMs
+ *   key:    config.pacingSettleEstMs
+ *   back:   config.pacingSettleEstMs
+ *   type:   preMs + text.length × keystrokeMs
+ *   done:   0
+ *
+ * NOTE: this is structurally identical to `sumDurations()`. The duplication
+ * is intentional for now — a future refactor could extract a shared
+ * `src/infra/pacing.ts` helper, but that's out of scope here.
+ */
+function sumWalkedDeclaredMs(steps: PerformanceStep[]): number {
+  let total = 0;
+  for (const s of steps) {
+    if (s.kind !== 'done') total += config.pacingStepOverheadMs;
+    switch (s.kind) {
+      case 'dwell': total += s.durationMs; break;
+      case 'scroll': total += s.durationMs + s.dwellAfterMs; break;
+      case 'click': total += s.anticipationMs + config.pacingSettleEstMs; break;
+      case 'key': total += config.pacingSettleEstMs; break;
+      case 'back': total += config.pacingSettleEstMs; break;
+      case 'type': total += s.preMs + s.text.length * s.keystrokeMs; break;
+      case 'done': break;
+    }
+  }
+  return total;
 }
 
 function pathOf(u: string): string {

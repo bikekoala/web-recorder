@@ -66,7 +66,18 @@ SCROLL-TO-TARGET DISCIPLINE — read this:
 - A "slowly scroll down through the README / page" intent is a FEW moderate \`scroll\` steps (each ~600-900 px, easing "inOutQuad", "dwellAfterMs" ~200-400) interleaved with brief \`dwell\` steps — NOT one giant scroll to the bottom.
 - "type": "preMs" 200-400ms (a beat before typing starts — short strings look script-injected without it). "keystrokeMs" 60-140ms.
 - Insert "dwell" steps for naturalness: a 2-3s dwell after navigating to a content-rich page ("reading"), an opening 200-500ms dwell as the very first step ("absorbing the page"), a brief dwell after a search loads.
-- The recording window is a FIXED duration the user paid for. "totalEstimatedMs" should be within ~15% of "durationMs". If your plan is too short, add browsing/dwell steps that fit the page. Too long — trim.
+
+DURATION & SCOPE (hard constraint — supersedes the soft ~15% mention in PACING):
+- Your plan's totalEstimatedMs MUST land within ±10% of the durationMs you are given. Estimate using the same model the runner uses:
+    each non-\`done\` step: +~280ms (per-step overhead the Director can't avoid)
+    click:                +anticipationMs + ~1500ms (anticipation pause + the post-action page-settle wait)
+    key / back:           +~1500ms (post-action page-settle wait)
+    dwell:                +durationMs
+    scroll:               +durationMs + dwellAfterMs
+    type:                 +preMs + text.length × keystrokeMs
+- If the user's prompt forbids an action (any expression — "only", "just", "no X", "don't", "without", 中英任何 — your call), your plan MUST NOT contain that action, and any filler exploration MUST respect the prohibition. We do not pattern-match the prompt for you; identifying prohibitions is your job.
+- If the explicit intent does not fill durationMs, do NOT pad with mechanical generic scroll+dwell. Add steps a real person would naturally do on THIS page given THIS prompt: read a result card, scan top chips, glance at the sidebar, scroll to a specific content section worth dwelling on. Each filler step must be groundable in the accessibility tree — the rehearsal walk will verify; ungroundable filler will be dropped.
+- If the prompt's prohibitions make any natural filler violate them (e.g. "just glance" + durationMs=60s is irreconcilable), say so in \`rationale\`. The runner will mark the run as underfilled — that is a transparent goal-#3 outcome, not your failure.
 
 WORKFLOW PATTERNS:
 - SEARCH: [click the search box, type "query", key Enter, dwell ~1.5s for results to load]. All four.
@@ -116,8 +127,9 @@ export function buildReconvergeUserText(args: {
   divergedStep: PerformanceStep;
   observedUrl: string;
   snapshot: string;
+  remainingDurationMs?: number;
 }): string {
-  const { intent, divergedStep, observedUrl, snapshot } = args;
+  const { intent, divergedStep, observedUrl, snapshot, remainingDurationMs } = args;
   const stepDesc =
     divergedStep.kind === 'click' || divergedStep.kind === 'type'
       ? `${divergedStep.kind} "${divergedStep.target.description}"`
@@ -130,6 +142,7 @@ export function buildReconvergeUserText(args: {
     `Original task: ${intent}`,
     `The planned step \`${stepDesc}\` (reasoning: "${divergedStep.reasoning}") did NOT produce the expected result — the page either did not change, did not navigate as expected, or went blank.`,
     `Current page URL: ${observedUrl}`,
+    ...(remainingDurationMs !== undefined ? [`Remaining durationMs budget: ~${remainingDurationMs}ms — keep the rest of the plan within ±10% of this.`] : []),
     ``,
     `PAGE ACCESSIBILITY TREE (current state) — actionable nodes have \`[ref=eN]\` ids:`,
     tree,

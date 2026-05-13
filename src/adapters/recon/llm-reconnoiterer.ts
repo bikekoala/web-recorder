@@ -129,11 +129,13 @@ export class LlmReconnoiterer implements IReconnoiterer {
       const reconverge = async (ctx: ReconvergeContext): Promise<PerformanceStep[]> => {
         const snapshot = await ctx.session.ariaSnapshot().catch(() => '');
         const screenshot = await ctx.session.screenshot().catch(() => null);
+        const remainingDurationMs = Math.max(0, input.durationMs - (ctx.walkedDeclaredMs ?? 0));
         const userText = buildReconvergeUserText({
           intent: ctx.intent,
           divergedStep: ctx.divergedStep,
           observedUrl: ctx.observedUrl,
           snapshot,
+          remainingDurationMs,
         });
         const content: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: 'text', text: userText }];
         if (screenshot && screenshot.length > 0) {

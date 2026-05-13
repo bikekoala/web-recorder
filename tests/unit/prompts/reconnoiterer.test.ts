@@ -66,6 +66,52 @@ describe('buildReconvergeUserText', () => {
   });
 });
 
+describe('reconnoitererSystemPrompt — F1 DURATION & SCOPE section', () => {
+  it('contains a DURATION & SCOPE section that names durationMs as a hard constraint', () => {
+    expect(reconnoitererSystemPrompt).toContain('DURATION & SCOPE');
+    expect(reconnoitererSystemPrompt).toMatch(/hard constraint/i);
+    expect(reconnoitererSystemPrompt).toMatch(/totalEstimatedMs.*within.*10%/i);
+  });
+
+  it('tells the LLM to identify prohibitions itself (we do not regex the prompt)', () => {
+    // The whole point of F1 is no hardcoded prohibition detection. A's job.
+    expect(reconnoitererSystemPrompt).toMatch(/prohib|forbid/i);
+    expect(reconnoitererSystemPrompt).toMatch(/your call|you judge|你判断/i);
+  });
+
+  it('forbids mechanical generic scroll/dwell filler when under budget', () => {
+    expect(reconnoitererSystemPrompt).toMatch(/(do not|don't).*(mechanical|generic).*(scroll|filler|pad)/i);
+  });
+
+  it('says irreconcilable prompt/duration mismatch goes into `rationale` (not a failure)', () => {
+    expect(reconnoitererSystemPrompt).toMatch(/rationale/i);
+    expect(reconnoitererSystemPrompt).toMatch(/underfilled/i);
+  });
+});
+
+describe('buildReconvergeUserText — F1 remaining-budget hint', () => {
+  it('mentions the remaining durationMs budget when given one', () => {
+    const text = buildReconvergeUserText({
+      intent: 'click X',
+      divergedStep: { kind: 'dwell', durationMs: 500, reasoning: 'r' },
+      observedUrl: 'https://example.com',
+      snapshot: '- link "X" [ref=e1]',
+      remainingDurationMs: 6500,
+    });
+    expect(text).toMatch(/remaining.*6500|6500.*remaining/i);
+  });
+
+  it('omits the remaining-budget hint when not provided', () => {
+    const text = buildReconvergeUserText({
+      intent: 'click X',
+      divergedStep: { kind: 'dwell', durationMs: 500, reasoning: 'r' },
+      observedUrl: 'https://example.com',
+      snapshot: '- link "X" [ref=e1]',
+    });
+    expect(text).not.toMatch(/remaining.*durationMs/i);
+  });
+});
+
 describe('reconnoitererSystemPrompt', () => {
   it('includes scroll-to-target discipline (no overshoot, viewport-heights, screenfuls)', () => {
     const lower = reconnoitererSystemPrompt.toLowerCase();
