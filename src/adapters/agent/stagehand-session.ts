@@ -52,65 +52,9 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** One observe()-match candidate, before it's pared down to an ObservedElement. */
-export interface RankableCandidate {
-  selector: string;
-  description: string;
-  bbox: { x: number; y: number; width: number; height: number };
-  /** Is the element itself genuinely clickable (<a href>/<button>/[role=button|link]/…), vs a wrapper? */
-  interactive: boolean;
-}
-
-/**
- * Rank observe()-match candidates best-first and de-dup by position:
- * genuinely interactive elements ahead of wrappers, original order preserved
- * within a group. Pure — exported for unit testing. (finding 6 / sweep-1.)
- */
-export function rankCandidates(items: RankableCandidate[]): RankableCandidate[] {
-  const seen = new Set<string>();
-  const deduped = items.filter((c) => {
-    const key = `${Math.round(c.bbox.x)},${Math.round(c.bbox.y)},${Math.round(c.bbox.width)},${Math.round(c.bbox.height)}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  // Stable partition: interactive first, then non-interactive, each keeping order.
-  return [...deduped.filter((c) => c.interactive), ...deduped.filter((c) => !c.interactive)];
-}
-
-/**
- * ARIA-tree node roles that carry no actionable / structural value for the recon
- * planner — wrappers, prose, inline formatting. Dropping their lines from a
- * `mode:'ai'` snapshot cuts a content page's tree several× (most of a page is
- * `generic` divs + `text`/`StaticText` content) without losing what the planner
- * needs: links, buttons, inputs, headings, landmarks, lists, tables/rows/cells
- * (Wikipedia infobox rows carry "Family: Felidae"-type names), dialogs, tabs, …
- */
-const ARIA_PRUNE_DROP_ROLES = new Set([
-  'generic', 'paragraph', 'text', 'StaticText', 'LineBreak', 'separator',
-  'emphasis', 'strong', 'code', 'subscript', 'superscript', 'deletion',
-  'insertion', 'mark', 'time', 'blockquote', 'caption', 'definition',
-]);
-
-/**
- * Prune content/wrapper noise from a Playwright `mode:'ai'` aria tree. Each line
- * is `<indent>- <role> "name" [attrs] [ref=eN]` (or a property line like
- * `<indent>- /url: …`); drop lines whose role is in {@link ARIA_PRUNE_DROP_ROLES},
- * keep everything else (property lines like `/url:` are kept — no leading role
- * word — they tell the planner where a link goes). Kept lines retain their
- * original indentation; orphaned nesting is harmless (the LLM reads each
- * `- role "name" [ref=eN]` line on its own). Pure — exported for unit testing.
- */
-export function pruneAriaSnapshot(snapshot: string): string {
-  if (!snapshot) return snapshot;
-  const out: string[] = [];
-  for (const line of snapshot.split('\n')) {
-    const m = /^\s*- ([A-Za-z]+)\b/.exec(line);
-    if (m && ARIA_PRUNE_DROP_ROLES.has(m[1]!)) continue;
-    out.push(line);
-  }
-  return out.join('\n');
-}
+// Pure aria-tree + candidate-ranking helpers — extracted to a sibling file so
+// they can be reused by a future agent-SDK-swap adapter (CLAUDE.md hard rule 1).
+import { rankCandidates, pruneAriaSnapshot, type RankableCandidate } from './aria-helpers.js';
 
 export interface StagehandPageSessionConfig extends PageSessionConfig {
   /** Stagehand verbose level (0|1|2). 1 prints high-level steps. */

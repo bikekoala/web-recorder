@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rankCandidates, type RankableCandidate } from '../../../../src/adapters/agent/stagehand-session.js';
+import { rankCandidates, type RankableCandidate } from '../../../../src/adapters/agent/aria-helpers.js';
 
 const c = (selector: string, interactive: boolean, bbox = { x: 0, y: 0, width: 10, height: 10 }): RankableCandidate => ({
   selector,

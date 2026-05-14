@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pruneAriaSnapshot } from '../../../../src/adapters/agent/stagehand-session.js';
+import { pruneAriaSnapshot } from '../../../../src/adapters/agent/aria-helpers.js';
 
 describe('pruneAriaSnapshot', () => {
   it('drops generic / paragraph / text / StaticText lines, keeps actionable + structural ones', () => {
