@@ -525,6 +525,42 @@ compose with the soft-align as expected. Worth investigating the
 Director's run loop after a `kind: 'click'` step that produces a real
 page transition.
 
+## Round 5 — more click tests on cleaner sites
+
+### R5.1 React docs (https://react.dev), "看看 React 官网 然后点击 Learn 链接 12s"
+- **intentSatisfaction `complete` (1 click + 2 scrolls).**
+- **judge: looks_human ALL 5 dims.**
+- **wall-clock 47.2s — goal #5 PASS.**
+- Plan: dwell → scroll → dwell → scroll → **click "Learn link in the top
+  navigation"** → dwell → done. The click resolved cleanly.
+- **Significance**: this is the cleanest click case in the sweep. React.dev
+  is a modern docs site with a moderate aria tree (~7 step plan, 19s recon).
+  The Learn link is a primary nav element (large bbox, prominent in tree).
+  → P13 sharpens: it's about **hard-to-find targets on huge trees**, not
+  all clicks. Clicks on prominent primary UI elements on clean SPAs work.
+
+### R5.2 DuckDuckGo (https://duckduckgo.com), "搜索 typescript 然后看看结果 15s"
+- intent metric: **complete** (4 clicks, 1 scroll). F3 fired correctly.
+- judge: probably_synthetic. recovery FAIL: "'Unexpected error. Please
+  try again.' message appears, but the agent makes absolutely no attempt
+  to refresh". intentExecution partial.
+- The metric counted the clicks; the judge saw the destination broke.
+  **F3 cross-check working as designed** — disagreement surfaced loudly:
+  `intent cross-check DISAGREE — metric says complete, judge says partial`.
+- Same P9/P16 family: page state diverged from happy path, agent didn't
+  notice.
+
+## Final tally (after Round 5)
+- **26 evals across 19+ distinct scenarios.**
+- **15 of 19 hit `looks_human` all-5-pass** (one click-complete + 14
+  read-only wins).
+- **3 wall-clock-passing runs** — all on small-tree sites (arxiv list,
+  arxiv abstract, React docs).
+- **Search workflow primitives confirmed functional** in 2 cases (R3.12
+  Google complete, R5.2 DDG complete-metric / broken-destination-page).
+- F3 cross-check fired correctly on R4.6 + R5.2 (saved us from claiming
+  victory on broken recordings).
+
 ## Prompt fixes landed during sweep (final)
 1. **Variance + closing-dwell discipline + motion backbone** (commit
    `1065a61`) — R2/R3 batch wins.
