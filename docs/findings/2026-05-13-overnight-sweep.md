@@ -353,7 +353,7 @@ semantically-empty page.
 Last verified: 22/22 prompt tests pass + 203/203 unit tests pass before
 sweep. No new code paths beyond the prompt edits.
 
-## Tally
+## Tally (initial — through R3)
 - 14 evals across 13 distinct (URL, prompt, duration) scenarios.
 - 6 looks_human all-5-pass; 2 looks_human with metric `unmet`; 6 with
   real judge issues (P13/P14/P9/P16); 1 search-workflow `complete`.
@@ -361,4 +361,100 @@ sweep. No new code paths beyond the prompt edits.
 - The dominant remaining quality problem is **P13 dropped-click
   degeneration**, hitting every click-required intent on a non-trivial
   page. Worth a decision tomorrow.
+
+## Round 4 — small prompt fixes for P6, P14 + more cases
+
+### R4.1 — P6 anticipationMs floor attempt (REVERTED)
+- Hypothesis: bumping `goto`'s anticipationMs to 1500-2500ms gives the
+  cut a "user pausing to type URL" beat, improves visualCoherence.
+- Result: WORSE. Judge: robotic. visualCoherence still **fail** ("direct
+  URL navigation typical of scripts"), plus pacing fail (now flags the
+  longer anticipation as "4 seconds of dead air on the homepage").
+- Insight: the judge fundamentally knows direct URL nav IS scripted —
+  no pause length fools it. The visualCoherence problem on `goto` is
+  architectural (recording window framing) not prompt-level.
+- Action: reverted the prompt change. P6 remains for tomorrow.
+
+### R4.2 — P14 lingering-dwell rule (LANDED — big win)
+- Hypothesis: long-read perceived meta-rhythm breaks if A includes ≥1
+  "lingering" dwell of 4500-7000ms on a content-rich section.
+- Apollo 30s retest: **looks_human ALL 5 dims** (was robotic + pacing
+  fail). Plan dwells: 1481, 2633, 3950, 1975, 1564, 2963, 3456, 988 —
+  notice the 3950 + 3456 + 2963 cluster as "lingering" dwells.
+- planDurationFit ratio 1.19 (was 1.28, compressed-hard) — within
+  tolerance now.
+- Action: committed.
+
+### R4.3 — lingering-dwell verification on a different site
+- Wikipedia Photosynthesis 25s: **looks_human ALL 5 dims**. Plan dwells:
+  1664/2958/4438/2404/1757/1294 (4438 is the lingering one).
+- Confirms the fix isn't Apollo-specific.
+
+### R4.4 — Wikipedia Main Page → click Featured article (15s)
+- intentSatisfaction **complete** (1 click, 1 scroll). The click
+  resolved cleanly to "Talyllyn Railway link in today's featured
+  article section" — A correctly identified TODAY's featured article
+  by reading the aria tree.
+- BUT duration ✗ -58% (6.3s of 15s target). After the click navigated,
+  some subsequent steps either ran too short or were skipped — plan
+  estimated 15.3s, actual recording 6.3s.
+- judge: unavailable (empty content from API — transient).
+- **New finding: post-navigation duration drift.** When a click
+  navigates the page, the Director can end the recording short of
+  durationMs even though all steps "ran." Worth investigating the
+  Director's settle/dwell behavior after navigation.
+
+### R4.5 — NYT homepage, "看 NYT 头条 12s" (12s)
+- **looks_human ALL 5 dims.** Clean.
+
+## Updated tally
+- 19 evals across 14 distinct scenarios.
+- **10 of 14 hit looks_human all-5-pass** after the variance + lingering
+  fixes:
+  Wikipedia (Felidae, Apollo 11, Photosynthesis), Reddit, BBC, Bilibili,
+  Twitter (login-wall, intent unmet), Google search results, 36kr
+  (intent unmet), NYT.
+- 4 unique scenarios still with real judge issues:
+  HN (text-only artifact), MDN-click (P13), GitHub-vscode (P13 + neg
+  scroll), Apollo→click (P13), YouTube-empty (P16).
+- 1 search-workflow `complete` (Google search workflow).
+- 1 click-resolved but duration-short (R4.4 Wikipedia Main).
+
+## Newly recorded for morning
+
+### P17 — post-navigation duration drift (R4.4)
+After a click that navigates, the recording can end well short of
+durationMs. R4.4: planned 15.3s, recorded 6.3s, endReason `done`. The
+Director's settle/dwell behavior on the post-navigation page may not
+compose with the soft-align as expected. Worth investigating the
+Director's run loop after a `kind: 'click'` step that produces a real
+page transition.
+
+## Prompt fixes landed during sweep (final)
+1. **Variance + closing-dwell discipline + motion backbone** (commit
+   `1065a61`) — R2/R3 batch wins.
+2. **Lingering-dwell rule for ≥5-dwell plans** (commit `dac3f6b` to-be
+   — actually next commit) — R4.2/R4.3 wins.
+3. ~~goto anticipationMs floor~~ — tried in R4.1, reverted (worse).
+
+## Bottom line for the morning
+The reading-rhythm prompt-level fixes (variance + lingering dwell)
+dramatically improved naturalness on read/browse intents: 10 of 14
+unique scenarios hit `looks_human` all-5-pass. The remaining quality
+gaps are architectural, not prompt-level:
+
+- **P13** (dropped clicks → degenerate residue) — most-impactful, every
+  click-required intent on a non-trivial page hits it.
+- **P6** (goto teleport) — recording window doesn't include browser
+  chrome, so any URL navigation reads as scripted.
+- **P9 / P16** (Cloudflare / login walls / empty states invisible) —
+  page-state detection gap.
+- **P17** (post-navigation duration drift) — Director behavior after
+  a navigating click.
+- **P5** (wall-clock >60s) — recon LLM cost. F2 territory.
+
+The architectural choices are yours to make. The prompt-side knobs are
+near-exhausted; further reading-rhythm tuning likely won't move the
+needle on the remaining failures.
+
 
