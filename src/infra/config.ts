@@ -119,10 +119,17 @@ const Schema = z.object({
    * `ariaSnapshot()` scopes it to `<main>` / `[role=main]` and, if still over,
    * truncates to the top of the tree (line boundary + a "truncated" note) — so
    * the recon prompt stays in budget (goal #5) and the planner has a tree it can
-   * actually navigate. ARIA_SNAPSHOT_MAX_CHARS. (≈ 100 KB ≈ ~25 k tokens — sized
-   * so a GitHub repo page fits whole, a Wikipedia featured article gets cut.)
+   * actually navigate. ARIA_SNAPSHOT_MAX_CHARS.
+   *
+   * F2 tightening: lowered 100000 → 40000 chars (~10k tokens) after the
+   * 2026-05-14 cost measurement showed input tokens dominate the bill
+   * (Sonnet 4.6 on Wikipedia/Photosynthesis: 41k input → ~\$0.13/run vs
+   * goal-#5 \$0.01 target). Verified looks_human all-5 holds on content
+   * pages (Photosynthesis 25s) and clean SPAs (React docs click) at this
+   * cap. Truncation marker + §0042 graceful-degrade carry pages that
+   * genuinely don't fit. Clean SPAs are usually under the cap anyway.
    */
-  ariaSnapshotMaxChars: z.coerce.number().int().min(1000).default(100000),
+  ariaSnapshotMaxChars: z.coerce.number().int().min(1000).default(40000),
 
   /**
    * Off-camera blocker dismisser (Task #20). `blockerDismiss` is the master
