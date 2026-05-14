@@ -7,6 +7,7 @@ import {
   type Performance,
   type PerformanceStep,
   type PlanDurationFit,
+  type ReconLlmUsage,
   type RehearsalTrace,
 } from '../../domain/performance.js';
 import {
@@ -52,6 +53,18 @@ interface LlmReconnoitererOpts {
   blockerDismisser?: IBlockerDismisser;
 }
 
+/**
+ * Mutable token-usage accumulator passed through the recon() call chain so
+ * every LLM completions.create() invocation (initial draft, reconverge-on-drop,
+ * mid-walk reconverge) contributes to one running total. Materialized into the
+ * Performance's optional `reconLlm` field at the end. F2 cost-tracking.
+ */
+interface UsageAccumulator {
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+}
+
 export class LlmReconnoiterer implements IReconnoiterer {
   private readonly client: OpenAI;
   private readonly model: string;
@@ -78,6 +91,11 @@ export class LlmReconnoiterer implements IReconnoiterer {
   }
 
   async recon(input: ReconInput, session: IPageSession): Promise<Performance> {
+    // Per-recon usage accumulator — every LLM call inside this method (initial
+    // draft, reconverge-on-drop, mid-walk reconverges) contributes to it. F2
+    // cost tracking: surfaces on Performance.reconLlm at the end.
+    const usage: UsageAccumulator = { calls: 0, promptTokens: 0, completionTokens: 0 };
+
     // Off-camera: clear cookie/consent banners / X-to-close modals before we
     // snapshot + plan, so the Performance is built against the real page.
     const blockerDismissal = await this.dismissBlockers(session);
@@ -95,7 +113,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
         { role: 'system', content: reconnoitererSystemPrompt },
         { role: 'user', content: userContent },
       ],
-      { allowRetry: true },
+      { allowRetry: true, usage },
     );
     const draftParsed = ReconDraftSchema.safeParse(draftRaw);
     if (!draftParsed.success) {
@@ -144,7 +162,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
             { role: 'system', content: reconnoitererSystemPrompt },
             { role: 'user', content: userContent2 },
           ],
-          { allowRetry: true },
+          { allowRetry: true, usage },
         );
         const draftParsed2 = ReconDraftSchema.safeParse(draftRaw2);
         if (!draftParsed2.success) {
@@ -216,6 +234,11 @@ export class LlmReconnoiterer implements IReconnoiterer {
             max_tokens: 4000,
           });
           raw2 = completion.choices[0]?.message?.content ?? '';
+          if (completion.usage) {
+            usage.calls += 1;
+            usage.promptTokens += completion.usage.prompt_tokens ?? 0;
+            usage.completionTokens += completion.usage.completion_tokens ?? 0;
+          }
         } catch (err) {
           this.logger.warn({ err }, 'reconverge LLM call failed');
           return [];
@@ -308,6 +331,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
       );
     }
 
+    const reconLlm: ReconLlmUsage = { model: this.model, ...usage };
     const candidate: Performance = {
       prompt: draft.prompt,
       durationMs: input.durationMs,
@@ -318,6 +342,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
       ...(blockerDismissal ? { blockerDismissal } : {}),
       ...(unresolvedTargets.length > 0 ? { unresolvedTargets } : {}),
       planDurationFit: fitOutcome.fit,
+      reconLlm,
     };
     const validation = PerformanceSchema.safeParse(candidate);
     if (!validation.success) {
@@ -334,6 +359,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
         rehearsal: rehearsalTrace,
         unresolvedTargets: unresolvedTargets.length || undefined,
         planDurationFit: fitOutcome.fit,
+        reconLlm,
       },
       'recon complete',
     );
@@ -441,7 +467,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
    */
   private async callReconLlm(
     messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-    opts: { allowRetry: boolean },
+    opts: { allowRetry: boolean; usage?: UsageAccumulator },
   ): Promise<unknown> {
     let raw: string;
     try {
@@ -461,6 +487,11 @@ export class LlmReconnoiterer implements IReconnoiterer {
         max_tokens: 8000,
       });
       raw = completion.choices[0]?.message?.content ?? '';
+      if (opts.usage && completion.usage) {
+        opts.usage.calls += 1;
+        opts.usage.promptTokens += completion.usage.prompt_tokens ?? 0;
+        opts.usage.completionTokens += completion.usage.completion_tokens ?? 0;
+      }
     } catch (err) {
       throw new ReconError('recon LLM call failed', err);
     }
@@ -475,7 +506,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
               'REMINDER: your previous response was not valid JSON. Respond with ONLY a single JSON object — no prose, no markdown, nothing before or after it. Common failure modes I have just seen: (a) writing a paragraph of narrative inside one step\'s `reasoning` field — keep each `reasoning` to one short clause and put any overall explanation in the top-level `rationale` field; (b) emitting an arithmetic expression in a number field like `"totalEstimatedMs": 500 + 800 + 1500` — compute the sum yourself and emit a single integer literal like `"totalEstimatedMs": 2800`.',
           },
         ],
-        { allowRetry: false },
+        opts.usage ? { allowRetry: false, usage: opts.usage } : { allowRetry: false },
       );
 
     if (!raw) {

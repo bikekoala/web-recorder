@@ -6,23 +6,30 @@ import { FakePageSession } from '../../../fakes/fake-page-session.js';
 import type { IBlockerDismisser, BlockerDismissalReport } from '../../../../src/ports/blocker-dismisser.js';
 import type { IPageSession, ObservedElement } from '../../../../src/ports/page-session.js';
 
-// Minimal fake OpenAI-shaped client.
-function fakeClient(content: string) {
+// Minimal fake OpenAI-shaped client. `usage` is optional — set when a test
+// wants to verify token-accumulation (F2 cost tracking).
+function fakeClient(content: string, usage?: { prompt_tokens: number; completion_tokens: number }) {
   return {
-    chat: { completions: { create: async () => ({ choices: [{ message: { content } }] }) } },
+    chat: { completions: { create: async () => ({ choices: [{ message: { content } }], ...(usage ? { usage } : {}) }) } },
   } as unknown as ConstructorParameters<typeof LlmReconnoiterer>[0]['client'];
 }
 
 /**
  * Fake client whose `create` returns `contents[n]` on the n-th call (clamps to
  * the last entry once exhausted), and records every call's args for assertions.
+ * Each response carries a fake `usage` so F2 accumulation can be verified.
  */
 function sequencedClient(...contents: string[]) {
   const calls: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
   const create = vi.fn(async (args: { messages: Array<{ role: string; content: unknown }> }) => {
     const idx = Math.min(calls.length, contents.length - 1);
     calls.push(args);
-    return { choices: [{ message: { content: contents[idx] } }] };
+    return {
+      choices: [{ message: { content: contents[idx] } }],
+      // Each call contributes 1000 prompt + 200 completion tokens — deterministic
+      // for the accumulation test below.
+      usage: { prompt_tokens: 1000, completion_tokens: 200 },
+    };
   });
   const client = { chat: { completions: { create } } } as unknown as ConstructorParameters<typeof LlmReconnoiterer>[0]['client'];
   return { client, create, calls };
@@ -222,6 +229,29 @@ describe('LlmReconnoiterer', () => {
       );
       // No drops ⇒ single recon call only.
       expect(create.mock.calls.length).toBe(1);
+    });
+
+    it('accumulates token usage across initial + reconverge-on-drop calls (F2 cost tracking)', async () => {
+      const session = new FakePageSession();
+      session.url = 'https://site.test/';
+      session.ariaSnapshotResult = '- generic [ref=e1]';
+      session.resolveAriaRefResults = {};
+      session.resolveTargetCandidatesResult = [];
+      // Initial draft drops → reconverge-on-drop fires → both calls produce usage.
+      const { client, create } = sequencedClient(dropDraftJson, goodDraftJson);
+      const recon = new LlmReconnoiterer({ model: 'test/model', client });
+      const perf = await recon.recon(
+        { url: 'https://site.test/', prompt: 'browse', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null },
+        session,
+      );
+      // Each sequencedClient response carries 1000 in + 200 out — two calls.
+      expect(create.mock.calls.length).toBe(2);
+      expect(perf.reconLlm).toEqual({
+        model: 'test/model',
+        calls: 2,
+        promptTokens: 2000,
+        completionTokens: 400,
+      });
     });
 
     it('does NOT fire reconverge when the aria tree was truncated (target genuinely not visible)', async () => {

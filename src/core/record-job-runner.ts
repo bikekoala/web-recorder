@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 import type { ActionLogEntry, RecordingWindow } from '../domain/action-log.js';
 import { countMatchedHints } from '../domain/intent-matching.js';
-import type { BlockerDismissalReport, Performance, PerformanceStep, PlanDurationFit, RehearsalTrace } from '../domain/performance.js';
+import type { BlockerDismissalReport, Performance, PerformanceStep, PlanDurationFit, ReconLlmUsage, RehearsalTrace } from '../domain/performance.js';
 import { trimVideo, videoDurationMs } from '../infra/ffmpeg.js';
 import { logger as rootLogger } from '../infra/logger.js';
 import {
@@ -134,6 +134,14 @@ export interface RunMetrics {
    * Optional only because adapters with very old fixtures may omit it.
    */
   planDurationFit?: PlanDurationFit;
+  /**
+   * Recon LLM token usage — totals across every recon LLM call for this run
+   * (initial draft + reconverge-on-drop + mid-walk reconverges). Mirrored
+   * verbatim from `performance.reconLlm`. Feeds the eval cost-tracking line
+   * for goal #5 ($0.01 per recording target). Optional — older run.json files
+   * predate F2 measurement and omit it.
+   */
+  reconLlm?: ReconLlmUsage;
 }
 
 export interface IntentSatisfaction {
@@ -249,6 +257,7 @@ export class RecordJobRunner {
       blockerDismissal: performance.blockerDismissal ?? null,
       unresolvedTargets,
       ...(performance.planDurationFit ? { planDurationFit: performance.planDurationFit } : {}),
+      ...(performance.reconLlm ? { reconLlm: performance.reconLlm } : {}),
     };
 
     if (performance.planDurationFit && performance.planDurationFit.status !== 'ok') {

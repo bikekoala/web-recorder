@@ -98,6 +98,13 @@ export const RunMetricsSchema = z.object({
     ratio: z.number(),
     status: z.enum(['ok', 'compressed-hard', 'underfilled']),
   }).optional(),
+  // F2 cost-tracking. See src/domain/performance.ts ReconLlmUsageSchema.
+  reconLlm: z.object({
+    model: z.string().min(1),
+    calls: z.number().int().nonnegative(),
+    promptTokens: z.number().int().nonnegative(),
+    completionTokens: z.number().int().nonnegative(),
+  }).optional(),
 });
 export type RunMetricsRecord = z.infer<typeof RunMetricsSchema>;
 

@@ -183,6 +183,25 @@ export const PlanDurationFitSchema = z.object({
 });
 export type PlanDurationFit = z.infer<typeof PlanDurationFitSchema>;
 
+/**
+ * Recon LLM token usage — accumulated across every recon LLM call for this
+ * Performance (initial draft + reconverge-on-drop + every mid-walk reconverge).
+ * Surfaced on the Performance so RunMetrics can report it for goal #5 cost
+ * tracking. F2 work key on this — without measurement we can't tell whether
+ * a cheaper model / tighter tree pruning actually wins.
+ */
+export const ReconLlmUsageSchema = z.object({
+  /** OpenRouter model id used for these calls (informational; in case of mid-session swap). */
+  model: z.string().min(1),
+  /** Number of completions.create() calls that produced this usage. */
+  calls: z.number().int().nonnegative(),
+  /** Sum of prompt_tokens across all calls. */
+  promptTokens: z.number().int().nonnegative(),
+  /** Sum of completion_tokens across all calls. */
+  completionTokens: z.number().int().nonnegative(),
+});
+export type ReconLlmUsage = z.infer<typeof ReconLlmUsageSchema>;
+
 export const PerformanceSchema = z.object({
   prompt: z.string().min(1),
   durationMs: z.number().int().positive(),
@@ -210,5 +229,12 @@ export const PerformanceSchema = z.object({
    * into `RunMetrics`.
    */
   planDurationFit: PlanDurationFitSchema.optional(),
+  /**
+   * Recon LLM token usage — totals across every recon LLM call for this
+   * Performance (initial draft, reconverge-on-drop, mid-walk reconverges).
+   * Surfaced for goal-#5 cost tracking ($0.01 LLM target). Optional because
+   * the field was added in F2; older run.json files omit it.
+   */
+  reconLlm: ReconLlmUsageSchema.optional(),
 });
 export type Performance = z.infer<typeof PerformanceSchema>;

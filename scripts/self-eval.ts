@@ -49,6 +49,30 @@ function fmtMs(ms: number | null): string {
   return ms == null ? 'n/a' : `${(ms / 1000).toFixed(1)}s`;
 }
 
+/**
+ * Per-million-token USD rates for recon LLM cost estimation (goals.md #5 line).
+ * Best-effort: prices change, and OpenRouter sometimes adds a small markup vs.
+ * provider-direct. Order-of-magnitude is what matters for the goal #5 visibility.
+ * Returns null when the model id isn't in the table (we don't make up a number).
+ */
+function estimateUsdCost(model: string, promptTokens: number, completionTokens: number): number | null {
+  // [inputPerMillion, outputPerMillion] in USD.
+  const RATES: Record<string, [number, number]> = {
+    'anthropic/claude-sonnet-4.6': [3, 15],
+    'anthropic/claude-haiku-4.5': [1, 5],
+    'anthropic/claude-opus-4.6': [15, 75],
+    'anthropic/claude-opus-4.7': [15, 75],
+    'openai/gpt-4o-mini': [0.15, 0.6],
+    'openai/gpt-4o': [2.5, 10],
+    'openai/gpt-5-mini': [0.25, 2],
+    'google/gemini-2.5-pro': [1.25, 5],
+    'google/gemini-3.1-pro-preview': [1.25, 5],
+  };
+  const r = RATES[model];
+  if (!r) return null;
+  return (promptTokens * r[0] + completionTokens * r[1]) / 1_000_000;
+}
+
 function assess(result: RunResult, judge: RecordingJudgeReport | { error: string }, videoBytes: number): { rows: Row[]; hardFail: boolean; concerns: boolean } {
   const rows: Row[] = [];
   const m = result.metrics;
@@ -101,7 +125,26 @@ function assess(result: RunResult, judge: RecordingJudgeReport | { error: string
   rows.push({ status: m.totalWallClockMs > WALL_CLOCK_LIMIT_MS ? 'fail' : 'ok', label: 'total wall-clock', value: fmtMs(m.totalWallClockMs), note: m.totalWallClockMs > WALL_CLOCK_LIMIT_MS ? `over ${WALL_CLOCK_LIMIT_MS / 1000}s — goals.md #5` : undefined });
   rows.push({ status: m.reconMs > RECON_SOFT_LIMIT_MS ? 'warn' : 'ok', label: 'recon time', value: fmtMs(m.reconMs), note: m.reconMs > RECON_SOFT_LIMIT_MS ? 'slow recon (off-camera but counts against the wall-clock budget)' : undefined });
   rows.push({ status: videoBytes > DISK_LIMIT_BYTES ? 'fail' : 'ok', label: 'trimmed-video size', value: `${(videoBytes / (1024 * 1024)).toFixed(1)} MB`, note: videoBytes > DISK_LIMIT_BYTES ? `over ${DISK_LIMIT_BYTES / 1024 / 1024} MB — goals.md #5` : undefined });
-  rows.push({ status: 'warn', label: 'recon LLM $', value: 'not measured here', note: `the aria tree is the recon prompt's big input on the expensive recon model — goals.md #5 ($0.01) is over-budget; see ADR §0036. (Re-measure with token logging if you touch this.)` });
+  // F2 cost-tracking — actual token-usage measurement landed; was "not measured here".
+  if (m.reconLlm) {
+    const { model, calls, promptTokens, completionTokens } = m.reconLlm;
+    const cost = estimateUsdCost(model, promptTokens, completionTokens);
+    const tokensStr = `${(promptTokens / 1000).toFixed(1)}k in / ${(completionTokens / 1000).toFixed(1)}k out`;
+    const costStr = cost != null ? ` ≈ $${cost.toFixed(3)}` : '';
+    const overBudget = cost != null && cost > 0.01;
+    rows.push({
+      status: overBudget ? 'warn' : 'ok',
+      label: 'recon LLM cost',
+      value: `${tokensStr}${costStr} (calls: ${calls}, model: ${model})`,
+      note: overBudget
+        ? `over the goals.md #5 $0.01 target — F2 territory (cheaper recon model or tighter aria-tree pruning)`
+        : cost == null
+          ? `pricing unknown for this model — exposing token counts only; goals.md #5 target is $0.01`
+          : undefined,
+    });
+  } else {
+    rows.push({ status: 'warn', label: 'recon LLM cost', value: 'no usage reported', note: 'recon adapter did not return token usage — check that the OpenAI SDK response.usage came through' });
+  }
 
   // ── #1 Naturalness (LLM judge — CONCERNS, never a hard gate per #6) ─────────
   if ('error' in judge) {
