@@ -593,6 +593,39 @@ Click fails when ANY hold:
 
 This is the **single highest-ROI architectural decision** for tomorrow.
 
+## Final final tally (after R6.5)
+
+- **31 evals across 24 distinct scenarios.**
+- **18 looks_human all-5-pass** (78% of scenarios).
+- **6 wall-clock passes** (≤60s): arxiv list, arxiv abstract, React docs,
+  TypeScript docs, Linear, Vercel — all clean modern SPAs / small trees.
+- **4 click-complete wins**: Google search, Wikipedia-Main (wrong-target),
+  React docs Learn, TypeScript Get Started.
+- **F3 cross-check fired 3 times** correctly (R4.6 Wiki-Main, R5.2 DDG,
+  R6.2 Baidu) — preventing false "complete" claims.
+
+### Extra cases worth flagging
+- **R6.3 Linear, R6.4 Vercel**: both modern SPA landing pages, both
+  looks_human all-5, both wall-clock-passing. **A "clean modern SPA"
+  case is now reliably good**: small tree → fast recon → goal-#5 pass +
+  natural-looking output.
+- **R6.5 Taobao**: another P9 case (login modal blocks home page,
+  blocker dismisser doesn't recognize it). Confirms P9 is broad — not
+  just Cloudflare, also app-overlay modals. The vision-LLM blocker
+  prompt only handles cookie banners + close-X UIs.
+
+### What "good" looks like (the goal pattern)
+The runs that hit ALL of (looks_human all-5 + intent metric satisfied +
+wall-clock pass): R5.1 React docs, R6.1 TypeScript docs. The recipe:
+1. Modern SPA with moderate aria tree (~3-7k tokens).
+2. Click target is a primary nav element with a substantial bbox.
+3. Page doesn't fight the agent (no daily content rotation, no auth
+   wall, no aggressive bot detection).
+
+When you're picking which architectural problem to tackle first, the
+"closest to good" failure mode is **P13 on giant trees** — fixing it
+brings Wikipedia / GitHub / MDN into the same class as React docs.
+
 ## Prompt fixes landed during sweep (final)
 1. **Variance + closing-dwell discipline + motion backbone** (commit
    `1065a61`) — R2/R3 batch wins.
