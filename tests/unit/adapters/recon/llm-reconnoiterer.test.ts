@@ -134,6 +134,116 @@ describe('LlmReconnoiterer', () => {
       .rejects.toBeInstanceOf(ReconError);
   });
 
+  describe('reconverge-on-initial-resolve-drop (ADR §0042 / P13 fix)', () => {
+    // Draft A: requests a click that won't resolve (the bad ref).
+    const dropDraftJson = JSON.stringify({
+      prompt: 'browse', durationMs: 10000,
+      steps: [
+        { kind: 'dwell', durationMs: 350, reasoning: 'land' },
+        { kind: 'click', ref: 'eDoesNotExist', targetDescription: 'the unfindable thing', anticipationMs: 500, reasoning: 'try the unfindable' },
+        { kind: 'dwell', durationMs: 1000, reasoning: 'read' },
+        { kind: 'done', reasoning: 'fin' },
+      ],
+      totalEstimatedMs: 3350, rationale: 'has a drop',
+    });
+    // Draft B (returned on the reconverge call): a click-less plan against what's actually visible.
+    const goodDraftJson = JSON.stringify({
+      prompt: 'browse', durationMs: 10000,
+      steps: [
+        { kind: 'dwell', durationMs: 800, reasoning: 'absorb' },
+        { kind: 'scroll', deltaPx: 600, durationMs: 1200, dwellAfterMs: 200, easing: 'inOutQuad', reasoning: 'down' },
+        { kind: 'dwell', durationMs: 2500, reasoning: 'read' },
+        { kind: 'scroll', deltaPx: 450, durationMs: 900, dwellAfterMs: 180, easing: 'inOutQuad', reasoning: 'down again' },
+        { kind: 'dwell', durationMs: 1400, reasoning: 'read more' },
+        { kind: 'done', reasoning: 'fin' },
+      ],
+      totalEstimatedMs: 8000, rationale: 'click was unreachable — fell back to natural browsing',
+    });
+
+    it('fires a second recon call when initial resolve drops a target, and uses the new plan if it has zero drops', async () => {
+      const session = new FakePageSession();
+      session.url = 'https://site.test/';
+      session.ariaSnapshotResult = '- generic [ref=e1]';
+      session.resolveAriaRefResults = {}; // any ref → null
+      session.resolveTargetCandidatesResult = []; // description fallback also misses
+      const { client, create } = sequencedClient(dropDraftJson, goodDraftJson);
+      const recon = new LlmReconnoiterer({ model: 'test/model', client });
+      const perf = await recon.recon(
+        { url: 'https://site.test/', prompt: 'browse', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null },
+        session,
+      );
+      // The drop should have triggered a second LLM call.
+      expect(create.mock.calls.length).toBe(2);
+      // The second call's user-text mentions the dropped target description (so A knows what to avoid).
+      const secondUserMsg = create.mock.calls[1]![0].messages.find((m: { role: string }) => m.role === 'user')!;
+      const userText = typeof secondUserMsg.content === 'string'
+        ? secondUserMsg.content
+        : (secondUserMsg.content as Array<{ type: string; text?: string }>).find((p) => p.type === 'text')?.text ?? '';
+      expect(userText).toMatch(/unfindable/);
+      expect(userText.toLowerCase()).toMatch(/re-plan|not reachable|not be located/i);
+      // The replacement plan has no click + no drops — surfaced as the final Performance.
+      expect(perf.steps.some((s) => s.kind === 'click')).toBe(false);
+      expect(perf.unresolvedTargets).toBeUndefined();
+      // Multiple scrolls, varied — confirms the goodDraftJson came through.
+      expect(perf.steps.filter((s) => s.kind === 'scroll').length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('keeps the initial residue if the reconverge LLM also produces a draft with the same drops', async () => {
+      const session = new FakePageSession();
+      session.resolveAriaRefResults = {};
+      session.resolveTargetCandidatesResult = [];
+      // Both calls return the same drop-everything draft → fallback to residue.
+      const { client, create } = sequencedClient(dropDraftJson, dropDraftJson);
+      const recon = new LlmReconnoiterer({ model: 'test/model', client });
+      const perf = await recon.recon(
+        { url: 'u', prompt: 'browse', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null },
+        session,
+      );
+      // Second call fired (we tried), but result was equivalent → residue kept,
+      // surfaced as unresolvedTargets honestly (the §0042 graceful-degrade path).
+      expect(create.mock.calls.length).toBe(2);
+      expect(perf.steps.some((s) => s.kind === 'click')).toBe(false);
+      expect(perf.unresolvedTargets).toBeDefined();
+      expect(perf.unresolvedTargets!.some((t) => t.includes('unfindable'))).toBe(true);
+    });
+
+    it('does NOT fire a second recon call when initial resolve had no drops', async () => {
+      const session = new FakePageSession();
+      session.url = 'https://x.test/';
+      session.ariaSnapshotResult = '- link "Sign in" [ref=e7]';
+      session.resolveAriaRefResults = { e7: target('text=Sign in', 'Sign in') };
+      const goLogin = () => { session.url = 'https://x.test/login'; };
+      session.clickAtImpl = goLogin; session.clickSelectorImpl = goLogin;
+      const { client, create } = sequencedClient(llmDraftJson);
+      const recon = new LlmReconnoiterer({ model: 'test/model', client });
+      await recon.recon(
+        { url: 'https://x.test/', prompt: 'click sign in then browse', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null },
+        session,
+      );
+      // No drops ⇒ single recon call only.
+      expect(create.mock.calls.length).toBe(1);
+    });
+
+    it('does NOT fire reconverge when the aria tree was truncated (target genuinely not visible)', async () => {
+      const session = new FakePageSession();
+      // Snapshot ends with the truncation marker → A could not see the target,
+      // so re-asking would produce the same drop. We honest-degrade instead.
+      session.ariaSnapshotResult = `- generic [ref=e1]\n${ARIA_SNAPSHOT_TRUNCATION_MARKER}`;
+      session.resolveAriaRefResults = {};
+      session.resolveTargetCandidatesResult = [];
+      const { client, create } = sequencedClient(dropDraftJson);
+      const recon = new LlmReconnoiterer({ model: 'test/model', client });
+      const perf = await recon.recon(
+        { url: 'u', prompt: 'browse', durationMs: 10000, viewport: { width: 1280, height: 720 }, screenshot: null },
+        session,
+      );
+      // Single LLM call (no reconverge) — and the drop is annotated as truncated.
+      expect(create.mock.calls.length).toBe(1);
+      expect(perf.unresolvedTargets).toBeDefined();
+      expect(perf.unresolvedTargets!.some((t) => t.includes('page tree too large'))).toBe(true);
+    });
+  });
+
   const goDraftJson = JSON.stringify({
     prompt: 'go somewhere',
     durationMs: 10000,

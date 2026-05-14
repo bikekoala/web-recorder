@@ -101,20 +101,79 @@ export class LlmReconnoiterer implements IReconnoiterer {
     if (!draftParsed.success) {
       throw new ReconError(`recon draft failed schema: ${draftParsed.error.message.slice(0, 400)}`);
     }
-    const draft = draftParsed.data;
+    // `let` (not `const`): the reconverge-on-drop branch below may replace this
+    // with the second-attempt draft so downstream checks (e.g. the requested-
+    // acting-descriptions backstop) operate against the plan that's actually
+    // being executed.
+    let draft = draftParsed.data;
 
     // Resolve every click/type ref against the snapshot we just took (refs are
     // valid only in that page state — resolve now, not deferred). A ref that
     // won't resolve (nor by visible text, nor by `observe()` description) drops
     // its step — and lands in `unresolved` so the dropped intent is reported
     // transparently. Other kinds pass straight through.
-    const { steps: resolvedSteps, unresolved } = await this.resolveDraftSteps(draft.steps, session, input.url);
+    let { steps: resolvedSteps, unresolved } = await this.resolveDraftSteps(draft.steps, session, input.url);
+    let treeTruncated = snapshot.includes(ARIA_SNAPSHOT_TRUNCATION_MARKER);
+
+    // §0042 / P13 fix — reconverge-on-initial-resolve-drop. If A's first draft
+    // requested targets that couldn't be located on this page, give A one more
+    // shot with the dropped descriptions as a "don't try these" hint plus a
+    // fresh aria snapshot. Symmetric with the rehearsal walk's mid-step
+    // reconverge but fired here so the walk runs on the better plan. Only ever
+    // ONE retry — if it still drops, that's the honest §0042 graceful-degrade.
+    //
+    // GATE — skip on truncated trees: the aria tree was too big to show in full
+    // and A literally cannot see what we're asking it to avoid (the target was
+    // pruned out, not mis-picked). Re-asking against the same truncated slice
+    // produces a similarly-shaped plan and burns 30-60 s of recon LLM time for
+    // no quality gain — sweep R8.1 MDN confirmed this. Truncated cases stay on
+    // the §0042 honest-graceful-degrade path (`unresolvedTargets` surfaces the
+    // miss; intentSatisfaction reports `unmet` with reason).
+    if (config.reconReconvergeOnDrop && unresolved.length > 0 && !input.priorAttemptDrops && !treeTruncated) {
+      this.logger.info({ drops: unresolved, treeTruncated }, 'initial resolve dropped targets — reconverging on drop');
+      try {
+        const snapshot2 = await session.ariaSnapshot();
+        const treeTruncated2 = snapshot2.includes(ARIA_SNAPSHOT_TRUNCATION_MARKER);
+        const userText2 = buildReconUserText({ ...input, priorAttemptDrops: unresolved }, snapshot2);
+        const userContent2: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: 'text', text: userText2 }];
+        if (input.screenshot && input.screenshot.length > 0) {
+          userContent2.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${input.screenshot.toString('base64')}` } });
+        }
+        const draftRaw2 = await this.callReconLlm(
+          [
+            { role: 'system', content: reconnoitererSystemPrompt },
+            { role: 'user', content: userContent2 },
+          ],
+          { allowRetry: true },
+        );
+        const draftParsed2 = ReconDraftSchema.safeParse(draftRaw2);
+        if (!draftParsed2.success) {
+          this.logger.warn({ err: draftParsed2.error.message.slice(0, 200) }, 'reconverge-on-drop draft failed schema — keeping initial residue');
+        } else {
+          const result2 = await this.resolveDraftSteps(draftParsed2.data.steps, session, input.url);
+          if (result2.steps.length > 0) {
+            resolvedSteps = result2.steps;
+            unresolved = result2.unresolved;
+            treeTruncated = treeTruncated2;
+            // Replace `draft` so the downstream requested-acting backstop reflects
+            // the SECOND draft's intent, not the first one's discarded clicks.
+            draft = draftParsed2.data;
+            this.logger.info({ remainingDrops: unresolved.length, newStepCount: resolvedSteps.length }, 'reconverge-on-drop produced a usable replacement plan');
+          } else {
+            this.logger.warn('reconverge-on-drop produced zero usable steps — keeping initial residue');
+          }
+        }
+      } catch (err) {
+        this.logger.warn({ err }, 'reconverge-on-drop failed — keeping initial residue');
+      }
+    }
+
     if (resolvedSteps.length === 0) {
       throw new ReconError('recon produced zero usable steps after ref resolution');
     }
-    // The aria tree was too big to show in full → the ref-picking was working
-    // off a truncated view; say so when we surface what we couldn't locate.
-    const treeTruncated = snapshot.includes(ARIA_SNAPSHOT_TRUNCATION_MARKER);
+    // `treeTruncated` was set above against whichever snapshot fed the surviving
+    // plan (initial or reconverge-on-drop). When we surface unresolved targets
+    // we annotate them with "(page tree too large to analyze in full)" if true.
     // Click/type targets the reconverge LLM (during the rehearsal walk) emitted
     // but couldn't be resolved either — accumulated so they're surfaced too, not
     // just the initial draft's drops (the §0038 fix only covered the latter).

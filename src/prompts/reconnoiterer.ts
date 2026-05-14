@@ -125,12 +125,18 @@ export function buildReconUserText(input: ReconInput, snapshot: string): string 
     ? ['', 'ALREADY DONE this recording (do NOT redo these — plan the REST):',
        ...input.priorSteps.map((s, i) => `  ${i + 1}. ${s.kind}: ${s.reasoning}`)].join('\n')
     : '';
+  const drops = input.priorAttemptDrops && input.priorAttemptDrops.length > 0
+    ? ['', 'RE-PLAN — your previous draft requested these targets, but NONE of them could be located on this page (the ref + visible-text + fuzzy-description chain all missed):',
+       ...input.priorAttemptDrops.map((d) => `  - ${d}`),
+       'Treat those targets as NOT REACHABLE from this page. Re-plan the FULL recording WITHOUT them: either reach the same outcome a different way (different ref / a scroll first / a `goto` if the URL is known and same-host), OR honestly drop that part of the intent and fill the budget with natural browsing of what IS in the tree. Do NOT re-emit the same descriptions — they will fail again.'].join('\n')
+    : '';
   return [
     `User intent: ${input.prompt}`,
     `Current URL: ${input.url}`,
     `Time budget (ms): ${input.durationMs}`,
     `Viewport: ${input.viewport.width}x${input.viewport.height}`,
     prior,
+    drops,
     '',
     'PAGE ACCESSIBILITY TREE — every actionable node has a stable id `[ref=eN]`. For each `click`/`type` step give `"ref"` (copy the EXACT id from the line in the tree — no `ref=` prefix, no guessing) AND `"targetDescription"` (plain English for that node); for a `click`, ALSO give `"targetText"` = that node\'s exact visible text (omit only if it shows no text) — both are fallbacks if the ref goes stale. Prefer the most specific node, not a `generic` wrapper. If what you want is not in the tree (lazy-loaded), pick the nearest node and add a `scroll` step toward it.',
     '',

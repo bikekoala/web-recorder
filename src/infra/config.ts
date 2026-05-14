@@ -94,6 +94,20 @@ const Schema = z.object({
   reconReconvergeMax: z.coerce.number().int().min(0).max(10).default(1),
 
   /**
+   * §0042 in-scope fix for P13 (sweep finding): when the initial `resolveDraftSteps`
+   * drops one or more requested click/type targets because their refs / visible-text
+   * / fuzzy fallback all missed on the live page, this flag triggers ONE more recon
+   * LLM call — handing A the dropped descriptions and a fresh aria snapshot, and
+   * asking for a re-plan that doesn't rely on those targets. Symmetric with the
+   * mid-walk reconverge but fired BEFORE the rehearsal walk runs (the walk only
+   * fires on divergences mid-step; a step dropped at parse-time never reaches the
+   * walk). Adds one recon LLM call (~20-50 s) when drops happen. Off ⇒ legacy
+   * residual-after-drops behavior (sweep showed this produces dwell-heavy plans
+   * the judge flags as robotic).
+   */
+  reconReconvergeOnDrop: z.enum(['true', 'false', '1', '0']).transform((v) => v === 'true' || v === '1').default('true'),
+
+  /**
    * Depth cap for the recon planner's `IPageSession.ariaSnapshot()` tree
    * (ADR §0036). `mode: 'ai'` already prunes generic/text-only nodes; the depth
    * cap bounds the token cost on huge content sites. Override with
@@ -302,6 +316,7 @@ const raw = {
   reconRehearse: process.env.RECON_REHEARSE || undefined,
   reconRehearsalBudgetMs: process.env.RECON_REHEARSAL_BUDGET_MS,
   reconReconvergeMax: process.env.RECON_RECONVERGE_MAX,
+  reconReconvergeOnDrop: process.env.RECON_RECONVERGE_ON_DROP || undefined,
   ariaSnapshotDepth: process.env.ARIA_SNAPSHOT_DEPTH,
   ariaSnapshotMaxChars: process.env.ARIA_SNAPSHOT_MAX_CHARS,
   blockerDismiss: process.env.BLOCKER_DISMISS || undefined,

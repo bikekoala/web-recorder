@@ -39,4 +39,13 @@ export interface ReconInput {
    * redoing what's done. Undefined / empty on the first recon.
    */
   priorSteps?: Array<{ kind: PerformanceStep['kind']; reasoning: string }>;
+  /**
+   * Reconverge-on-drop context (ADR §0042 / P13 fix): plain-English
+   * descriptions of click/type targets that A's previous draft requested
+   * but the resolver couldn't locate on the current page. The next recon
+   * call hands these back to A as "don't try these again" — A should plan
+   * the FULL recording without relying on them. Undefined / empty when
+   * no drops happened.
+   */
+  priorAttemptDrops?: string[];
 }
