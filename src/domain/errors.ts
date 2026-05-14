@@ -44,10 +44,3 @@ export class RecordingError extends DomainError {
     super('RECORDING_FAILED', message, cause);
   }
 }
-
-/** Required configuration (e.g. an API key) is missing at runtime. */
-export class ConfigError extends DomainError {
-  constructor(field: string) {
-    super('CONFIG_MISSING', `Required configuration missing: ${field}`);
-  }
-}

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { access, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 
 import { DomainError } from '../domain/errors.js';
 import { logger as rootLogger } from './logger.js';
@@ -203,7 +203,3 @@ function captureStderr(bin: string, args: string[]): Promise<string> {
   });
 }
 
-/** Convenience: resolve to absolute paths consistently. */
-export function asAbsolute(p: string): string {
-  return resolve(p);
-}

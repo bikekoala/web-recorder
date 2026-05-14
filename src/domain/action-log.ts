@@ -294,10 +294,6 @@ export const ActionLogEntry = z.discriminatedUnion('type', [
 ]);
 export type ActionLogEntry = z.infer<typeof ActionLogEntry>;
 
-/** Standalone schema alias — same union, exported under the `Schema` suffix
- *  for callers that prefer the conventional naming pattern. */
-export const ActionLogEntrySchema = ActionLogEntry;
-
 /**
  * Recording window meta. Both timestamps are ms relative to the session start
  * (the same clock as ActionLogEntry.t), so cursor synth + video trim layers

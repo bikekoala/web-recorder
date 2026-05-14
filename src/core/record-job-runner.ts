@@ -460,5 +460,5 @@ export function videoRelativeTrimWindow(
   return { startMs: Math.round(startedAtMs * f), endMs: Math.round(endedAtMs * f) };
 }
 
-// (Helpers `descriptionsMatch` / `contentTokens` live in
-//  src/domain/intent-matching.ts — shared with the reconnoiterer-side scoring.)
+// (Scoring helpers `countMatchedHints` / `overlapScore` / `contentTokens`
+//  live in src/domain/intent-matching.ts — pure functions, no I/O.)

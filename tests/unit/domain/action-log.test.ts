@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ActionLog, ActionLogEntry, ActionLogEntrySchema } from '../../../src/domain/action-log.js';
+import { ActionLog, ActionLogEntry } from '../../../src/domain/action-log.js';
 
 const VIEWPORT = { width: 1280, height: 720 };
 
@@ -83,10 +83,10 @@ describe('action-log replan entry (§0034)', () => {
       reason: 'expect_after_mismatch', details: 'expected urlContains "/build" but URL was ".../Recordly"',
       scrollY: 1500, viewport: { width: 1280, height: 720 },
     };
-    expect(ActionLogEntrySchema.parse(entry)).toMatchObject({ type: 'replan' });
+    expect(ActionLogEntry.parse(entry)).toMatchObject({ type: 'replan' });
   });
   it('rejects a replan entry missing fromStepIndex', () => {
     const bad = { t: 1, type: 'replan', reason: 'expect_after_mismatch', details: 'y', scrollY: 0, viewport: { width: 1, height: 1 } };
-    expect(() => ActionLogEntrySchema.parse(bad)).toThrow();
+    expect(() => ActionLogEntry.parse(bad)).toThrow();
   });
 });

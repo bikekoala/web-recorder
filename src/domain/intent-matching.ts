@@ -16,18 +16,6 @@
  */
 
 /**
- * True iff hint description and click description share at least one
- * meaningful content token. See {@link contentTokens} for tokenization.
- */
-export function descriptionsMatch(a: string, b: string): boolean {
-  const tokensA = contentTokens(a);
-  const tokensB = contentTokens(b);
-  if (tokensA.size === 0 || tokensB.size === 0) return false;
-  for (const t of tokensA) if (tokensB.has(t)) return true;
-  return false;
-}
-
-/**
  * Reduce a description to its meaningful content tokens:
  *   - ASCII words ≥3 chars (drops noise like "the", "a", "of")
  *   - CJK 2-char n-grams over each contiguous CJK run (so "简体中文" ↔
