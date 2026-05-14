@@ -5,8 +5,9 @@
  * `output/<date>/<HH-MM-SS>-<runId>/`. The store is just a "what's running
  * right now" view that survives until the next process boot.
  *
- * Concurrency: a JobStore does NOT enforce one-job-at-a-time — that's the
- * server's job (see {@link JobQueue} below).
+ * Concurrency: jobs run concurrently (no JobQueue) — the v1 API spec allows
+ * parallel recordings (multiple browsers). This store is concurrency-safe in
+ * the single-threaded Node sense (no async between Map reads/writes).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -24,23 +25,24 @@ export class JobStore {
       status: 'queued',
       request,
       createdAt: new Date().toISOString(),
+      statusUrl: `/api/v1/recordings/${runId}`,
+      videoUrl: `/api/v1/recordings/${runId}/video`,
+      runJsonUrl: `/api/v1/recordings/${runId}/run.json`,
     };
     this.jobs.set(runId, state);
     return state;
   }
 
-  /** Look up a job by id, or undefined if it never existed (or was evicted). */
+  /** Look up a job by id. */
   get(runId: string): JobState | undefined {
     return this.jobs.get(runId);
   }
 
   /**
-   * Update a job's state. The caller passes the next `status` plus optional
-   * payload fields. Throws if the runId is unknown — every transition starts
-   * from a job that {@link enqueue} created, so a miss is a programmer error,
-   * not a normal runtime case.
+   * Update a job's state. Throws if the runId is unknown — every transition
+   * starts from a job that {@link enqueue} created, so a miss is a bug.
    */
-  update(runId: string, patch: { status: JobStatus } & Partial<Omit<JobState, 'runId' | 'createdAt' | 'request'>>): JobState {
+  update(runId: string, patch: { status: JobStatus } & Partial<Omit<JobState, 'runId' | 'createdAt' | 'request' | 'statusUrl'>>): JobState {
     const prev = this.jobs.get(runId);
     if (!prev) throw new Error(`JobStore.update: unknown runId ${runId}`);
     const next: JobState = { ...prev, ...patch };
@@ -52,53 +54,15 @@ export class JobStore {
     return next;
   }
 
-  /** Snapshot of all current jobs — diagnostic only; not part of the API. */
+  /** Snapshot of all current jobs (newest-first by createdAt). */
   all(): JobState[] {
-    return [...this.jobs.values()];
-  }
-}
-
-/**
- * Serializes job execution to one at a time. A new request `enqueue`s and then
- * `process` runs in the background; subsequent requests wait their turn. This
- * matches the single-Browser-instance reality of the recording stack — running
- * two recordings in parallel would multiply memory + LLM concurrency without
- * any clean benefit at v1 scale.
- */
-export class JobQueue {
-  private running = false;
-  private readonly pending: Array<() => Promise<void>> = [];
-
-  /** Schedule a job. Returns when this specific job has finished (succeeded or failed). */
-  async run(work: () => Promise<void>): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      this.pending.push(async () => {
-        try {
-          await work();
-          resolve();
-        } catch (err) {
-          reject(err);
-        }
-      });
-      void this.drain();
-    });
+    return [...this.jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  /** Number of jobs waiting (does not include the currently-running one). */
-  pendingCount(): number {
-    return this.pending.length;
-  }
-
-  private async drain(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
-    try {
-      while (this.pending.length > 0) {
-        const next = this.pending.shift()!;
-        await next();
-      }
-    } finally {
-      this.running = false;
-    }
+  /** Count jobs currently in a given status — used by /health. */
+  countByStatus(status: JobStatus): number {
+    let n = 0;
+    for (const j of this.jobs.values()) if (j.status === status) n += 1;
+    return n;
   }
 }

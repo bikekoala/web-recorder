@@ -14,7 +14,7 @@ output/
         ├── action-log.json
         ├── judgment.json              (only when judge ran)
         ├── recording-raw.webm         (only when a trim ran; the pre-trim video)
-        ├── recording.webm             (the deliverable)
+        ├── recording.mp4              (the deliverable when format=mp4; or recording.webm)
         └── run.json
 ```
 
@@ -36,7 +36,8 @@ Top-level shape (also see the schema for the authoritative form):
 ```jsonc
 {
   "schemaVersion": 1,
-  "request":       { "url", "prompt", "durationMs", "viewport", "headless" },
+  "request":       { "prompt", "durationMs", "viewport" },
+  "urlResolution": { "url", "reasoning", "model" }, // §0043 — what the AI URL resolver picked, and why
   "performance":   { ... },              // the full Performance A produced —
                                          // rationale, steps[].reasoning, rehearsal,
                                          // planDurationFit, unresolvedTargets,
@@ -53,7 +54,8 @@ What you can answer just by reading `run.json`:
 
 | Question | Path |
 |---|---|
-| What did the user ask for? | `request.prompt` + `request.url` + `request.durationMs` |
+| What did the user ask for? | `request.prompt` + `request.durationMs` |
+| What URL did the AI pick (and why)? | `urlResolution.url` + `urlResolution.reasoning` (§0043) |
 | What did A plan, and why? | `performance.rationale` (overall) + `performance.steps[].reasoning` (per step) |
 | Did the rehearsal walk diverge? | `performance.rehearsal.divergences` / `reconverges` / `truncated` |
 | Did any requested click get dropped? | `performance.unresolvedTargets` |
@@ -80,9 +82,13 @@ self-judging path). The full `RecordingJudgeReport` (see
 `src/domain/recording-judge.ts`) — 5-dimension rubric, per-dimension
 evidence, overall verdict.
 
-### `recording.webm` — the deliverable
+### `recording.mp4` (or `recording.webm`) — the deliverable
 
-The final, trimmed video. This is what a user "gets back" from a job.
+The final, trimmed video. This is what a user "gets back" from a job. The file
+extension follows the request's `format` parameter (default `mp4`, H.264 +
+yuv420p + `+faststart` at the requested `crf`). When only Playwright's bundled
+VP8-only ffmpeg is available, the runner falls back to `recording.webm` and the
+job's `run.json.metrics` reflects that — see ADR §0043.
 
 ### `recording-raw.webm` — pre-trim raw video
 

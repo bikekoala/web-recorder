@@ -34,22 +34,27 @@ import { PerformanceSchema } from './performance.js';
 export const RUN_RECORD_SCHEMA_VERSION = 1 as const;
 
 export const RunRequestSchema = z.object({
-  url: z.string().url(),
   prompt: z.string().min(1),
   durationMs: z.number().int().positive(),
   viewport: z.object({
     width: z.number().int().positive(),
     height: z.number().int().positive(),
   }),
-  /**
-   * Optional — passed through from the run request when known. Some callers
-   * (smoke tests, fakes) don't construct via the headless code path, so this
-   * is `.optional()`. When known it's helpful for "the video looked weird,
-   * was this a headed run?" post-hoc questions.
-   */
-  headless: z.boolean().optional(),
 });
 export type RunRequestRecord = z.infer<typeof RunRequestSchema>;
+
+/**
+ * Output of the AI URL resolver — what URL the recording started at, and the
+ * one-line LLM rationale for picking it. Captured in `run.json` so a human or
+ * a future AI session reviewing a past run can see what `prompt → URL`
+ * decision was made (and which model made it).
+ */
+export const UrlResolutionSchema = z.object({
+  url: z.string().url(),
+  reasoning: z.string().min(1),
+  model: z.string().min(1),
+});
+export type UrlResolutionRecord = z.infer<typeof UrlResolutionSchema>;
 
 export const IntentSatisfactionSchema = z.object({
   hintsResolvedPreRecording: z.number().int().nonnegative(),
@@ -136,6 +141,7 @@ export type RunConfigSnapshot = z.infer<typeof RunConfigSnapshotSchema>;
 export const RunRecordSchema = z.object({
   schemaVersion: z.literal(RUN_RECORD_SCHEMA_VERSION),
   request: RunRequestSchema,
+  urlResolution: UrlResolutionSchema,
   performance: PerformanceSchema,
   metrics: RunMetricsSchema,
   directorReport: DirectorReportSchema,

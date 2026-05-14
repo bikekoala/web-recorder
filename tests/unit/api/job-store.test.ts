@@ -1,17 +1,28 @@
 import { describe, expect, it } from 'vitest';
 
-import { JobQueue, JobStore } from '../../../src/api/job-store.js';
+import { JobStore } from '../../../src/api/job-store.js';
 import type { RecordRequest } from '../../../src/api/request.js';
 
-const req: RecordRequest = { url: 'https://example.com', prompt: 'browse', durationMs: 10000, headless: true };
+const req: RecordRequest = {
+  prompt: 'browse',
+  durationMs: 10000,
+  width: 1280,
+  height: 720,
+  format: 'mp4',
+  crf: 18,
+  audio: false,
+};
 
 describe('JobStore', () => {
-  it('enqueues a job in `queued` state with a stable runId', () => {
+  it('enqueues a job in `queued` state with a stable runId and pre-built URL pointers', () => {
     const s = new JobStore();
     const a = s.enqueue(req);
     const b = s.enqueue(req);
     expect(a.runId).not.toBe(b.runId);
     expect(a.status).toBe('queued');
+    expect(a.statusUrl).toBe(`/api/v1/recordings/${a.runId}`);
+    expect(a.videoUrl).toBe(`/api/v1/recordings/${a.runId}/video`);
+    expect(a.runJsonUrl).toBe(`/api/v1/recordings/${a.runId}/run.json`);
     expect(s.get(a.runId)).toEqual(a);
   });
 
@@ -23,11 +34,18 @@ describe('JobStore', () => {
     expect(running.completedAt).toBeUndefined();
     const done = s.update(job.runId, {
       status: 'succeeded',
-      result: { runDir: '/o', runJsonPath: '/o/run.json', videoPath: '/o/recording.webm' },
+      result: {
+        runDir: '/o',
+        runJsonPath: '/o/run.json',
+        videoPath: '/o/recording.mp4',
+        videoUrl: `/api/v1/recordings/${job.runId}/video`,
+        runJsonUrl: `/api/v1/recordings/${job.runId}/run.json`,
+        urlResolution: { url: 'https://example.com/', reasoning: 'inline URL' },
+      },
     });
     expect(done.completedAt).toBeDefined();
-    expect(done.startedAt).toBe(running.startedAt); // preserved
-    expect(done.result?.videoPath).toBe('/o/recording.webm');
+    expect(done.startedAt).toBe(running.startedAt);
+    expect(done.result?.videoPath).toBe('/o/recording.mp4');
   });
 
   it('records error on `failed`', () => {
@@ -42,45 +60,30 @@ describe('JobStore', () => {
     const s = new JobStore();
     expect(() => s.update('does-not-exist', { status: 'running' })).toThrow(/unknown runId/);
   });
-});
 
-describe('JobQueue', () => {
-  it('runs jobs sequentially (never two at the same time)', async () => {
-    const q = new JobQueue();
-    let inFlight = 0;
-    let maxInFlight = 0;
-    const make = (delay: number) => async () => {
-      inFlight += 1;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      await new Promise((r) => setTimeout(r, delay));
-      inFlight -= 1;
-    };
-    await Promise.all([q.run(make(20)), q.run(make(20)), q.run(make(20))]);
-    expect(maxInFlight).toBe(1);
+  it('counts jobs by status', () => {
+    const s = new JobStore();
+    const a = s.enqueue(req);
+    const b = s.enqueue(req);
+    s.enqueue(req);
+    expect(s.countByStatus('queued')).toBe(3);
+    s.update(a.runId, { status: 'running' });
+    s.update(b.runId, { status: 'succeeded' });
+    expect(s.countByStatus('queued')).toBe(1);
+    expect(s.countByStatus('running')).toBe(1);
+    expect(s.countByStatus('succeeded')).toBe(1);
   });
 
-  it('propagates a job error to the caller without freezing the queue', async () => {
-    const q = new JobQueue();
-    await expect(q.run(async () => { throw new Error('first job died'); })).rejects.toThrow(/first job died/);
-    // The next job still runs cleanly.
-    let ran = false;
-    await q.run(async () => { ran = true; });
-    expect(ran).toBe(true);
-  });
-
-  it('reports pendingCount accurately while jobs are queued', async () => {
-    const q = new JobQueue();
-    let release: () => void = () => {};
-    const blocker = new Promise<void>((res) => { release = res; });
-    const first = q.run(async () => { await blocker; });
-    // Microtask: the first job is now `running`; not in `pending`.
-    await Promise.resolve();
-    expect(q.pendingCount()).toBe(0);
-    const second = q.run(async () => {});
-    const third = q.run(async () => {});
-    expect(q.pendingCount()).toBe(2);
-    release();
-    await Promise.all([first, second, third]);
-    expect(q.pendingCount()).toBe(0);
+  it('all() returns jobs newest-first', () => {
+    const s = new JobStore();
+    const a = s.enqueue(req);
+    // Ensure different createdAt values (ISO strings tick at ms resolution).
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    return sleep(5).then(() => {
+      const b = s.enqueue(req);
+      const list = s.all();
+      expect(list[0]!.runId).toBe(b.runId);
+      expect(list[1]!.runId).toBe(a.runId);
+    });
   });
 });

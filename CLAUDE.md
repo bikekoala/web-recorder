@@ -39,9 +39,10 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `Performance` domain type (pre-resolved, paced action sequence) | ✅ |
 | Centralized prompts in `src/prompts/` — only `reconnoiterer` (+ `recording-judge`) remain | ✅ |
 | Two model knobs that matter: `LLM_MODEL` (Stagehand internals) / `LLM_RECON_MODEL` (recon+re-plan) | ✅ |
-| `RecordJobRunner` (orchestrates setup → recon → director → trim) | ✅ |
-| Natural-language entry point (`url, prompt, durationMs`) | ✅ |
-| Vitest unit tests (207 passing) | ✅ |
+| `RecordJobRunner` (orchestrates URL resolve → setup → recon → director → trim) | ✅ |
+| Natural-language entry point (`prompt, durationMs`) — URL is in the prompt; the runner's injected `IUrlResolver` picks the start URL (`anthropic/claude-haiku-4.5` default, `LLM_URL_RESOLVER_MODEL` override). No `url` / `headless` request params (§0043) | ✅ |
+| `IUrlResolver` + LlmUrlResolver — AI-first start-URL resolution from a free-form prompt (explicit URLs, well-known names, pure intent → search). ~200 in/~80 out tokens per call; cost incidental on Haiku 4.5 (§0043) | ✅ |
+| Vitest unit tests (235 passing) | ✅ |
 | Action vocabulary: 8 primitives (click / scroll / dwell / type / key / back / done / goto — same-host hard rule, §0041) | ✅ |
 | v1 contract: `unmet`/`partial` w/ a named reason IS success for unreachable content; bugs we fix are limited to wasted budget when content IS available (§0042) | ✅ |
 | Reconverge-on-initial-resolve-drop (§0042 P13 narrow scope) — when A's first draft requests targets the resolver can't locate AND the aria tree is NOT truncated, fire ONE more recon LLM call with the dropped descriptions as a "don't try these" hint; symmetric with the rehearsal walk's mid-step reconverge but fires before the walk; `RECON_RECONVERGE_ON_DROP`, default on | ✅ |
@@ -53,7 +54,9 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `intentSatisfaction` metric (transparent "did we do what user asked?") | ✅ |
 | Bot-detection mitigations (chrome flags + UA + optional storageState) | ✅ |
 | Cursor trajectory synth (`ICursorSynthesizer`) | ⏳ |
-| HTTP API — Node `http` (zero new deps); POST `/record` (Zod-parsed, queued), GET `/record/:runId[/video|/run.json]`, GET `/health`; one-job-at-a-time `JobQueue`; entry: `npm run serve` (`PORT`, default 8787) | ✅ |
+| HTTP API v1 (§0043) — Node `http` (zero new deps); REST under `/api/v1/recordings`: POST create (Zod-parsed `{prompt, durationMs, width?, height?, format?, crf?, audio?}`), GET list, GET status, GET `/video`, GET `/run.json`, plus `/health`. **Concurrent execution** (no JobQueue). `audio: true` → 501 NOT_IMPLEMENTED (recorder-rebuild sub-project). Service-mode hard-codes `headless:true`; manual `npm run prototype:stagehand` is headed. Entry: `npm run serve` (`PORT`, default 8787) | ✅ |
+| mp4 default output + clarity via `crf` (§0043) — `trimVideo()` outputs mp4 H.264 + yuv420p + `+faststart` at the request's `crf` (default 18, visually lossless); falls back to webm/VP8 when only Playwright's bundled (VP8-only) ffmpeg is available. System ffmpeg discovery: `FFMPEG_PATH` → `$PATH` → bundled. `brew install ffmpeg` recommended on macOS dev for the mp4 path | ✅ |
+| Audio capture | ⏳ (§0043 follow-up — `IMediaRecorder` port + ffmpeg-based adapter, xvfb+PulseAudio on Linux/Docker, AVFoundation+BlackHole on macOS dev) |
 
 Architectural decisions live in [`docs/decisions.md`](./docs/decisions.md). Update it whenever a decision is made or revised.
 
@@ -93,9 +96,11 @@ npx playwright install ffmpeg     # bundled trim binary
 # Type-check (strict, no emit)
 npm run typecheck
 
-# Run the natural-language driven prototype
+# Run the natural-language driven prototype (manual, runs headed by default)
 # Defaults to GitHub Recordly README + the "click 简中, slow scroll" 10s test.
-# Override with PROTOTYPE_URL / PROTOTYPE_PROMPT / PROTOTYPE_DURATION_MS env vars.
+# The URL goes in the prompt; the LlmUrlResolver picks it (explicit URLs +
+# well-known names + pure intent → search).
+# Override with PROTOTYPE_PROMPT / PROTOTYPE_DURATION_MS env vars.
 npm run prototype:stagehand
 
 # Grade a finished recording.webm against the 5-dimension naturalness rubric.
@@ -114,12 +119,15 @@ npm run eval
 # Verify the recording pipeline alone (no LLM, no Stagehand)
 npm run smoke:recording
 
-# Boot the HTTP API (default PORT=8787). One job at a time.
-#   POST /record    body: { url, prompt, durationMs, headless? }
-#   GET  /record/:runId
-#   GET  /record/:runId/video         (only on succeeded)
-#   GET  /record/:runId/run.json      (only on succeeded)
-#   GET  /health
+# Boot the HTTP API v1 (default PORT=8787). Concurrent — no JobQueue (§0043).
+#   POST /api/v1/recordings         body: { prompt, durationMs, width?, height?, format?, crf?, audio? }
+#   GET  /api/v1/recordings         list (newest-first)
+#   GET  /api/v1/recordings/:runId
+#   GET  /api/v1/recordings/:runId/video      (only on succeeded; Content-Type follows `format`)
+#   GET  /api/v1/recordings/:runId/run.json   (only on succeeded)
+#   GET  /health                              { ok, runningJobs, queueDepth }
+# audio:true → 501 AUDIO_NOT_IMPLEMENTED (§0043 follow-up sub-project).
+# Service-mode hard-codes headless:true; prototype is headed.
 npm run serve
 ```
 

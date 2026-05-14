@@ -1,26 +1,34 @@
 /**
  * HTTP server entry point.
  *
- * Boots the API on PORT (default 8787), wires a per-job factory that
- * instantiates Stagehand + LlmReconnoiterer + PerformanceDirector +
- * RecordJobRunner for each accepted request. See `src/api/server.ts` for the
- * routes.
+ * Boots the API on PORT (default 8787) and wires a per-job factory that
+ * instantiates Stagehand + LlmUrlResolver + LlmReconnoiterer +
+ * PerformanceDirector + RecordJobRunner for each accepted request. See
+ * `src/api/server.ts` for the routes.
+ *
+ * Service mode hard-codes `headless: true` — this entry point is the
+ * production/Docker target. Use `scripts/prototype-stagehand.ts` for headed
+ * manual debugging.
+ *
+ * Per-job viewport, format, and CRF come from the request body. Audio is
+ * accepted at the schema level but currently returns 501 — see ADR §0043.
  *
  * Run:
  *   npm run serve
  *
  * Smoke test:
  *   curl -s http://localhost:8787/health
- *   curl -s -X POST http://localhost:8787/record \\
+ *   curl -s -X POST http://localhost:8787/api/v1/recordings \\
  *     -H 'Content-Type: application/json' \\
- *     -d '{"url":"https://react.dev","prompt":"看看 React 主页","durationMs":10000}'
- *   curl -s http://localhost:8787/record/<runId>
+ *     -d '{"prompt":"去 https://react.dev 看看 React 主页","durationMs":10000}'
+ *   curl -s http://localhost:8787/api/v1/recordings/<runId>
  */
 
 import { StagehandPageSession } from '../src/adapters/agent/stagehand-session.js';
 import { LlmBlockerDismisser } from '../src/adapters/blocker/llm-blocker-dismisser.js';
 import { PerformanceDirector } from '../src/adapters/director/performance-director.js';
 import { LlmReconnoiterer } from '../src/adapters/recon/llm-reconnoiterer.js';
+import { LlmUrlResolver } from '../src/adapters/url-resolver/llm-url-resolver.js';
 import { RecordJobRunner } from '../src/core/record-job-runner.js';
 import { createApiServer, type JobFactory } from '../src/api/server.js';
 import { config } from '../src/infra/config.js';
@@ -32,21 +40,22 @@ const PORT = Number(process.env.PORT ?? 8787);
 const jobFactory: JobFactory = async (request, { outputDir }) => {
   const session = new StagehandPageSession({
     outputDir,
-    headless: request.headless,
-    viewport: config.viewport,
+    headless: true,
+    viewport: { width: request.width, height: request.height },
     verbose: 1,
   });
+  const urlResolver = new LlmUrlResolver();
   const reconnoiterer = new LlmReconnoiterer(
     config.blockerDismiss ? { blockerDismisser: new LlmBlockerDismisser() } : {},
   );
   const director = new PerformanceDirector({ replanner: reconnoiterer });
-  const runner = new RecordJobRunner(session, reconnoiterer, director);
+  const runner = new RecordJobRunner(session, urlResolver, reconnoiterer, director);
   return runner.run({
-    url: request.url,
     prompt: request.prompt,
     durationMs: request.durationMs,
     outputDir,
-    headless: request.headless,
+    format: request.format,
+    crf: request.crf,
   });
 };
 
@@ -58,6 +67,7 @@ server.listen(PORT, () => {
       port: PORT,
       reconModel: config.llmReconModelResolved,
       judgeModel: config.llmJudgeModel,
+      urlResolverModel: config.llmUrlResolverModel,
       outputDir: config.outputDir,
     },
     `web-recorder API listening on http://localhost:${PORT}`,

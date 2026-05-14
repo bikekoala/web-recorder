@@ -54,6 +54,14 @@ const Schema = z.object({
   llmReconModel: z.string().min(1).optional(),
 
   /**
+   * URL resolver model — turns a free-form prompt into the starting URL
+   * the recording should goto first. Tiny LLM task (~200 tokens in, ~80
+   * out), cheap-model territory. Defaults to Haiku 4.5 ($1/$5 per million
+   * vs Sonnet's $3/$15). Override with LLM_URL_RESOLVER_MODEL.
+   */
+  llmUrlResolverModel: z.string().min(1).default('anthropic/claude-haiku-4.5'),
+
+  /**
    * Per-recording cap on re-plan checkpoints. After this many, the
    * PerformanceDirector stops re-planning and plays out remaining steps
    * as-is (reality checks become advisory). Test/eval infra, not a
@@ -325,6 +333,7 @@ const raw = {
   llmModel: process.env.LLM_MODEL,
   llmPlannerModel: process.env.LLM_PLANNER_MODEL,
   llmReconModel: process.env.LLM_RECON_MODEL,
+  llmUrlResolverModel: process.env.LLM_URL_RESOLVER_MODEL,
   maxReplans: process.env.MAX_REPLANS ? Number(process.env.MAX_REPLANS) : undefined,
   maxRecordingDurationMs: process.env.MAX_RECORDING_DURATION_MS,
   replanMinRemainingMs: process.env.REPLAN_MIN_REMAINING_MS

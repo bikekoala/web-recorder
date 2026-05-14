@@ -22,6 +22,7 @@ import { StagehandPageSession } from '../src/adapters/agent/stagehand-session.js
 import { LlmBlockerDismisser } from '../src/adapters/blocker/llm-blocker-dismisser.js';
 import { PerformanceDirector } from '../src/adapters/director/performance-director.js';
 import { LlmReconnoiterer } from '../src/adapters/recon/llm-reconnoiterer.js';
+import { LlmUrlResolver } from '../src/adapters/url-resolver/llm-url-resolver.js';
 import { LlmVisionJudge } from '../src/adapters/judge/llm-vision-judge.js';
 import type { RecordingJudgeReport } from '../src/domain/recording-judgment.js';
 import { RecordJobRunner, type RunResult } from '../src/core/record-job-runner.js';
@@ -30,8 +31,10 @@ import { logger } from '../src/infra/logger.js';
 import { buildRunDir } from '../src/infra/run-dir.js';
 import { writeJudgmentReport } from '../src/infra/run-record-writer.js';
 
-const URL = process.env.EVAL_URL ?? 'https://github.com/webadderallorg/Recordly';
-const PROMPT = process.env.EVAL_PROMPT ?? '点击页面上的"简体中文"链接，然后慢慢向下滑动浏览内容';
+// EVAL_PROMPT is the only input — embed any URL inline ("去 https://… 看看").
+// The LlmUrlResolver picks it up (or names a well-known site for "看维基百科").
+const PROMPT = process.env.EVAL_PROMPT
+  ?? '去 https://github.com/webadderallorg/Recordly 点击页面上的"简体中文"链接，然后慢慢向下滑动浏览内容';
 const DURATION_MS = Number(process.env.EVAL_DURATION_MS ?? 10_000);
 const HEADLESS = process.env.EVAL_HEADLESS !== 'false';
 
@@ -209,21 +212,23 @@ function printReport(rows: Row[], hardFail: boolean, concerns: boolean): void {
 
 async function main(): Promise<void> {
   const log = logger.child({ script: 'self-eval' });
-  log.info({ url: URL, prompt: PROMPT, durationMs: DURATION_MS, headless: HEADLESS, reconModel: config.llmReconModelResolved, judgeModel: config.llmJudgeModel }, 'self-eval: running the pipeline');
+  log.info({ prompt: PROMPT, durationMs: DURATION_MS, headless: HEADLESS, reconModel: config.llmReconModelResolved, judgeModel: config.llmJudgeModel, urlResolverModel: config.llmUrlResolverModel }, 'self-eval: running the pipeline');
 
   const outputDir = buildRunDir({ outputRoot: config.outputDir, kind: 'eval' });
   const session = new StagehandPageSession({ outputDir, headless: HEADLESS, viewport: config.viewport, verbose: 1 });
+  const urlResolver = new LlmUrlResolver();
   const reconnoiterer = new LlmReconnoiterer(config.blockerDismiss ? { blockerDismisser: new LlmBlockerDismisser() } : {});
   const director = new PerformanceDirector({ replanner: reconnoiterer });
-  const runner = new RecordJobRunner(session, reconnoiterer, director);
+  const runner = new RecordJobRunner(session, urlResolver, reconnoiterer, director);
 
   let result: RunResult;
   try {
-    result = await runner.run({ url: URL, prompt: PROMPT, durationMs: DURATION_MS, outputDir, headless: HEADLESS });
+    result = await runner.run({ prompt: PROMPT, durationMs: DURATION_MS, outputDir });
   } catch (err) {
     try { await session.stop(); } catch { /* ignore */ }
     throw err;
   }
+  log.info({ urlResolution: result.urlResolution }, '🧭 url resolved');
 
   log.info({ metrics: result.metrics, directorReport: result.directorReport }, 'pipeline done — now judging the recording');
 

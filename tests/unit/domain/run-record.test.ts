@@ -8,10 +8,15 @@ import {
 } from '../../../src/domain/run-record.js';
 
 const validRequest = {
-  url: 'https://example.com/page',
   prompt: 'click X then scroll',
   durationMs: 10_000,
   viewport: { width: 1280, height: 720 },
+};
+
+const validUrlResolution = {
+  url: 'https://example.com/page',
+  reasoning: 'prompt named example.com',
+  model: 'anthropic/claude-haiku-4.5',
 };
 
 const validPerformance = {
@@ -47,6 +52,7 @@ const validMetrics = {
 const validRecord = {
   schemaVersion: RUN_RECORD_SCHEMA_VERSION,
   request: validRequest,
+  urlResolution: validUrlResolution,
   performance: validPerformance,
   metrics: validMetrics,
   directorReport: { totalMs: 9500, stepsExecuted: 1, replanCount: 0, endReason: 'done' as const },
@@ -81,23 +87,28 @@ describe('RunRecordSchema', () => {
     })).toThrow();
   });
 
-  it('rejects an invalid request.url', () => {
+  it('rejects an invalid urlResolution.url', () => {
     expect(() => RunRecordSchema.parse({
       ...validRecord,
-      request: { ...validRequest, url: 'not a url' },
+      urlResolution: { ...validUrlResolution, url: 'not a url' },
     })).toThrow();
+  });
+
+  it('requires urlResolution (no longer optional in v1)', () => {
+    const { urlResolution, ...withoutResolution } = validRecord;
+    void urlResolution;
+    expect(() => RunRecordSchema.parse(withoutResolution)).toThrow();
   });
 });
 
-describe('RunRequestSchema — headless is optional', () => {
-  it('accepts request without headless', () => {
-    expect(RunRequestSchema.parse(validRequest).headless).toBeUndefined();
+describe('RunRequestSchema — prompt + durationMs + viewport only', () => {
+  it('rejects a request with an empty prompt', () => {
+    expect(() => RunRequestSchema.parse({ ...validRequest, prompt: '' })).toThrow();
   });
-  it('accepts request with headless: true', () => {
-    expect(RunRequestSchema.parse({ ...validRequest, headless: true }).headless).toBe(true);
-  });
-  it('rejects headless of the wrong type', () => {
-    expect(() => RunRequestSchema.parse({ ...validRequest, headless: 'yes' })).toThrow();
+  it('rejects extra fields silently (Zod strips by default)', () => {
+    const out = RunRequestSchema.parse({ ...validRequest, url: 'https://x.test', headless: true } as unknown as typeof validRequest);
+    expect('url' in out).toBe(false);
+    expect('headless' in out).toBe(false);
   });
 });
 

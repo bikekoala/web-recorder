@@ -14,6 +14,7 @@ import {
 import type { DirectorReport, IDirector } from '../ports/director.js';
 import type { IPageSession } from '../ports/page-session.js';
 import type { IReconnoiterer } from '../ports/reconnoiterer.js';
+import type { IUrlResolver, UrlResolution } from '../ports/url-resolver.js';
 
 /**
  * Orchestrates a single recording job end-to-end ("prophet" pipeline, ADR §0034).
@@ -48,18 +49,27 @@ import type { IReconnoiterer } from '../ports/reconnoiterer.js';
  */
 
 export interface RunRequest {
-  url: string;
+  /**
+   * Natural-language instruction. THE input — the URL the recording starts at
+   * is resolved from this by the runner's injected {@link IUrlResolver}. May
+   * contain an explicit URL, name a well-known site, or only describe an
+   * intent; the resolver picks something sensible in every case (goals.md #6 —
+   * AI-first, no regex).
+   */
   prompt: string;
+  /** Recording duration in milliseconds. First-class constraint per goals.md #2. */
   durationMs: number;
   /** Output directory for video + log artifacts. Created if missing. */
   outputDir: string;
   /**
-   * Optional flag the runner records into `run.json.request.headless` for
-   * traceability. Doesn't affect the runner's behavior — the session is
-   * already constructed by the caller (which is where headless takes effect).
-   * When unknown, omit and `run.json` will simply not carry the field.
+   * Output container for the trimmed video. `mp4` (default) needs a full
+   * ffmpeg with libx264 — falls back to webm if not available. The Stagehand
+   * session always records to webm via Playwright's recordVideo; this only
+   * controls the post-trim re-encode.
    */
-  headless?: boolean;
+  format?: 'mp4' | 'webm';
+  /** H.264 CRF for mp4 output. Default 18 (visually lossless). Ignored for webm. */
+  crf?: number;
 }
 
 export interface RunResult {
@@ -68,6 +78,8 @@ export interface RunResult {
   /** Raw video before trim. Useful for debugging / cursor synth later. */
   rawVideoPath: string;
   actionLogPath: string;
+  /** The URL the recording started at, plus the LLM's one-line rationale. */
+  urlResolution: UrlResolution;
   /** The pre-resolved, paced Performance produced by reconnaissance. */
   performance: Performance;
   metrics: RunMetrics;
@@ -161,6 +173,7 @@ export class RecordJobRunner {
 
   constructor(
     private readonly session: IPageSession,
+    private readonly urlResolver: IUrlResolver,
     private readonly reconnoiterer: IReconnoiterer,
     private readonly director: IDirector,
   ) {}
@@ -169,10 +182,17 @@ export class RecordJobRunner {
     const wallClockT0 = Date.now();
     const startedAtIso = new Date(wallClockT0).toISOString();
 
+    // ----------------------------------- 0. Resolve URL from prompt
+    // The URL is THE first input (the API contract is prompt-only). AI-resolved
+    // — handles explicit URLs ("去 https://github.com…"), well-known names
+    // ("打开维基百科"), and pure intent ("搜一下 X" → google). goals.md #6.
+    const urlResolution = await this.urlResolver.resolve(req.prompt);
+    const url = urlResolution.url;
+
     // ----------------------------------- 1. Setup
     const tSetup = Date.now();
     await this.session.start();
-    await this.session.goto(req.url);
+    await this.session.goto(url);
 
     // Take an early screenshot for the reconnoiterer. Stability wait runs in
     // parallel via Promise.all below.
@@ -184,7 +204,7 @@ export class RecordJobRunner {
     const tRecon = Date.now();
     const reconTask = this.reconnoiterer.recon(
       {
-        url: req.url,
+        url,
         prompt: req.prompt,
         durationMs: req.durationMs,
         viewport: this.session.viewport,
@@ -216,8 +236,10 @@ export class RecordJobRunner {
 
     const tTrim = Date.now();
     let videoPath = artifacts.videoPath;
+    const requestedFormat: 'mp4' | 'webm' = req.format ?? 'mp4';
     if (artifacts.recording) {
-      const out = resolve(req.outputDir, 'recording.webm');
+      const targetExt = requestedFormat === 'mp4' ? 'mp4' : 'webm';
+      const out = resolve(req.outputDir, `recording.${targetExt}`);
       const trim = videoRelativeTrimWindow(artifacts.recording, rawVideoMs, artifacts.actionLog.durationMs);
       if (trim.startMs !== artifacts.recording.startedAtMs || trim.endMs !== artifacts.recording.endedAtMs) {
         this.logger.info(
@@ -225,8 +247,17 @@ export class RecordJobRunner {
           'recordVideo clock drift — trimming the recording by video-relative time',
         );
       }
-      await trimVideo(artifacts.videoPath, out, trim.startMs, trim.endMs);
-      videoPath = out;
+      const trimResult = await trimVideo(artifacts.videoPath, out, trim.startMs, trim.endMs, {
+        format: requestedFormat,
+        ...(req.crf !== undefined ? { crf: req.crf } : {}),
+      });
+      videoPath = trimResult.outputPath;
+      if (trimResult.format !== requestedFormat) {
+        this.logger.warn(
+          { requested: requestedFormat, produced: trimResult.format, videoPath },
+          'requested format not supported by available ffmpeg — produced fallback format',
+        );
+      }
     }
     const trimMs = Date.now() - tTrim;
 
@@ -295,12 +326,11 @@ export class RecordJobRunner {
       await writeRunRecord(req.outputDir, {
         schemaVersion: RUN_JSON_SCHEMA_VERSION,
         request: {
-          url: req.url,
           prompt: req.prompt,
           durationMs: req.durationMs,
           viewport: artifacts.viewport,
-          ...(req.headless !== undefined ? { headless: req.headless } : {}),
         },
+        urlResolution: { ...urlResolution, model: this.urlResolver.modelId },
         performance,
         metrics,
         directorReport,
@@ -318,6 +348,7 @@ export class RecordJobRunner {
       videoPath,
       rawVideoPath,
       actionLogPath: artifacts.actionLogPath,
+      urlResolution,
       performance,
       metrics,
       directorReport,

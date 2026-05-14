@@ -7,13 +7,17 @@ import { DomainError } from '../domain/errors.js';
 import { logger as rootLogger } from './logger.js';
 
 /**
- * Tiny wrapper around the ffmpeg binary that ships with Playwright.
+ * Tiny wrapper around an ffmpeg binary.
  *
- * We deliberately do not require the user to `brew install ffmpeg` — Playwright
- * already downloaded a known-good ffmpeg as part of `npm run playwright:install`,
- * and we reuse it.
+ * Resolution order (preferred → fallback):
+ *   1. process.env.FFMPEG_PATH (explicit override)
+ *   2. System ffmpeg on $PATH (full build — includes libx264 for mp4 output)
+ *   3. Playwright's bundled ffmpeg (VP8-only — works for webm trims only)
  *
- * If the bundled binary moves or the user has set FFMPEG_PATH, we honor that.
+ * mp4 output needs a full ffmpeg (Playwright's stripped build has VP8 only).
+ * On macOS dev: `brew install ffmpeg`. On Docker: install ffmpeg in the image.
+ * If neither is available and mp4 is requested, the runner falls back to webm
+ * and the API client gets the format they actually got back.
  */
 
 const logger = rootLogger.child({ component: 'ffmpeg' });
@@ -24,53 +28,67 @@ export class FfmpegError extends DomainError {
   }
 }
 
-let cachedPath: string | null = null;
+interface FfmpegBinary {
+  path: string;
+  /** Whether this binary supports the libx264 encoder (needed for mp4). */
+  hasH264: boolean;
+}
+
+let cachedBinary: FfmpegBinary | null = null;
+
+export async function findFfmpeg(): Promise<string> {
+  return (await resolveFfmpeg()).path;
+}
 
 /**
- * Locate the ffmpeg binary. Resolution order:
- *   1. process.env.FFMPEG_PATH (explicit override)
- *   2. Playwright's bundled ffmpeg under ~/Library/Caches/ms-playwright/ffmpeg-*\/ffmpeg-{mac,linux,win.exe}
- *
- * Result is cached for the lifetime of the process — ffmpeg locations don't
- * change mid-process.
+ * Like {@link findFfmpeg} but also tells us whether the binary can produce mp4.
+ * Lets the caller make a `mp4 → fall back to webm` decision when no libx264
+ * encoder is available.
  */
-export async function findFfmpeg(): Promise<string> {
-  if (cachedPath) return cachedPath;
+export async function resolveFfmpeg(): Promise<FfmpegBinary> {
+  if (cachedBinary) return cachedBinary;
 
   const explicit = process.env.FFMPEG_PATH;
   if (explicit) {
     await assertExists(explicit);
-    cachedPath = explicit;
-    return explicit;
+    cachedBinary = { path: explicit, hasH264: await probeH264(explicit) };
+    return cachedBinary;
   }
 
+  // System ffmpeg on $PATH (full build) — preferred for mp4 output.
+  const sysPath = await whichFfmpeg();
+  if (sysPath) {
+    cachedBinary = { path: sysPath, hasH264: await probeH264(sysPath) };
+    return cachedBinary;
+  }
+
+  // Playwright's bundled ffmpeg (VP8-only).
   const cacheDir = join(homedir(), 'Library', 'Caches', 'ms-playwright');
   let entries: string[];
   try {
     entries = await readdir(cacheDir);
   } catch {
     throw new FfmpegError(
-      `Could not list Playwright cache at ${cacheDir}. Run "npm run playwright:install".`,
+      `No ffmpeg on $PATH and could not list Playwright cache at ${cacheDir}. Install one: "brew install ffmpeg" or "npm run playwright:install".`,
     );
   }
 
-  // Playwright's ffmpeg dir is usually `ffmpeg-N` (e.g. `ffmpeg-1011`), but on
-  // older macOS it ships under `ffmpeg_mac12_special-N` (frozen for mac12).
-  // Match both prefixes; the inner binary name is still the same set below.
+  // Playwright's ffmpeg dir is usually `ffmpeg-N`, but on older macOS it ships
+  // under `ffmpeg_mac12_special-N`. Match both prefixes; the binary name is the
+  // same set below.
   const dir = entries.find((e) => /^ffmpeg[-_]/.test(e));
   if (!dir) {
     throw new FfmpegError(
-      `No ffmpeg-* / ffmpeg_* directory under ${cacheDir}. Run "npx playwright install ffmpeg".`,
+      `No ffmpeg on $PATH and no ffmpeg-* / ffmpeg_* directory under ${cacheDir}. Run "npx playwright install ffmpeg" or "brew install ffmpeg".`,
     );
   }
 
-  // Bundled binary names by platform (Playwright convention).
   const candidates = ['ffmpeg-mac', 'ffmpeg-linux', 'ffmpeg-win.exe'];
   for (const name of candidates) {
     const p = join(cacheDir, dir, name);
     if (await fileExists(p)) {
-      cachedPath = p;
-      return p;
+      cachedBinary = { path: p, hasH264: await probeH264(p) };
+      return cachedBinary;
     }
   }
   throw new FfmpegError(
@@ -78,60 +96,117 @@ export async function findFfmpeg(): Promise<string> {
   );
 }
 
+async function whichFfmpeg(): Promise<string | null> {
+  return new Promise((resolveP) => {
+    const proc = spawn('sh', ['-c', 'command -v ffmpeg'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    proc.stdout.on('data', (c: Buffer) => (out += c.toString('utf8')));
+    proc.on('close', (code) => resolveP(code === 0 && out.trim() ? out.trim() : null));
+    proc.on('error', () => resolveP(null));
+  });
+}
+
+async function probeH264(path: string): Promise<boolean> {
+  return new Promise((resolveP) => {
+    const proc = spawn(path, ['-hide_banner', '-encoders'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    proc.stdout.on('data', (c: Buffer) => (out += c.toString('utf8')));
+    proc.stderr.on('data', (c: Buffer) => (out += c.toString('utf8')));
+    proc.on('close', () => resolveP(/\blibx264\b/.test(out)));
+    proc.on('error', () => resolveP(false));
+  });
+}
+
+export interface TrimVideoOpts {
+  /** Output container. `mp4` requires libx264 (system ffmpeg or FFMPEG_PATH). */
+  format?: 'mp4' | 'webm';
+  /** H.264 CRF for mp4 output. Ignored for webm. 0=lossless, 18≈visually lossless, 23=default. */
+  crf?: number;
+}
+
+export interface TrimVideoResult {
+  /** Actual output path (may differ from the input if format fell back). */
+  outputPath: string;
+  /** The format actually produced — caller may need this when mp4 → webm fallback fires. */
+  format: 'mp4' | 'webm';
+}
+
 /**
  * Trim a video to the window [startMs, endMs], frame-accurate.
  *
- * We re-encode with libvpx (VP8) for frame-accurate cuts. Stream-copy trims
- * (`-c copy`) were tried first but failed on Playwright-recorded WebM — the
- * source has very sparse keyframes (often just one at frame 0), so input-seek
- * lands at frame 0 and effectively does no trim.
+ * Re-encodes (not stream-copy) because Playwright-recorded WebM has very sparse
+ * keyframes — input-seek lands on frame 0 and effectively does no trim. `-ss`
+ * AFTER `-i` does an output-seek (decode from frame 0 to startSec and discard),
+ * which is slower but frame-accurate.
  *
- * Re-encoding cost: ~0.5-2s for a 10s 720p clip. Quality at `-b:v 1M` is
- * visually indistinguishable from the source for scrolling UI footage.
+ * Output codec:
+ *   - format='mp4' (default per the v1 API spec) → H.264 + yuv420p at the given
+ *     CRF (default 18 ≈ visually lossless). Needs system ffmpeg / FFMPEG_PATH
+ *     with libx264 — falls back to VP8/webm if not available, and updates the
+ *     returned `outputPath` to a `.webm` sibling.
+ *   - format='webm' → VP8 at 1 Mbps (fast realtime preset). Always works with
+ *     Playwright's bundled ffmpeg.
  *
- * Why not MP4/H.264: Playwright's bundled ffmpeg is a stripped build with
- * only VP8 encoders. Adding system ffmpeg as a dep can come later if the
- * user needs MP4 output for upload to social platforms.
- *
- * @param inputPath  Source video (.webm).
- * @param outputPath Destination .webm.
- * @param startMs    Trim start in milliseconds (>= 0).
- * @param endMs      Trim end in milliseconds (> startMs). If undefined, trim runs to EOF.
+ * Audio is dropped (`-an`) — Playwright's recordVideo has no audio track. The
+ * full ffmpeg + virtual audio device pipeline is tracked under ADR §0043.
  */
 export async function trimVideo(
   inputPath: string,
   outputPath: string,
   startMs: number,
   endMs?: number,
-): Promise<void> {
-  const ffmpeg = await findFfmpeg();
-  const startSec = (startMs / 1000).toFixed(3);
+  opts: TrimVideoOpts = {},
+): Promise<TrimVideoResult> {
+  const requestedFormat = opts.format ?? 'mp4';
+  const crf = opts.crf ?? 18;
 
-  // `-ss` AFTER `-i` does an output-seek: ffmpeg decodes from frame 0 to
-  // startSec and discards. Slower than input-seek but frame-accurate
-  // regardless of keyframe placement — required for our sparse-keyframe
-  // source.
-  const args = [
-    '-y',
-    '-loglevel', 'error',
-    '-i', inputPath,
-    '-ss', startSec,
-  ];
+  const bin = await resolveFfmpeg();
+  let format: 'mp4' | 'webm' = requestedFormat;
+  let actualOutput = outputPath;
+  if (format === 'mp4' && !bin.hasH264) {
+    logger.warn(
+      { ffmpegPath: bin.path, requested: 'mp4', fallback: 'webm' },
+      'ffmpeg has no libx264 encoder — falling back to webm; install a full ffmpeg (e.g. brew install ffmpeg) for mp4 output',
+    );
+    format = 'webm';
+    actualOutput = outputPath.replace(/\.mp4$/i, '.webm');
+    if (!/\.webm$/i.test(actualOutput)) actualOutput = `${actualOutput}.webm`;
+  }
+
+  const startSec = (startMs / 1000).toFixed(3);
+  const args = ['-y', '-loglevel', 'error', '-i', inputPath, '-ss', startSec];
   if (endMs !== undefined) {
     const durationSec = ((endMs - startMs) / 1000).toFixed(3);
     args.push('-t', durationSec);
   }
-  args.push(
-    '-c:v', 'libvpx',
-    '-b:v', '1M',
-    '-deadline', 'realtime',    // fastest VP8 encode preset
-    '-cpu-used', '8',           // max speed (VP8 0=best, 16=fastest)
-    '-an',                       // drop audio (Playwright recordings are silent)
-    outputPath,
-  );
+  if (format === 'mp4') {
+    // H.264 + yuv420p (so every player handles it: QuickTime, browsers, social).
+    // `-preset fast` is a sane wall-clock/quality tradeoff for 10–30 s clips.
+    // `+faststart` puts the moov atom at the head — clients can play before
+    // download finishes.
+    args.push(
+      '-c:v', 'libx264',
+      '-crf', String(crf),
+      '-preset', 'fast',
+      '-pix_fmt', 'yuv420p',
+      '-movflags', '+faststart',
+      '-an',
+      actualOutput,
+    );
+  } else {
+    args.push(
+      '-c:v', 'libvpx',
+      '-b:v', '1M',
+      '-deadline', 'realtime',
+      '-cpu-used', '8',
+      '-an',
+      actualOutput,
+    );
+  }
 
-  await runFfmpeg(ffmpeg, args);
-  logger.debug({ inputPath, outputPath, startMs, endMs }, 'video trimmed');
+  await runFfmpeg(bin.path, args);
+  logger.debug({ inputPath, outputPath: actualOutput, startMs, endMs, format, crf }, 'video trimmed');
+  return { outputPath: actualOutput, format };
 }
 
 /**

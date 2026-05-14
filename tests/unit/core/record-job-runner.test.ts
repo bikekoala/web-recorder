@@ -12,6 +12,7 @@ import type { DirectorReport, IDirector } from '../../../src/ports/director.js';
 import type { IPageSession } from '../../../src/ports/page-session.js';
 import { FakePageSession } from '../../fakes/fake-page-session.js';
 import { FakeReconnoiterer } from '../../fakes/fake-reconnoiterer.js';
+import { FakeUrlResolver } from '../../fakes/fake-url-resolver.js';
 
 const VIEWPORT = { width: 1280, height: 720 };
 const WINDOW: RecordingWindow = { startedAtMs: 1000, endedAtMs: 11000 };
@@ -263,15 +264,19 @@ describe('RecordJobRunner — prophet wiring', () => {
     const recon = new FakeReconnoiterer([performance]);
     const director = new StubDirector({ totalMs: 8123, stepsExecuted: 3, replanCount: 1, endReason: 'done' });
 
-    const runner = new RecordJobRunner(session, recon, director);
+    const urlResolver = new FakeUrlResolver({ url: 'https://test.example/', reasoning: 'fixed test URL' });
+    const runner = new RecordJobRunner(session, urlResolver, recon, director);
     const result = await runner.run({
-      url: 'https://test.example/',
       prompt: 'click 简中, slow scroll',
       durationMs: 10_000,
       outputDir: '/tmp/web-recorder-test-output',
     });
 
-    // The reconnoiterer was called once with the request.
+    // The URL resolver was called once with the prompt.
+    expect(urlResolver.calls).toEqual(['click 简中, slow scroll']);
+    expect(result.urlResolution).toEqual({ url: 'https://test.example/', reasoning: 'fixed test URL' });
+
+    // The reconnoiterer was called once with the resolved URL.
     expect(recon.calls).toHaveLength(1);
     expect(recon.calls[0]!.url).toBe('https://test.example/');
     expect(recon.calls[0]!.prompt).toBe('click 简中, slow scroll');
@@ -314,9 +319,8 @@ describe('RecordJobRunner — prophet wiring', () => {
     };
     const recon = new FakeReconnoiterer([performance]);
     const director = new StubDirector({ totalMs: 10, stepsExecuted: 1, replanCount: 0, endReason: 'done' });
-    const runner = new RecordJobRunner(session, recon, director);
+    const runner = new RecordJobRunner(session, new FakeUrlResolver(), recon, director);
     const result = await runner.run({
-      url: 'https://test.example/',
       prompt: 'do nothing',
       durationMs: 10_000,
       outputDir: '/tmp/web-recorder-test-output',
@@ -331,9 +335,8 @@ describe('RecordJobRunner — prophet wiring', () => {
     const session = new FakePageSession();
     const recon = new FakeReconnoiterer([perf([{ kind: 'done', reasoning: 'noop' }])]);
     const director = new StubDirector({ totalMs: 10, stepsExecuted: 1, replanCount: 0, endReason: 'done' });
-    const runner = new RecordJobRunner(session, recon, director);
+    const runner = new RecordJobRunner(session, new FakeUrlResolver(), recon, director);
     const result = await runner.run({
-      url: 'https://test.example/',
       prompt: 'do nothing',
       durationMs: 5_000,
       outputDir: '/tmp/web-recorder-test-output',
@@ -364,14 +367,13 @@ describe('RecordJobRunner — writes run.json with a parseable RunRecord', () =>
     };
     const recon = new FakeReconnoiterer([performance]);
     const director = new StubDirector({ totalMs: 9500, stepsExecuted: 3, replanCount: 0, endReason: 'done' });
-    const runner = new RecordJobRunner(session, recon, director);
+    const urlResolver = new FakeUrlResolver({ url: 'https://example.com/page', reasoning: 'prompt named example.com' });
+    const runner = new RecordJobRunner(session, urlResolver, recon, director);
 
     await runner.run({
-      url: 'https://example.com/page',
       prompt: '点击 sign-in 然后慢慢滚动',
       durationMs: 10_000,
       outputDir: dir,
-      headless: true,
     });
 
     const raw = await readFile(join(dir, 'run.json'), 'utf8');
@@ -381,11 +383,13 @@ describe('RecordJobRunner — writes run.json with a parseable RunRecord', () =>
     expect(parsed.schemaVersion).toBe(1);
     // Input is preserved verbatim, INCLUDING the original user prompt — this
     // is the whole reason `run.json` exists (see docs/output-layout.md).
-    expect(parsed.request.url).toBe('https://example.com/page');
     expect(parsed.request.prompt).toBe('点击 sign-in 然后慢慢滚动');
     expect(parsed.request.durationMs).toBe(10_000);
-    expect(parsed.request.headless).toBe(true);
     expect(parsed.request.viewport).toEqual({ width: 1280, height: 720 });
+    // URL resolution is captured alongside the request — the URL is now AI-resolved.
+    expect(parsed.urlResolution.url).toBe('https://example.com/page');
+    expect(parsed.urlResolution.reasoning).toBe('prompt named example.com');
+    expect(parsed.urlResolution.model).toBe('fake/url-resolver');
     // Performance round-trips — A's rationale + per-step reasoning + the F1
     // planDurationFit transparency channel are all there to read.
     expect(parsed.performance.rationale).toBe(performance.rationale);
@@ -405,22 +409,24 @@ describe('RecordJobRunner — writes run.json with a parseable RunRecord', () =>
     expect(parsed.timings.endedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it('omits headless from run.json when the request did not provide it', async () => {
+  it('captures the resolver model id in run.json.urlResolution', async () => {
     const session = new FakePageSession();
     const recon = new FakeReconnoiterer([perf([{ kind: 'done', reasoning: 'noop' }])]);
     const director = new StubDirector({ totalMs: 10, stepsExecuted: 1, replanCount: 0, endReason: 'done' });
-    const runner = new RecordJobRunner(session, recon, director);
+    const urlResolver = new FakeUrlResolver({ url: 'https://example.com/', reasoning: 'inline URL' });
+    urlResolver.modelId = 'anthropic/claude-haiku-4.5';
+    const runner = new RecordJobRunner(session, urlResolver, recon, director);
 
-    const sub = await mkdtemp(join(tmpdir(), 'web-recorder-run-json-noheadless-'));
+    const sub = await mkdtemp(join(tmpdir(), 'web-recorder-run-json-urlres-'));
     try {
       await runner.run({
-        url: 'https://example.com/',
-        prompt: 'noop',
+        prompt: '去 https://example.com/ 看看',
         durationMs: 5_000,
         outputDir: sub,
       });
       const parsed = RunRecordSchema.parse(JSON.parse(await readFile(join(sub, 'run.json'), 'utf8')));
-      expect(parsed.request.headless).toBeUndefined();
+      expect(parsed.urlResolution.model).toBe('anthropic/claude-haiku-4.5');
+      expect(parsed.urlResolution.url).toBe('https://example.com/');
     } finally {
       await rm(sub, { recursive: true, force: true });
     }

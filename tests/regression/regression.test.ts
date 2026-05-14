@@ -4,6 +4,7 @@ import { StagehandPageSession } from '../../src/adapters/agent/stagehand-session
 import { PerformanceDirector } from '../../src/adapters/director/performance-director.js';
 import { LlmBlockerDismisser } from '../../src/adapters/blocker/llm-blocker-dismisser.js';
 import { LlmReconnoiterer } from '../../src/adapters/recon/llm-reconnoiterer.js';
+import { LlmUrlResolver } from '../../src/adapters/url-resolver/llm-url-resolver.js';
 import { RecordJobRunner } from '../../src/core/record-job-runner.js';
 import { config } from '../../src/infra/config.js';
 import { buildRunDir } from '../../src/infra/run-dir.js';
@@ -67,20 +68,25 @@ describe('regression suite', () => {
         // The PerformanceDirector reuses the reconnoiterer as its re-planner
         // at the (at most config.maxReplans) re-plan checkpoints.
         const director = new PerformanceDirector({ replanner: reconnoiterer });
-        const runner = new RecordJobRunner(session, reconnoiterer, director);
+        const urlResolver = new LlmUrlResolver();
+        const runner = new RecordJobRunner(session, urlResolver, reconnoiterer, director);
+
+        // Prepend the case URL inline — the resolver recognises the explicit
+        // http(s) URL and returns it verbatim (deterministic), so we test the
+        // recon pipeline against the case URL while still exercising the
+        // resolver step.
+        const promptWithUrl = `${c.url} ${p.text}`;
 
         const result = await runner.run({
-          url: c.url,
-          prompt: p.text,
+          prompt: promptWithUrl,
           durationMs: c.durationMs,
           outputDir,
-          headless: false,
         });
 
         // Always print full diagnostics — videos + metrics are the report.
         console.log(`\n══ [${c.id} · ${p.label}] ════════════════════════`);
         console.log(`  prompt:       ${p.text}`);
-        console.log(`  url:          ${c.url}`);
+        console.log(`  url:          ${result.urlResolution.url}`);
         console.log(`  video:        ${result.videoPath}`);
         console.log(`  rawVideo:     ${result.rawVideoPath}`);
         console.log(`  log:          ${result.actionLogPath}`);

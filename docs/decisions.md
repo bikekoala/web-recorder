@@ -1457,6 +1457,59 @@ The user's framing: *"不是页面加载完开始录制 而是『准备好了』
 
 ---
 
+## 0043 · v1 HTTP API + mp4/CRF + audio roadmap
+
+**Date**: 2026-05-14
+
+**Context**: The project's natural-language entrypoint matured (24-scenario sweep + §0042 contract — `unmet`/`partial` with a named reason is a success path). Time to ship a real HTTP surface so other systems can call it. User-stated requirements (verbatim, condensed):
+
+1. **REST-style** create / status / list endpoints, complete structured logging.
+2. **No `url` parameter** — the URL must be in the prompt; AI judges (including the "打开维基百科" case where there's no literal URL).
+3. **No `headless` parameter** — service-mode = headless:true, manual scripts = headless:false. Behavior follows the entry point, not the request.
+4. **Concurrent requests** — drop the v0 JobQueue (concurrency=1); each accepted POST kicks off immediately.
+5. **mp4 by default, improve clarity via CRF** — webm is fuzzy; default output is mp4 H.264 with `-crf 18` (visually lossless).
+6. **Audio is required** for v1 — record the page's audio track when present.
+7. **Decouple core from API** — `RecordJobRunner` keeps zero dependency on `api/`; a CLI version may follow.
+8. **Return the video URL** in the response (S3 upload deferred).
+
+Requirements (5) and (6) collide with the current recording stack. Playwright's `recordVideo` is **video-only** (the WebRTC tracks it pulls are silent), and Playwright's bundled ffmpeg is a stripped build with only VP8 encoders (no libx264). So (5) needs a full ffmpeg, and (6) needs a fundamentally different capture pipeline (xvfb+ffmpeg on Linux/Docker, AVFoundation on macOS dev) plus a virtual audio device (PulseAudio sink the Chromium process can route to).
+
+**Options considered**:
+
+(A) Ship mp4+CRF and audio together as v1: pull in a new `IMediaRecorder` port + ffmpeg-based adapter from day one. Higher upfront cost (1–2 days of recorder rebuild + Docker image + virtual audio device setup); high risk on Mac dev (AVFoundation device naming is messy and varies by laptop); blocks the API surface from shipping.
+
+(B) **Ship the API + mp4/CRF + decoupling now; audio is a separate sub-project (`audio: true` → 501 NOT_IMPLEMENTED with a roadmap message)**. Sequencing rationale: the API/contract shape is the high-leverage piece other systems block on; audio capture is a recorder-internal swap that doesn't change the public surface. Picked (B).
+
+**Choice**:
+
+1. **API**: `/api/v1/recordings/*` (POST create / GET status / GET list / GET video / GET run.json) + `/health`. Schemas in `src/api/request.ts` (Hard Rule 2). Body: `{prompt, durationMs, width?, height?, format?, crf?, audio?}`. The server lives on Node's `http` module (zero new deps).
+
+2. **Concurrency**: dropped JobQueue. Each accepted POST `runJob()`s immediately (fire-and-forget); state still tracked in `JobStore` (in-memory). Browsers are independent processes so concurrent jobs are safe.
+
+3. **AI URL resolution**: `src/ports/url-resolver.ts` + `src/adapters/url-resolver/llm-url-resolver.ts`. Default model `anthropic/claude-haiku-4.5` (LLM_URL_RESOLVER_MODEL override). Single LLM call per recording, ~200 in / ~80 out tokens; cost is incidental (~$0.0003 with Haiku 4.5). Handles explicit URLs, well-known names, and pure-intent prompts. AI-first per goals.md #6 — replaces the brief regex extractor we drafted then deleted.
+
+4. **mp4/CRF**: `trimVideo()` now takes `{format, crf}`. mp4 path → libx264 + yuv420p + `+faststart`. ffmpeg discovery: FFMPEG_PATH → system `which ffmpeg` (full build, has libx264) → Playwright's bundled (VP8-only, fallback to webm). When mp4 is requested but only the bundled ffmpeg is available, the runner emits webm and warns. Goal #6 carve-out: this is mechanical clarity, not behavior.
+
+5. **Decoupling**: `RecordJobRunner` constructor now takes `(session, urlResolver, reconnoiterer, director)`; `run({prompt, durationMs, outputDir, format?, crf?})`. No `url`/`headless`. The API server stays free of adapter imports; `scripts/serve.ts` wires Stagehand + LLMs into the `JobFactory`. CLI entrypoint can reuse the same factory.
+
+6. **Audio roadmap (deferred)**: `audio: true` → 501 NOT_IMPLEMENTED with a message pointing at this ADR. The follow-up sub-project introduces `IMediaRecorder` (port) + `FfmpegMediaRecorder` (adapter). Two flavors:
+   - **Linux/Docker production target**: xvfb-run virtual display + ffmpeg `-f x11grab` + a PulseAudio virtual sink the Chromium process is routed to (`PULSE_SINK=…`). Mux video + audio into mp4 in one shot.
+   - **macOS dev**: ffmpeg `-f avfoundation` with the BlackHole virtual audio device (operator setup — `brew install blackhole-2ch`). Documented in a separate `docs/audio-setup.md` when this lands.
+   - Trim/encode stays in `trimVideo` (it now handles mp4/CRF) — the recorder swap is upstream of trim, so the §0040 fit-to-budget path is untouched.
+
+**Rationale**: ships the user-facing contract today, isolates the recorder rebuild to a self-contained sub-project (port + adapter, no public-surface change), keeps the AI-first stance (URL resolver is an LLM, not a regex), and clears the JobQueue concurrency limit (the user explicitly asked for parallel).
+
+**Consequences**:
+- `src/api/server.ts`, `src/api/request.ts`, `src/api/job-store.ts` rewritten for `/api/v1/*` and concurrent execution.
+- `RecordJobRunner.run` signature changed: `{prompt, durationMs, outputDir, format?, crf?}` (no `url`/`headless`). `RunResult.urlResolution` added.
+- `run.json` schema: `request` drops `url` and `headless`; new top-level `urlResolution` field. Existing fixtures need regen (in this repo, the unit tests own them — updated in the same commit).
+- `audio: true` in the API returns 501 with a message pointing here. Operators who need audio today are explicitly out-of-scope until the follow-up lands.
+- `mp4` is the default but degrades to webm with a warning when only Playwright's bundled ffmpeg is available — keeping the project's "works out of the box on Mac dev" property even before the operator installs `ffmpeg`.
+
+**Preserves**: §0034 (Director / re-plan checkpoint), §0036/§0038 (recon target resolution), §0040 (plan-duration fit), §0042 (graceful `unmet` contract). Port surfaces are the same plus one new port (`IUrlResolver`); no existing port broke.
+
+---
+
 ## Template for new entries
 
 ```

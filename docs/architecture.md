@@ -36,6 +36,7 @@ src/
     reconnoiterer.ts      # IReconnoiterer  — recon → Performance (also re-planner)
     director.ts           # IDirector       — plays back a Performance
     recording-judge.ts    # IRecordingJudge — automated naturalness grading
+    url-resolver.ts       # IUrlResolver    — natural-language prompt → start URL (§0043)
   adapters/         # Concrete implementations. Talks to libraries / external services.
     agent/
       stagehand-session.ts   # IPageSession via Stagehand+Playwright
@@ -45,11 +46,13 @@ src/
       performance-director.ts # IDirector — deterministic playback + re-plan checkpoint
     judge/
       llm-vision-judge.ts    # IRecordingJudge via Gemini (native video input)
+    url-resolver/
+      llm-url-resolver.ts    # IUrlResolver via OpenRouter (cheap LLM — Haiku 4.5 default)
   core/             # Orchestration. Imports only domain/ + ports/ + infra/.
     record-job-runner.ts   # setup → recon → director → trim
   api/              # HTTP entry points. Imports core/ + adapters via a factory.
-    server.ts              # POST /record + GET /record/:runId[/video|/run.json] + /health
-    job-store.ts           # In-memory job state + serial JobQueue (concurrency=1)
+    server.ts              # /api/v1/recordings/* + /health (concurrent execution — no JobQueue; §0043)
+    job-store.ts           # In-memory job state
     request.ts             # Zod schemas for request/state (Hard Rule 2)
   prompts/          # LLM prompts (content, not code): reconnoiterer.ts, recording-judge.ts
   infra/            # Cross-cutting: config, logger, ffmpeg, IDs.
@@ -74,11 +77,13 @@ scripts/            # One-off entry points (prototypes, smoke tests). Compose ad
 ## Lifecycle of a recording job ("prophet" pipeline, ADR §0034)
 
 ```
-(future: HTTP POST /record)
+(HTTP POST /api/v1/recordings — body: { prompt, durationMs, … })
    │
    ▼
-core/record-job-runner.run({ url, prompt, durationMs })
+core/record-job-runner.run({ prompt, durationMs, outputDir, format?, crf? })
    │
+   ├── IUrlResolver.resolve(prompt)              → starting URL (§0043 — explicit URL inline,
+   │                                              well-known name, or pure intent → search)
    ├── IPageSession.start() / goto(url)         → Browser + page + recordVideo on
    ├── IReconnoiterer.recon(req, session)       → Performance (OFF-CAMERA: dismiss
    │                                              blockers, IPageSession.ariaSnapshot()
@@ -95,15 +100,17 @@ core/record-job-runner.run({ url, prompt, durationMs })
    │                                              IReconnoiterer.recon (now used as a
    │                                              re-planner from the diverged step).
    ├── IPageSession.stop()                       → raw video path + action log
-   ├── ffmpeg trim raw → recording.webm          (using the session's recording window)
-   │  (later: ICursorSynthesizer / IComposer for cursor overlay + final mp4)
+   ├── ffmpeg trim raw → recording.mp4           (§0043 — H.264 + crf, defaults: crf=18.
+   │                                              Falls back to .webm if only Playwright's
+   │                                              bundled VP8-only ffmpeg is available)
+   │  (later: ICursorSynthesizer / IComposer for cursor overlay; IMediaRecorder for audio)
    │
    ▼
-return { videoPath, rawVideoPath, actionLogPath, performance, metrics, directorReport }
+return { videoPath, rawVideoPath, actionLogPath, urlResolution, performance, metrics, directorReport }
 ```
 
-Today `IPageSession`, `IReconnoiterer`, `IDirector`, `IRecordingJudge` exist.
-Cursor synth + composition + HTTP API are scheduled.
+Today `IPageSession`, `IReconnoiterer`, `IDirector`, `IRecordingJudge`, `IUrlResolver` exist.
+Cursor synth + audio capture (via `IMediaRecorder`) are scheduled.
 
 ## Boundary checklist for adding a feature
 
