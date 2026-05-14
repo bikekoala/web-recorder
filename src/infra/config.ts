@@ -62,6 +62,15 @@ const Schema = z.object({
   maxReplans: z.number().int().min(0).max(10).default(3),
 
   /**
+   * Upper bound on a single recording's `durationMs`. Enforced by the HTTP API's
+   * request schema; protects against accidental long-running jobs that would
+   * tie up the single-concurrent-job server. 5 minutes is generous for v1 use
+   * cases (demos, walkthroughs); raise with MAX_RECORDING_DURATION_MS if you
+   * have a legit reason and the operator can afford the wall-clock + cost.
+   */
+  maxRecordingDurationMs: z.coerce.number().int().min(1000).default(300_000),
+
+  /**
    * Mid-recording re-plan (a full recon call, ~30–50 s) is only worth doing
    * when at least this much recording budget remains. Below it,
    * PerformanceDirector degrades gracefully (drops the stale tail, appends a
@@ -317,6 +326,7 @@ const raw = {
   llmPlannerModel: process.env.LLM_PLANNER_MODEL,
   llmReconModel: process.env.LLM_RECON_MODEL,
   maxReplans: process.env.MAX_REPLANS ? Number(process.env.MAX_REPLANS) : undefined,
+  maxRecordingDurationMs: process.env.MAX_RECORDING_DURATION_MS,
   replanMinRemainingMs: process.env.REPLAN_MIN_REMAINING_MS
     ? Number(process.env.REPLAN_MIN_REMAINING_MS)
     : undefined,

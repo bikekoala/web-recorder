@@ -53,7 +53,7 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `intentSatisfaction` metric (transparent "did we do what user asked?") | ✅ |
 | Bot-detection mitigations (chrome flags + UA + optional storageState) | ✅ |
 | Cursor trajectory synth (`ICursorSynthesizer`) | ⏳ |
-| HTTP API | ⏳ |
+| HTTP API — Node `http` (zero new deps); POST `/record` (Zod-parsed, queued), GET `/record/:runId[/video|/run.json]`, GET `/health`; one-job-at-a-time `JobQueue`; entry: `npm run serve` (`PORT`, default 8787) | ✅ |
 
 Architectural decisions live in [`docs/decisions.md`](./docs/decisions.md). Update it whenever a decision is made or revised.
 
@@ -113,6 +113,14 @@ npm run eval
 
 # Verify the recording pipeline alone (no LLM, no Stagehand)
 npm run smoke:recording
+
+# Boot the HTTP API (default PORT=8787). One job at a time.
+#   POST /record    body: { url, prompt, durationMs, headless? }
+#   GET  /record/:runId
+#   GET  /record/:runId/video         (only on succeeded)
+#   GET  /record/:runId/run.json      (only on succeeded)
+#   GET  /health
+npm run serve
 ```
 
 ## Environment

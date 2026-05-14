@@ -16,6 +16,7 @@
     "prototype:stagehand": "tsx scripts/prototype-stagehand.ts",
     "judge": "tsx scripts/judge-recording.ts",
     "eval": "tsx scripts/self-eval.ts",
+    "serve": "tsx scripts/serve.ts",
     "playwright:install": "playwright install chromium"
   },
   "dependencies": {

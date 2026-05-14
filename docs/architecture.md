@@ -47,6 +47,10 @@ src/
       llm-vision-judge.ts    # IRecordingJudge via Gemini (native video input)
   core/             # Orchestration. Imports only domain/ + ports/ + infra/.
     record-job-runner.ts   # setup → recon → director → trim
+  api/              # HTTP entry points. Imports core/ + adapters via a factory.
+    server.ts              # POST /record + GET /record/:runId[/video|/run.json] + /health
+    job-store.ts           # In-memory job state + serial JobQueue (concurrency=1)
+    request.ts             # Zod schemas for request/state (Hard Rule 2)
   prompts/          # LLM prompts (content, not code): reconnoiterer.ts, recording-judge.ts
   infra/            # Cross-cutting: config, logger, ffmpeg, IDs.
     config.ts
