@@ -1429,6 +1429,34 @@ The user's framing: *"不是页面加载完开始录制 而是『准备好了』
 
 ---
 
+## 0042 · v1 contract — graceful `unmet` is success, not regression
+
+**Date**: 2026-05-14
+
+**Context**: Overnight sweep across 24 distinct (URL, prompt, duration) scenarios (see [`docs/findings/2026-05-13-overnight-sweep.md`](./findings/2026-05-13-overnight-sweep.md)) produced 18 patterns P1-P18 over time. After two prompt-level fixes (variance + lingering-dwell) landed, the remaining failures fell into two distinct categories that had been treated as one: (1) real bugs that waste the user's time/budget when content IS available on the page (A picks a peripheral target on a giant aria tree, click rendering throws on a stale selector, Director's expectAfter races the URL transition), and (2) honest reports of sites that don't have what the user asked for (Cloudflare challenges, login walls without storageState, YouTube logged-out empty homepage, Taobao modal interstitial). We were treating both as "bugs to fix," which is a category error: the second class is already what goal #3 ("user intent is satisfied or transparently not — silent 'I gave up' is never acceptable") asks the system to do. Continuing to "fix" them by adding more page-state detection / blocker-dismisser heuristics either (a) loses the AI-first stance (goal #6) by hardcoding what counts as "broken", or (b) requires the agent to log in / solve CAPTCHAs / etc., which goals.md non-goals already exclude. The bug-fix loop was endless because the source list (the live web) is endless; the fix is to stop pulling from it as if it were a bug list.
+
+**Options considered**: (A) keep treating every `unmet` outcome as a regression and add detection layers for each new failure shape (Cloudflare, login wall, empty state, modal interstitial, geo-block, etc.). Endless and violates goal #6. (B) drop the natural-language entrypoint entirely and ship only on a whitelist of approved sites. Throws out the project's value prop. (C) **explicitly classify the existing graceful-degrade behavior as v1 contract: an `unmet`/`partial` recording with a named reason is the SUCCESS path for sites where content isn't reachable**; the eval's bright-line FAIL only fires on bugs that waste budget (duration miss, hard crash, missing transparency). The blocker dismisser stays scoped to its current responsibility (cookie banners + X-to-close modals); the page-diagnostic stays a signal, not an oracle. We continue to fix bugs that produce a bad recording WHEN the content IS available (P13 dropped-click reconverge, P17 expectAfter race, P18 selector invalidation), but we stop chasing site-state edge cases. Picked (C).
+
+**Choice**: Codify the v1 contract:
+
+1. **`unmet`/`partial` with a named reason IS the success path for unreachable content** (login wall, Cloudflare, empty state, modal interstitial without a dismiss control, target only-reachable via authentication). The recording can still be `looks_human` (e.g. R3.8 Twitter login wall: 3 dwells, looks_human all-5, metric `unmet`). The combination is a v1 success — not a bug. `npm run eval` continues to print `unmet`/`partial` as `⚠` (visible-but-not-fail).
+
+2. **The eval's bright-line `FAIL` only fires on goal-#2 / #3 / #5 violations of the recorder itself**: trimmed duration outside ±10%, wall-clock ≥60s, disk ≥100MB, OR an exception that aborts the pipeline. `intentSatisfaction unmet` is NEVER on its own a `FAIL`. (Already true today; this just makes it intentional.)
+
+3. **Bugs we keep fixing are limited to "the content WAS available but we wasted the user's budget"**: A picked a small/peripheral target on a giant aria tree (P13), the click selector went stale between resolve and click (P18), the Director's expectAfter check raced a navigation (P17), the recon plan produced visible mechanical artifacts (P7/P14 variance, addressed). These hit goal #1 (looks human) or #2 (duration fidelity) and ARE in scope.
+
+4. **Bugs we stop fixing are "the site refused to show content"**: P6 goto teleport (recording-window framing — a v2 redesign), P9 Cloudflare / login walls / bot detection (a v2 storageState-on-by-default + judge-in-loop call, not a heuristic to add), P16 empty-state pages (same — judge-in-loop). They surface honestly via `unmet` and that is, per this ADR, the contract.
+
+5. **No new code lands for the v2 architectural moves under this ADR**. They are documented as P6/P9/P16 in `docs/findings/2026-05-13-overnight-sweep.md` and revisited when v1 ships. Sweep findings are an inventory, not a todo list.
+
+**Rationale**: serves goal #3 (transparency means *unmet* is informative, not a code defect), goal #6 (we are not adding hardcoded "this is a broken page" heuristics every time a new site is sampled), and the project's exploratory nature (we ship a recorder that's honest about its boundaries instead of one that lies about supporting everything). The 18-of-24 looks_human-all-5-pass rate from the sweep, when re-framed under this contract, is closer to "in-contract success on every scenario where content was reachable" — the 4 click-complete wins and 6 wall-clock passes are the v1-quality watermark. Continuing to chase the other 6 by adding detection layers would (a) violate the no-hardcoded-logic memory, (b) burn LLM cost on every recording for a small benefit, and (c) never finish.
+
+**Consequences**: Sweep findings (P1-P18) re-classified into "in-scope bugs" (P7, P11, P12, P13 on giant trees, P14, P17, P18 — but P7+P11+P14 are already fixed) and "v1-contract graceful-degrade" (P6, P9, P16, P15 the metric/judge orthogonality observation, parts of P13 where the content genuinely isn't reachable). One in-scope architectural fix worth doing under v1 is **reconverge-on-initial-resolve-drop** (the §0034 mid-walk reconverge applied to initial-resolve drops too — closes P13 on giant trees where the content IS in the tree but A picked a wrong ref). That work is ADR-bounded by §0034 (port signatures stay; we add one symmetric path). Documentation: goals.md gets a one-sentence "v1 contract" pointer to this ADR; CLAUDE.md state table gains a "v1 scope" line. No port/adapter changes.
+
+**Preserves**: §0034 (re-plan checkpoint, where the in-scope click-recovery work will hook), §0038 (transparent giant-page handling — this ADR extends the same model), §0040 (F1 plan/duration fit transparency — same family), all port signatures and the on-camera `Performance` step shapes.
+
+---
+
 ## Template for new entries
 
 ```

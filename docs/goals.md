@@ -14,7 +14,7 @@ These are properties of the *output*, not the code. Code freedom is fine; output
 
 2. **Fluid, no visible stalls.** A "stall" is any frame interval ≥500ms where the page is static *and* the user would not naturally pause. LLM thinking is hidden under animation or short natural micro-pauses. Setup time happens BEFORE recording — not in the deliverable.
 
-3. **User intent is satisfied or transparently not.** Every verb in the user's prompt either executes successfully (the deliverable shows it happen) or fails *visibly in the action log* with a categorical reason (`click_failed: target not found`, `target_not_loaded`, etc.). Silent "I gave up" is never acceptable.
+3. **User intent is satisfied or transparently not.** Every verb in the user's prompt either executes successfully (the deliverable shows it happen) or fails *visibly in the action log* with a categorical reason (`click_failed: target not found`, `target_not_loaded`, etc.). Silent "I gave up" is never acceptable. **Corollary (v1 contract, ADR §0042):** an `intentSatisfaction: unmet`/`partial` recording with a named reason IS the success path for sites where the content isn't reachable (login walls, Cloudflare, empty states, content behind auth). It is NOT a bug to fix by adding site-state detection layers. Bugs we fix are limited to wasting the user's budget when content IS available.
 
 4. **Architecture stays swappable.** Stagehand → other agent SDK. Playwright recordVideo → CDP screencast → xvfb+ffmpeg. gpt-4o-mini → Gemini 3.1 → local Llama. None of these swaps require touching `core/`. Concrete tech only lives in `adapters/`. (This is `CLAUDE.md` Hard Rule 1; restated here because it's load-bearing for longevity.)
 

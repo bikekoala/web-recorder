@@ -43,6 +43,7 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Natural-language entry point (`url, prompt, durationMs`) | ✅ |
 | Vitest unit tests (203 passing) | ✅ |
 | Action vocabulary: 8 primitives (click / scroll / dwell / type / key / back / done / goto — same-host hard rule, §0041) | ✅ |
+| v1 contract: `unmet`/`partial` w/ a named reason IS success for unreachable content; bugs we fix are limited to wasted budget when content IS available (§0042) | ✅ |
 | `IRecordingJudge` + LlmVisionJudge — automated 5-dim rubric naturalness grading via Gemini 3.1 Pro (§0030) | ✅ |
 | Naturalness rendering bundle — pre-typing pause, slower keystroke delay, inter-scroll micro-pause (§0031) | ✅ |
 | `intentSatisfaction` 1-to-1 bipartite matching — no more single-token UI-noun bridges over-crediting hints (§0033) | ✅ |
