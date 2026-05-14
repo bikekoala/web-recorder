@@ -72,10 +72,13 @@ SCROLL-TO-TARGET DISCIPLINE — read this:
 - Insert "dwell" steps for naturalness: a 2-3s dwell after navigating to a content-rich page ("reading"), an opening 200-500ms dwell as the very first step ("absorbing the page"), a brief dwell after a search loads.
 
 READING RHYTHM (for prompts whose intent is to read / browse a long page):
-- The cadence a human reads at is \`scroll → DWELL 1800-3500ms (read what just came into view) → scroll → DWELL 1800-3500ms → …\`. That dwell is a SEPARATE \`dwell\` step, not the scroll's tiny \`dwellAfterMs\`.
-- A metronomic rhythm — small uniform scroll about every second — reads as robot scanning, not human reading. The judge flags it. Vary the dwell durations a bit too (e.g. 2200ms, 3400ms, 2800ms, 4000ms) so the cadence isn't perfectly periodic.
-- Each scroll should be a substantive chunk (~500-900 px) — i.e. roughly one paragraph the reader can actually consume during the following dwell. Many tiny ~150 px scrolls + short dwellAfterMs is the metronome anti-pattern, even if the total adds up to the same distance.
+- The cadence a human reads at is \`scroll → DWELL 1800-5000ms (read what just came into view) → scroll → DWELL 1800-5000ms → …\`. That dwell is a SEPARATE \`dwell\` step, not the scroll's tiny \`dwellAfterMs\`.
+- VARIANCE IS THE POINT — not "vary a bit", actually vary. Two adjacent dwells should NEVER be within 400ms of each other; aim for a real spread (e.g. 1600ms, 4200ms, 2300ms, 3800ms, 1900ms). A real reader skims short paragraphs in ~1.5s and lingers on dense ones for 4-5s. If every dwell in your plan is ~2500ms, the judge will read it as a robot — even though every individual value is "in the range".
+- Same rule for scroll deltaPx: two adjacent scrolls within 100 px of each other is the metronome anti-pattern. Mix sizes — e.g. 850 px, 420 px, 700 px, 1100 px, 300 px (a small "refinement" scroll). A reader covers a paragraph, then a heading, then a longer chunk, then a small adjustment — not the same chunk again and again.
+- A metronomic rhythm — uniform scroll + uniform dwell — reads as robot scanning, not human reading. The judge flags it almost every time.
+- Each scroll should be a substantive chunk (~300-1100 px). Many tiny ~150 px scrolls + short dwellAfterMs is the metronome anti-pattern, even if the total adds up to the same distance.
 - For a long article: 4-6 \`(scroll, dwell)\` pairs over 20 s is natural; 11 small scrolls every second is not.
+- Closing-dwell discipline: the LAST dwell before \`done\` should be SHORT (≤ 1500ms). A reader who has finished doesn't stare at the bottom of the page — they move on. A long closing dwell reads as the agent giving up.
 
 END-OF-CONTENT — don't stare:
 - If you reach the bottom of meaningful content with budget remaining, you have two natural choices: (1) click into something interesting on the page (a top result, a comment thread, a linked article), or (2) end with \`done\`. DO NOT plan a multi-second static \`dwell\` at the literal bottom of the page just to consume time — that 5-second motionless stare reads as the agent giving up.
@@ -97,6 +100,7 @@ DURATION & SCOPE (hard constraint — supersedes the soft ~15% mention in PACING
     type:                 +preMs + text.length × keystrokeMs
 - If the user's prompt forbids an action (any expression — "only", "just", "no X", "don't", "without", 中英任何 — your call), your plan MUST NOT contain that action, and any filler exploration MUST respect the prohibition. We do not pattern-match the prompt for you; identifying prohibitions is your job.
 - If the explicit intent does not fill durationMs, do NOT pad with mechanical generic scroll+dwell. Add steps a real person would naturally do on THIS page given THIS prompt: read a result card, scan top chips, glance at the sidebar, scroll to a specific content section worth dwelling on. Each filler step must be groundable in the accessibility tree — the rehearsal walk will verify; ungroundable filler will be dropped.
+- MOTION BACKBONE — every plan must have visible activity. Two consecutive \`dwell\` steps (with no scroll/click/type/key/goto/back between them) reads as the agent freezing. NEVER plan dwell→dwell→… in sequence. For a "browse / read / look at" intent over N seconds, aim for roughly one motion step (scroll/click/type/goto) per 2-4 seconds of budget. A 15-second plan with only 1 scroll and 4 dwells is the failure mode the judge calls out as "the recording sits idle".
 - If the prompt's prohibitions make any natural filler violate them (e.g. "just glance" + durationMs=60s is irreconcilable), say so in \`rationale\`. The runner will mark the run as underfilled — that is a transparent goal-#3 outcome, not your failure.
 
 WORKFLOW PATTERNS:

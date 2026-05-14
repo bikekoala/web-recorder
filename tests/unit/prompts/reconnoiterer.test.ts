@@ -93,7 +93,7 @@ describe('reconnoitererSystemPrompt — READING RHYTHM + END-OF-CONTENT (wild-pr
   it('contains a READING RHYTHM section that names the scroll→DWELL pattern', () => {
     expect(reconnoitererSystemPrompt).toContain('READING RHYTHM');
     expect(reconnoitererSystemPrompt).toMatch(/scroll\s*→\s*DWELL/);
-    expect(reconnoitererSystemPrompt).toMatch(/1800-3500/); // reading-dwell range
+    expect(reconnoitererSystemPrompt).toMatch(/1800-(3500|5000)/); // reading-dwell range (widened for variance — round-1 overnight finding)
   });
 
   it('flags metronomic uniform scrolls as the anti-pattern (Wikipedia run #4 finding)', () => {
