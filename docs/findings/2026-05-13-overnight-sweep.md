@@ -550,16 +550,48 @@ page transition.
 - Same P9/P16 family: page state diverged from happy path, agent didn't
   notice.
 
-## Final tally (after Round 5)
-- **26 evals across 19+ distinct scenarios.**
-- **15 of 19 hit `looks_human` all-5-pass** (one click-complete + 14
-  read-only wins).
-- **3 wall-clock-passing runs** — all on small-tree sites (arxiv list,
-  arxiv abstract, React docs).
-- **Search workflow primitives confirmed functional** in 2 cases (R3.12
-  Google complete, R5.2 DDG complete-metric / broken-destination-page).
-- F3 cross-check fired correctly on R4.6 + R5.2 (saved us from claiming
-  victory on broken recordings).
+## Round 6 — addl click + search tests
+
+### R6.1 TypeScript (https://www.typescriptlang.org/) "看看 typescript 官网 然后点击 Get Started 12s"
+- intent **complete** (1 click + 1 scroll). judge: probably_human, only
+  pacing partial ("4-second still period before navigation" — the
+  pre-click anticipationMs read as dead air). All other dims pass.
+- wall-clock 43.8s ✓ goal #5 pass. recon 15.6s.
+- **Fourth click-complete success on a clean modern docs site.**
+
+### R6.2 Baidu (https://www.baidu.com/) "搜索 大模型 然后看看搜索结果 15s"
+- intent metric: **complete** (2 clicks, 3 scrolls). F3 fired correctly:
+  judge says "no search query was typed and no search was initiated."
+- Metric counted clicks; judge sees no search happened. Likely a bot
+  detection / login wall on Baidu, OR the clicks landed on a non-search
+  element. rehearsal walk: 11 steps, 2 div, 1 reconv, truncated.
+- Another F3 working-as-designed case (metric complete + judge fail).
+
+## Final tally (after Round 6)
+- **28 evals across 21+ distinct scenarios.**
+- **16 of 21 hit `looks_human` all-5-pass.**
+- **4 click-complete wins**: R3.12 Google, R4.4 Wikipedia-Main (wrong
+  target — see P13b), R5.1 React docs, R6.1 TypeScript docs.
+- **4 wall-clock-passing runs** — small-tree sites (arxiv list,
+  arxiv abstract, React docs, TypeScript docs).
+- **F3 cross-check fired 3 times** (R4.6 Wiki-Main, R5.2 DDG, R6.2 Baidu)
+  catching metric-says-complete + judge-says-not disagreement.
+
+### Sharp characterization of P13 (click failures)
+Click succeeds when ALL hold:
+- Target is a primary nav element (large bbox, prominent in tree).
+- Aria tree is moderate-sized (≤~5k tokens — modern SPAs, docs sites).
+- Page is stable between rehearsal and recording (no daily content
+  rotation, no aggressive A/B).
+
+Click fails when ANY hold:
+- Tree is giant (Wikipedia, GitHub, MDN) → A can't find the right ref.
+- Target is small/peripheral (thumbnail, [show] toggle, icon).
+- Page has bot detection or aggressive dynamic re-rendering.
+- Target requires drilling into a sidebar/dropdown not in the visible
+  tree (MDN Instance methods).
+
+This is the **single highest-ROI architectural decision** for tomorrow.
 
 ## Prompt fixes landed during sweep (final)
 1. **Variance + closing-dwell discipline + motion backbone** (commit
