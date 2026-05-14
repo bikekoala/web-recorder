@@ -1,5 +1,100 @@
 # Overnight diverse-site sweep — autonomous run 2026-05-13 evening
 
+## MORNING TL;DR
+
+**24 evals across 17+ distinct site/prompt scenarios.** Sites: Wikipedia (4
+articles), HN (browse + click), Reddit, SO (Cloudflare-blocked), MDN, BBC,
+Bilibili, Amazon, Twitter (login), Google (home + results), GitHub vscode,
+36kr, YouTube, NYT, Sina, arxiv (list + abstract).
+
+### Two clean prompt fixes landed
+1. **Variance + closing-dwell discipline + motion backbone** (commit `1065a61`).
+   Adjacent dwells ≥400 ms apart, scroll sizes mixed 300-1100 px, closing
+   dwell ≤1500 ms, no `dwell→dwell` sequences. **Verified retest wins on
+   Wikipedia, Reddit, HN-browse → looks_human; expected to apply broadly.**
+2. **Lingering-dwell rule for ≥5-dwell plans** (commit `bf178c7`). For
+   long reads (≥20s), require AT LEAST ONE 4500-7000 ms dwell on a
+   content-rich section. **Apollo 30s: robotic → looks_human all-5;
+   Photosynthesis 25s: looks_human all-5.**
+
+### Score after fixes
+- **14 of 24 distinct scenarios hit `looks_human` all-5-pass** including
+  3 Wikipedia long-reads, Reddit, BBC, Bilibili, Twitter (login-wall),
+  Google search results, Google search workflow (intent `complete`!),
+  36kr, NYT, Sina, arxiv list, arxiv abstract.
+- **First wall-clock-passing run**: arxiv list (42.5s), arxiv abstract
+  (43.3s) — small-tree sites get under goal-#5's 60s.
+- **Search workflow primitives all functional**: R3.12 Google completed
+  with `intentSatisfaction: complete` (2 clicks + type + goto chain).
+
+### Big-direction questions for your call this morning
+Listed in approximate ROI order. None are auto-fixable — they all need
+your directional input.
+
+1. **P13 — dropped / wrong-target clicks** (5+ cases this sweep). On
+   non-trivial pages, every click-required intent either drops the click
+   at resolve OR clicks a wrong-but-resolved element (e.g. R4.4 clicked
+   a 20×16 px thumbnail instead of the article-title link). The residue
+   recording is dwell-heavy, short, intentSatisfaction `unmet`.
+   **Most-impactful problem of the sweep.** Possible levers:
+   - (a) Re-call A on initial-resolve drops (mirrors the existing
+     mid-walk reconverge).
+   - (b) Filter aria-tree refs to "substantial-bbox interactive elements"
+     so A can't pick tiny thumbnails or `[show]` toggles.
+   - (c) Tell A in the prompt to always plan a fallback exploration
+     backbone alongside requested clicks.
+
+2. **P6 — `goto` teleport** (R4.1 confirmed: longer anticipationMs makes
+   it WORSE — judge sees longer pause as "dead air", still calls the
+   transition scripted). The judge fundamentally knows direct URL nav
+   IS scripted. Real fix: either re-frame the recording window to
+   include browser chrome (large move), or adjust the judge prompt to
+   accept `goto` as legitimate.
+
+3. **P9 / P16 — page-state detection gap** (3 cases: SO Cloudflare,
+   Twitter login wall, YouTube empty homepage). Blocker dismisser
+   detects banners only; A reads the aria tree literally and doesn't
+   notice when the page is "broken / empty / login-walled". Lever: a
+   `pageDiagnostic` vision check before recon runs.
+
+4. **P14 — long-sequence meta-rhythm** (DEFERRED — lingering-dwell rule
+   addressed Apollo 30s and Photosynthesis 25s, but the underlying
+   judge-perception issue with 7+ cycle reads remains a known limit).
+
+5. **P17 — post-navigation duration drift** (R4.4 Wikipedia Main click:
+   plan 15s → recording 6.3s). After a click navigates (or appears to —
+   sometimes the click misfires), the Director's `expect_after_mismatch`
+   gracefully degrades to a short closing scroll + dwell. Tried a
+   small `quietMs=800` settle tweak in the Director — reverted because
+   the root cause was wrong-target click (P13b), not the URL-transition
+   timing race. The expectAfter check race may still be real on
+   genuinely-navigating clicks; revisit when P13 is decided.
+
+6. **P18 — resolved click selector invalid at click time** (R4.8 HN
+   click first story: xpath `body/main/article/...` threw
+   ElementNotFoundError on HN's table-based layout). Likely a stale
+   selector between rehearsal and recording, OR a wrong xpath from the
+   resolver. Different sub-case from P13 — the click step ran and threw.
+
+7. **P5 — wall-clock >60s** (12 of 14 failed goal #5; small-tree sites
+   like arxiv pass). Caused by recon LLM cost on big aria trees.
+   F2 territory: cheaper recon model + tighter tree pruning + plan-size
+   budget.
+
+### Smaller observations
+- **Judge can rate "looks human" on intent-unmet recordings** (Twitter
+  login R3.8, 36kr R3.13). The metric + judge are orthogonal — both
+  needed. F1 transparency model working as intended.
+- **HN text-only minimalist sites get judged harshly** for static
+  perception. May be a fundamental judge bias toward image-rich pages.
+- **Negative scrolls** (scroll-up after over-scrolling to find a header
+  element) look jarring on camera. R3.10 GitHub vscode had a -1550px
+  scroll that the judge flagged.
+
+---
+
+
+
 **Setup**. Pipeline under test: post-§0041 (`goto` step). Strategy: many
 shape-different prompts on many site categories (news, social, e-commerce,
 docs, video, Q&A, search, etc.), headless, fresh runs, collect
