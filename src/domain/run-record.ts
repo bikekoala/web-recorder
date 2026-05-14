@@ -40,6 +40,11 @@ export const RunRequestSchema = z.object({
     width: z.number().int().positive(),
     height: z.number().int().positive(),
   }),
+  /**
+   * Coarse device class the browser emulated for this run. Optional only
+   * because old fixtures predate it; new writes always populate it.
+   */
+  device: z.enum(['desktop', 'mobile', 'tablet']).optional(),
 });
 export type RunRequestRecord = z.infer<typeof RunRequestSchema>;
 

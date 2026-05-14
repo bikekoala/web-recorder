@@ -12,7 +12,7 @@ import {
   writeRunRecord,
 } from '../infra/run-record-writer.js';
 import type { DirectorReport, IDirector } from '../ports/director.js';
-import type { IPageSession } from '../ports/page-session.js';
+import type { DeviceKind, IPageSession } from '../ports/page-session.js';
 import type { IReconnoiterer } from '../ports/reconnoiterer.js';
 import type { IUrlResolver, UrlResolution } from '../ports/url-resolver.js';
 
@@ -70,6 +70,12 @@ export interface RunRequest {
   format?: 'mp4' | 'webm';
   /** H.264 CRF for mp4 output. Default 18 (visually lossless). Ignored for webm. */
   crf?: number;
+  /**
+   * Device class the browser emulates. Default `desktop`. The session uses
+   * this to spread the matching Playwright preset (viewport/UA/touch). The
+   * runner just persists it into `run.json.request` for traceability.
+   */
+  device?: DeviceKind;
 }
 
 export interface RunResult {
@@ -329,6 +335,7 @@ export class RecordJobRunner {
           prompt: req.prompt,
           durationMs: req.durationMs,
           viewport: artifacts.viewport,
+          device: req.device ?? 'desktop',
         },
         urlResolution: { ...urlResolution, model: this.urlResolver.modelId },
         performance,

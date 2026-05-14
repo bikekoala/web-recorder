@@ -11,6 +11,7 @@ const req: RecordRequest = {
   format: 'mp4',
   crf: 18,
   audio: false,
+  device: 'desktop',
 };
 
 describe('JobStore', () => {

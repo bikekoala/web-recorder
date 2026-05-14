@@ -42,6 +42,7 @@ const jobFactory: JobFactory = async (request, { outputDir }) => {
     outputDir,
     headless: true,
     viewport: { width: request.width, height: request.height },
+    device: request.device,
     verbose: 1,
   });
   const urlResolver = new LlmUrlResolver();
@@ -56,6 +57,7 @@ const jobFactory: JobFactory = async (request, { outputDir }) => {
     outputDir,
     format: request.format,
     crf: request.crf,
+    device: request.device,
   });
 };
 

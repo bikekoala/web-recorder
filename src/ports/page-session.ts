@@ -388,11 +388,32 @@ export interface SessionArtifacts {
  * Configuration for constructing a session. Adapter-agnostic — specific
  * adapters (StagehandPageSession) may extend this with their own options.
  */
+/**
+ * Coarse device class. Determines viewport + UA + isMobile/hasTouch/scaleFactor
+ * — sites serve different HTML/CSS for `mobile` than for `desktop`, so this
+ * has to be a first-class input, not a Playwright-implementation detail.
+ * The adapter maps each kind to a concrete Playwright `devices[…]` preset
+ * (so UA strings stay auto-maintained by Playwright). Default: desktop.
+ */
+export type DeviceKind = 'desktop' | 'mobile' | 'tablet';
+
 export interface PageSessionConfig {
   /** Where the video and action log will be written. Created if missing. */
   outputDir: string;
   /** Run the browser with a visible window (development) vs headless (production). */
   headless: boolean;
-  /** Viewport size. */
+  /**
+   * Viewport size. For `device === 'mobile' | 'tablet'` the adapter overrides
+   * this with the preset's viewport — emulating an iPhone at 1280×720 doesn't
+   * make sense — but caller still passes it (used for `desktop`, and to
+   * size the recordVideo output).
+   */
   viewport: Viewport;
+  /**
+   * Coarse device class. The adapter resolves this to a UA + isMobile +
+   * hasTouch + deviceScaleFactor by spreading the matching Playwright
+   * preset; viewport for non-desktop devices follows the preset too.
+   * Optional — undefined = `desktop`.
+   */
+  device?: DeviceKind;
 }

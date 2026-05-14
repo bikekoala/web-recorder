@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import OpenAI from 'openai';
 
 import { CustomOpenAIClient, Stagehand } from '@browserbasehq/stagehand';
-import { chromium, type BrowserContext, type Page } from 'playwright';
+import { chromium, devices as playwrightDevices, type BrowserContext, type Page } from 'playwright';
 
 import {
   ActionLog,
@@ -19,6 +19,7 @@ import {
   SessionStartError,
 } from '../../domain/errors.js';
 import type {
+  DeviceKind,
   IPageSession,
   ObservedElement,
   PageSessionConfig,
@@ -69,12 +70,23 @@ const DEVTOOLS_PORT_FILE_TIMEOUT_MS = 5000;
 const DEVTOOLS_PORT_FILE_POLL_MS = 50;
 
 /**
- * A real-world stable Chrome on macOS UA. Updated occasionally — staleness
- * is fine; the goal is just "no `HeadlessChrome` substring", not perfect
- * fingerprint mimicry. (See `docs/goals.md` non-goals: not a stealth project.)
+ * Map each {@link DeviceKind} to a Playwright `devices[…]` preset name. The
+ * preset is spread into `launchPersistentContext` so UA / isMobile / hasTouch /
+ * deviceScaleFactor / viewport all come from Playwright's auto-maintained
+ * table (no hand-pasted UA strings to age out — goals.md #6 / no-hardcoded-logic
+ * memory). Sites that serve different HTML/CSS for mobile actually see a real
+ * mobile UA + touch + the right viewport; desktop stays at the request's
+ * viewport (the preset's viewport is overridden by the caller for desktop).
+ *
+ * Why these specific presets: chromium-native (so the engine matches the UA
+ * — no Blink-rendering-while-claiming-WebKit weirdness). iPhone/iPad presets
+ * are WebKit-native so we use Pixel 7 / Galaxy Tab S9 instead.
  */
-const REALISTIC_USER_AGENT =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36';
+const DEVICE_PRESET_NAME: Record<DeviceKind, string> = {
+  desktop: 'Desktop Chrome',
+  mobile: 'Pixel 7',
+  tablet: 'Galaxy Tab S9',
+};
 
 /**
  * Browser-side runtime helpers, injected via `context.addInitScript`.
@@ -194,6 +206,7 @@ export class StagehandPageSession implements IPageSession {
   constructor(cfg: StagehandPageSessionConfig) {
     this.cfg = {
       verbose: 1,
+      device: 'desktop',
       ...cfg,
     };
   }
@@ -231,9 +244,27 @@ export class StagehandPageSession implements IPageSession {
     //      if present; falls back to a fresh persistent profile.
     try {
       this.userDataDir = await mkdtemp(join(tmpdir(), 'web-recorder-'));
+      // Resolve the device preset: desktop uses the caller's viewport (so e.g.
+      // a 1280×720 vs 1920×1080 desktop both work); mobile/tablet inherit the
+      // preset's viewport so the device is internally consistent (a Pixel 7 UA
+      // at 1280×720 would be obviously fake to a serving-mobile-html sniffer).
+      const device: DeviceKind = this.cfg.device ?? 'desktop';
+      const preset = playwrightDevices[DEVICE_PRESET_NAME[device]];
+      if (!preset) {
+        // Belt-and-braces — Playwright reorganized preset names once before.
+        throw new SessionStartError(`Playwright preset missing: ${DEVICE_PRESET_NAME[device]} (for device=${device})`);
+      }
+      const resolvedViewport = device === 'desktop' ? this.cfg.viewport : preset.viewport;
+      // Pin the cfg.viewport to the resolved one so every downstream consumer
+      // (`this.cfg.viewport` reads scattered through scroll/click math, the
+      // public `viewport` getter the runner persists to run.json, etc.) sees
+      // the actual emulated viewport — never the request's stale 1280×720 on
+      // a `mobile` session.
+      this.cfg.viewport = resolvedViewport;
       this.context = await chromium.launchPersistentContext(this.userDataDir, {
+        ...preset,
         headless: this.cfg.headless,
-        viewport: this.cfg.viewport,
+        viewport: resolvedViewport,
         args: [
           '--remote-debugging-port=0',
           '--disable-blink-features=AutomationControlled',
@@ -244,14 +275,13 @@ export class StagehandPageSession implements IPageSession {
           ...(config.browserWindowPosition
             ? [
                 `--window-position=${config.browserWindowPosition.x},${config.browserWindowPosition.y}`,
-                `--window-size=${this.cfg.viewport.width},${this.cfg.viewport.height}`,
+                `--window-size=${resolvedViewport.width},${resolvedViewport.height}`,
               ]
             : []),
         ],
-        userAgent: REALISTIC_USER_AGENT,
         recordVideo: {
           dir: this.cfg.outputDir,
-          size: this.cfg.viewport,
+          size: resolvedViewport,
         },
         // `channel` is a Playwright option naming a Chromium variant
         // (chrome | msedge | ...). Undefined means "use bundled Chromium".

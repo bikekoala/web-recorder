@@ -54,7 +54,8 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | `intentSatisfaction` metric (transparent "did we do what user asked?") | ✅ |
 | Bot-detection mitigations (chrome flags + UA + optional storageState) | ✅ |
 | Cursor trajectory synth (`ICursorSynthesizer`) | ⏳ |
-| HTTP API v1 (§0043) — Node `http` (zero new deps); REST under `/api/v1/recordings`: POST create (Zod-parsed `{prompt, durationMs, width?, height?, format?, crf?, audio?}`), GET list, GET status, GET `/video`, GET `/run.json`, plus `/health`. **Concurrent execution** (no JobQueue). `audio: true` → 501 NOT_IMPLEMENTED (recorder-rebuild sub-project). Service-mode hard-codes `headless:true`; manual `npm run prototype:stagehand` is headed. Entry: `npm run serve` (`PORT`, default 8787) | ✅ |
+| HTTP API v1 (§0043) — Node `http` (zero new deps); REST under `/api/v1/recordings`: POST create (Zod-parsed `{prompt, durationMs, device?, width?, height?, format?, crf?, audio?}`), GET list, GET status, GET `/video`, GET `/run.json`, plus `/health`. **Concurrent execution** (no JobQueue). `audio: true` → 501 NOT_IMPLEMENTED (recorder-rebuild sub-project). Service-mode hard-codes `headless:true`; manual `npm run prototype:stagehand` is headed. Entry: `npm run serve` (`PORT`, default 8787) | ✅ |
+| `device` parameter (desktop / mobile / tablet) — default desktop. Maps to a Playwright `devices[…]` preset (`Desktop Chrome` / `Pixel 7` / `Galaxy Tab S9`) so viewport + UA + isMobile + hasTouch + deviceScaleFactor all come from Playwright's auto-maintained table (no hand-pasted UA strings, goals.md #6). Mobile/tablet inherit the preset's viewport — sites that serve different HTML/CSS for mobile see a real mobile UA + touch at the right viewport. Persisted in `run.json.request.device`. Override per-run via PROTOTYPE_DEVICE / EVAL_DEVICE | ✅ |
 | mp4 default output + clarity via `crf` (§0043) — `trimVideo()` outputs mp4 H.264 + yuv420p + `+faststart` at the request's `crf` (default 18, visually lossless); falls back to webm/VP8 when only Playwright's bundled (VP8-only) ffmpeg is available. System ffmpeg discovery: `FFMPEG_PATH` → `$PATH` → bundled. `brew install ffmpeg` recommended on macOS dev for the mp4 path | ✅ |
 | Audio capture | ⏳ (§0043 follow-up — `IMediaRecorder` port + ffmpeg-based adapter, xvfb+PulseAudio on Linux/Docker, AVFoundation+BlackHole on macOS dev) |
 
@@ -120,7 +121,7 @@ npm run eval
 npm run smoke:recording
 
 # Boot the HTTP API v1 (default PORT=8787). Concurrent — no JobQueue (§0043).
-#   POST /api/v1/recordings         body: { prompt, durationMs, width?, height?, format?, crf?, audio? }
+#   POST /api/v1/recordings         body: { prompt, durationMs, device?, width?, height?, format?, crf?, audio? }
 #   GET  /api/v1/recordings         list (newest-first)
 #   GET  /api/v1/recordings/:runId
 #   GET  /api/v1/recordings/:runId/video      (only on succeeded; Content-Type follows `format`)

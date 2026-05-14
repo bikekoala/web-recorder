@@ -116,6 +116,39 @@ describe('API server', () => {
     } finally { await s.close(); }
   });
 
+  it('POST with device:"mobile" parses and forwards to the factory', async () => {
+    let observed: { device?: string } | undefined;
+    const factory: JobFactory = async (request) => { observed = request; return fakeResult(tmp); };
+    const s = await startServer(factory);
+    try {
+      const post = await fetch(`${s.baseUrl}${API}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'p', durationMs: 5000, device: 'mobile' }),
+      });
+      const { runId } = await post.json() as { runId: string };
+      await waitFor(async () => {
+        const r = await fetch(`${s.baseUrl}${API}/${runId}`);
+        const j = await r.json() as { status: string };
+        return j.status === 'succeeded' ? j : null;
+      });
+      expect(observed?.device).toBe('mobile');
+    } finally { await s.close(); }
+  });
+
+  it('POST rejects an unknown device value (400)', async () => {
+    const noop: JobFactory = async () => { throw new Error('not reached'); };
+    const s = await startServer(noop);
+    try {
+      const res = await fetch(`${s.baseUrl}${API}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'p', durationMs: 5000, device: 'smart-tv' }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json() as { error: { code: string } };
+      expect(body.error.code).toBe('BAD_REQUEST');
+    } finally { await s.close(); }
+  });
+
   it('POST with audio:true returns 501 AUDIO_NOT_IMPLEMENTED', async () => {
     const noop: JobFactory = async () => { throw new Error('not reached'); };
     const s = await startServer(noop);

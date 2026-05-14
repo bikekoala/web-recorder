@@ -386,6 +386,8 @@ describe('RecordJobRunner — writes run.json with a parseable RunRecord', () =>
     expect(parsed.request.prompt).toBe('点击 sign-in 然后慢慢滚动');
     expect(parsed.request.durationMs).toBe(10_000);
     expect(parsed.request.viewport).toEqual({ width: 1280, height: 720 });
+    // device defaults to 'desktop' when the run request didn't pass one.
+    expect(parsed.request.device).toBe('desktop');
     // URL resolution is captured alongside the request — the URL is now AI-resolved.
     expect(parsed.urlResolution.url).toBe('https://example.com/page');
     expect(parsed.urlResolution.reasoning).toBe('prompt named example.com');
@@ -407,6 +409,27 @@ describe('RecordJobRunner — writes run.json with a parseable RunRecord', () =>
     // would have thrown if they weren't).
     expect(parsed.timings.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(parsed.timings.endedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('persists a non-default device label into run.json.request.device', async () => {
+    const session = new FakePageSession();
+    const recon = new FakeReconnoiterer([perf([{ kind: 'done', reasoning: 'noop' }])]);
+    const director = new StubDirector({ totalMs: 10, stepsExecuted: 1, replanCount: 0, endReason: 'done' });
+    const runner = new RecordJobRunner(session, new FakeUrlResolver(), recon, director);
+
+    const sub = await mkdtemp(join(tmpdir(), 'web-recorder-run-json-device-'));
+    try {
+      await runner.run({
+        prompt: 'browse mobile',
+        durationMs: 5_000,
+        outputDir: sub,
+        device: 'mobile',
+      });
+      const parsed = RunRecordSchema.parse(JSON.parse(await readFile(join(sub, 'run.json'), 'utf8')));
+      expect(parsed.request.device).toBe('mobile');
+    } finally {
+      await rm(sub, { recursive: true, force: true });
+    }
   });
 
   it('captures the resolver model id in run.json.urlResolution', async () => {

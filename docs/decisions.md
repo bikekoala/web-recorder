@@ -1508,6 +1508,8 @@ Requirements (5) and (6) collide with the current recording stack. Playwright's 
 
 **Preserves**: §0034 (Director / re-plan checkpoint), §0036/§0038 (recon target resolution), §0040 (plan-duration fit), §0042 (graceful `unmet` contract). Port surfaces are the same plus one new port (`IUrlResolver`); no existing port broke.
 
+**Addendum (same day, design conversation)**: added a `device: 'desktop' | 'mobile' | 'tablet'` parameter (default `desktop`). Maps to Playwright `devices[…]` presets — `Desktop Chrome` / `Pixel 7` / `Galaxy Tab S9`, all chromium-native so the engine matches the UA. Spread into `chromium.launchPersistentContext`, so UA + isMobile + hasTouch + deviceScaleFactor (and viewport, for non-desktop) come from Playwright's auto-maintained table. Removed the hand-pasted macOS Chrome 134 UA constant — staleness was a memory item (no hardcoded heuristic logic). The deeper browser-fingerprint surface (canvas/WebGL/permissions/plugins) stays out of scope; that's a separate sub-project if/when needed, and §0042 already classifies anti-bot walls as graceful-`unmet` territory.
+
 ---
 
 ## Template for new entries

@@ -37,6 +37,7 @@ const PROMPT = process.env.EVAL_PROMPT
   ?? '去 https://github.com/webadderallorg/Recordly 点击页面上的"简体中文"链接，然后慢慢向下滑动浏览内容';
 const DURATION_MS = Number(process.env.EVAL_DURATION_MS ?? 10_000);
 const HEADLESS = process.env.EVAL_HEADLESS !== 'false';
+const DEVICE = (process.env.EVAL_DEVICE as 'desktop' | 'mobile' | 'tablet' | undefined) ?? 'desktop';
 
 const WALL_CLOCK_LIMIT_MS = 60_000; // goals.md #5
 const DISK_LIMIT_BYTES = 100 * 1024 * 1024; // goals.md #5
@@ -215,7 +216,7 @@ async function main(): Promise<void> {
   log.info({ prompt: PROMPT, durationMs: DURATION_MS, headless: HEADLESS, reconModel: config.llmReconModelResolved, judgeModel: config.llmJudgeModel, urlResolverModel: config.llmUrlResolverModel }, 'self-eval: running the pipeline');
 
   const outputDir = buildRunDir({ outputRoot: config.outputDir, kind: 'eval' });
-  const session = new StagehandPageSession({ outputDir, headless: HEADLESS, viewport: config.viewport, verbose: 1 });
+  const session = new StagehandPageSession({ outputDir, headless: HEADLESS, viewport: config.viewport, device: DEVICE, verbose: 1 });
   const urlResolver = new LlmUrlResolver();
   const reconnoiterer = new LlmReconnoiterer(config.blockerDismiss ? { blockerDismisser: new LlmBlockerDismisser() } : {});
   const director = new PerformanceDirector({ replanner: reconnoiterer });
@@ -223,7 +224,7 @@ async function main(): Promise<void> {
 
   let result: RunResult;
   try {
-    result = await runner.run({ prompt: PROMPT, durationMs: DURATION_MS, outputDir });
+    result = await runner.run({ prompt: PROMPT, durationMs: DURATION_MS, outputDir, device: DEVICE });
   } catch (err) {
     try { await session.stop(); } catch { /* ignore */ }
     throw err;

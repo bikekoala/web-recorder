@@ -36,6 +36,10 @@ const USER_PROMPT =
   process.env.PROTOTYPE_PROMPT ??
   '去 https://github.com/webadderallorg/Recordly 点击页面上的"简体中文"链接，然后慢慢向下滑动浏览内容';
 const DURATION_MS = Number(process.env.PROTOTYPE_DURATION_MS ?? 10_000);
+// PROTOTYPE_DEVICE=desktop|mobile|tablet (default desktop). Mobile/tablet use
+// the matching Playwright preset's viewport — the script's viewport config is
+// ignored for those.
+const DEVICE = (process.env.PROTOTYPE_DEVICE as 'desktop' | 'mobile' | 'tablet' | undefined) ?? 'desktop';
 
 async function main(): Promise<void> {
   const log = logger.child({ script: 'prototype-stagehand' });
@@ -59,6 +63,7 @@ async function main(): Promise<void> {
     outputDir,
     headless: false,
     viewport: config.viewport,
+    device: DEVICE,
     verbose: 1,
   });
   const urlResolver = new LlmUrlResolver();
@@ -74,6 +79,7 @@ async function main(): Promise<void> {
       prompt: USER_PROMPT,
       durationMs: DURATION_MS,
       outputDir,
+      device: DEVICE,
     });
 
     log.info({ metrics: result.metrics }, '📊 RUN METRICS');

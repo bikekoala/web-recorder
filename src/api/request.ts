@@ -27,6 +27,16 @@ import { config } from '../infra/config.js';
 export const RecordingFormatSchema = z.enum(['mp4', 'webm']);
 export type RecordingFormat = z.infer<typeof RecordingFormatSchema>;
 
+/**
+ * Coarse device class. Sites serve different HTML/CSS for mobile than for
+ * desktop, so this is a first-class request parameter, not a server-side
+ * tunable. The session adapter maps each kind to a Playwright `devices[…]`
+ * preset (viewport + UA + isMobile/hasTouch/scaleFactor); UA strings come
+ * from Playwright's auto-maintained table.
+ */
+export const DeviceKindSchema = z.enum(['desktop', 'mobile', 'tablet']);
+export type DeviceKind = z.infer<typeof DeviceKindSchema>;
+
 export const RecordRequestSchema = z.object({
   /**
    * Free-form recording instruction. Must be non-empty. The URL the recording
@@ -36,10 +46,21 @@ export const RecordRequestSchema = z.object({
   prompt: z.string().min(1).max(2000),
   /** Target recording duration in ms. ±10% is the project's goal (goals.md #2). */
   durationMs: z.number().int().min(1000).max(config.maxRecordingDurationMs),
-  /** Viewport width in CSS pixels. Defaults to config.viewport.width. */
+  /**
+   * Viewport width in CSS pixels. Defaults to config.viewport.width.
+   * Honoured only when `device === 'desktop'` — mobile/tablet inherit their
+   * preset's viewport so the emulation is internally consistent.
+   */
   width: z.number().int().min(320).max(3840).default(config.viewport.width),
-  /** Viewport height in CSS pixels. Defaults to config.viewport.height. */
+  /** Viewport height in CSS pixels. Desktop-only; see `width`. */
   height: z.number().int().min(240).max(2160).default(config.viewport.height),
+  /**
+   * Coarse device class — desktop / mobile / tablet. Default `desktop`.
+   * Selects the UA + isMobile + hasTouch + deviceScaleFactor (and viewport,
+   * for non-desktop) the browser emulates. Sites with responsive variants
+   * render their mobile HTML when this is `mobile`.
+   */
+  device: DeviceKindSchema.default('desktop'),
   /** Output container/codec. mp4 (H.264) by default for the clearer-than-webm + audio path. */
   format: RecordingFormatSchema.default('mp4'),
   /** H.264 CRF (constant-rate factor): 0=lossless, 18≈visually lossless, 23=default, 28+=fuzzy. */
