@@ -144,13 +144,31 @@ describe('rehearse()', () => {
     expect(tail.map((s) => s.kind)).toEqual(['scroll', 'dwell', 'done']);
   });
 
-  it('wall-clock budget exceeded → truncate (timedOut)', async () => {
+  it('wall-clock budget exceeded → truncate (timedOut), keep un-walked tail un-verified', async () => {
+    // Regression: 2026-05-15 eval-2 — pre-fix the wall-clock truncation
+    // replaced the un-walked tail (which contained the user's requested click)
+    // with a 2-step graceful filler. Director's expectAfter is the backstop;
+    // losing the click to a 45 s deadline is strictly worse than attempting it
+    // un-verified.
     const session = new FakePageSession();
     session.observeResults = [{ selector: 'a#x', description: 'x' }] as any;
-    const draft: PerformanceStep[] = [scroll(100), scroll(100), scroll(100), done];
+    const draft: PerformanceStep[] = [scroll(100), clickStep('the requested link'), dwell(500), done];
     const { steps, trace } = await rehearse({ draftSteps: draft, session, intent: 'x', reconverge: NEVER_RECONVERGE, rehearsalBudgetMs: 0, reconvergeMax: 2, logger: log });
     expect(trace.timedOut).toBe(true);
     expect(trace.truncated).toBe(true);
+    // The whole un-walked tail (here: every original step, since deadline
+    // fires before walking step 0) is kept. Crucially the click survives.
+    expect(steps.some((s) => s.kind === 'click' && s.target.description === 'the requested link')).toBe(true);
+    expect(steps[steps.length - 1].kind).toBe('done');
+  });
+
+  it('wall-clock truncation appends `done` only if the kept tail doesn\'t already end with one', async () => {
+    const session = new FakePageSession();
+    session.observeResults = [{ selector: 'a#x', description: 'x' }] as any;
+    // Draft without a trailing `done`: truncation should add exactly one.
+    const draft: PerformanceStep[] = [scroll(100), clickStep('x')];
+    const { steps } = await rehearse({ draftSteps: draft, session, intent: 'x', reconverge: NEVER_RECONVERGE, rehearsalBudgetMs: 0, reconvergeMax: 2, logger: log });
+    expect(steps.filter((s) => s.kind === 'done')).toHaveLength(1);
     expect(steps[steps.length - 1].kind).toBe('done');
   });
 

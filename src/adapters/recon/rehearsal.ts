@@ -222,7 +222,27 @@ export async function rehearse(
   let finalWalked = [...walked];
 
   if (truncated) {
-    finalWalked.push(...gracefulTail());
+    if (timedOut) {
+      // Wall-clock truncation. `steps[i]` is the NEXT step we were about to
+      // walk — never tried, not known-broken. Keep the un-walked tail
+      // un-verified rather than dropping it: losing the user's requested
+      // click/type/goto to a 45 s deadline is strictly worse than attempting
+      // it without rehearsal verification. The Director's on-camera
+      // `expectAfter` checkpoint is the backstop if a kept step fails at
+      // playback (§0034 re-plan, or graceful degradation if budget is too low).
+      // See docs/findings/2026-05-15-humanize-bake-off.md eval-2 — the
+      // pre-fix behavior threw away a click on a site where it was reachable.
+      const unwalked = steps.slice(i);
+      finalWalked.push(...unwalked);
+      if (!finalWalked.some((s) => s.kind === 'done')) {
+        finalWalked.push({ kind: 'done', reasoning: 'rehearsal wall-clock truncated; tail kept un-verified' });
+      }
+    } else {
+      // Reconverge cap exhausted. `steps[i]` was a step we couldn't make work
+      // even after an LLM reconverge — it's known-broken. Don't keep the rest
+      // (it depended on that anchor); fall through to the safe graceful tail.
+      finalWalked.push(...gracefulTail());
+    }
   } else if (!finalWalked.some((s) => s.kind === 'done')) {
     finalWalked.push({ kind: 'done', reasoning: 'rehearsal walk completed; nothing left to do' });
   }
