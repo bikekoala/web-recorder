@@ -141,6 +141,108 @@ describe('LlmReconnoiterer', () => {
       .rejects.toBeInstanceOf(ReconError);
   });
 
+  describe('reconverge-on-overbudget (plan Y, 2026-05-15)', () => {
+    // Pure scroll+dwell plans — no clicks, so the rehearsal walk's divergence
+    // checks don't fire (the walk verifies clicks against page changes; the
+    // fake session can't simulate navigation cleanly enough to test the
+    // overbudget branch in isolation otherwise).
+    //
+    // budget 5000ms; threshold = 5000 * (1 + 0.20) = 6000ms.
+    // Draft 1 costs ~9300ms — way over → reconverge fires.
+    const overbudgetDraftJson = JSON.stringify({
+      prompt: 'browse',
+      durationMs: 5000,
+      steps: [
+        { kind: 'dwell', durationMs: 800, reasoning: 'land' },
+        { kind: 'scroll', deltaPx: 600, durationMs: 1500, dwellAfterMs: 200, easing: 'inOutQuad', reasoning: 'down' },
+        { kind: 'dwell', durationMs: 2500, reasoning: 'read' },
+        { kind: 'scroll', deltaPx: 500, durationMs: 1200, dwellAfterMs: 200, easing: 'inOutQuad', reasoning: 'down again' },
+        { kind: 'dwell', durationMs: 1500, reasoning: 'read more' },
+        { kind: 'done', reasoning: 'fin' },
+      ],
+      rationale: 'over budget on purpose',
+    });
+    // Draft 2 costs ~5840ms — still slightly over but SHORTER. The runner
+    // takes the new plan only when it's shorter; fitPlanToBudget handles
+    // any residual overshoot.
+    const shorterDraftJson = JSON.stringify({
+      prompt: 'browse',
+      durationMs: 5000,
+      steps: [
+        { kind: 'dwell', durationMs: 800, reasoning: 'land' },
+        { kind: 'scroll', deltaPx: 600, durationMs: 1500, dwellAfterMs: 200, easing: 'inOutQuad', reasoning: 'down' },
+        { kind: 'dwell', durationMs: 2500, reasoning: 'read' },
+        { kind: 'done', reasoning: 'fin' },
+      ],
+      rationale: 'dropped the second scroll+dwell to fit',
+    });
+
+    it('fires a second recon call when the walked plan overshoots the budget, and uses the new plan if it is shorter', async () => {
+      const session = new FakePageSession();
+      session.url = 'https://site.test/';
+      session.ariaSnapshotResult = '- main [ref=e1]';
+      const { client, create } = sequencedClient(overbudgetDraftJson, shorterDraftJson);
+      const recon = new LlmReconnoiterer({ model: 'test/model', client });
+      const perf = await recon.recon(
+        { url: 'https://site.test/', prompt: 'browse', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
+        session,
+      );
+      // The overshoot triggered a second LLM call.
+      expect(create.mock.calls.length).toBe(2);
+      // The second call's user-text contains the actual cost gap (plan Y signal).
+      const secondUserMsg = create.mock.calls[1]![0].messages.find((m: { role: string }) => m.role === 'user')!;
+      const userText = typeof secondUserMsg.content === 'string'
+        ? secondUserMsg.content
+        : (secondUserMsg.content as Array<{ type: string; text?: string }>).find((p) => p.type === 'text')?.text ?? '';
+      expect(userText).toMatch(/RE-PLAN/);
+      // walked cost in the 9000-9999 range surfaced verbatim
+      expect(userText).toMatch(/9\d{3}ms/);
+      expect(userText).toMatch(/5000ms/); // budget surfaced verbatim
+      // The shorter draft came through — the final plan has 4 steps
+      // (drafted), not 6 (overbudget). fitPlanToBudget may compress
+      // step durations but never adds/removes steps.
+      expect(perf.steps.length).toBe(4);
+    });
+
+    it('does NOT fire when the walked plan fits the budget (no needless reconverge call)', async () => {
+      const fitDraftJson = JSON.stringify({
+        prompt: 'short',
+        durationMs: 5000,
+        steps: [
+          { kind: 'dwell', durationMs: 1500, reasoning: 'fits' },
+          { kind: 'done', reasoning: 'fin' },
+        ],
+        rationale: 'within budget',
+      });
+      const session = new FakePageSession();
+      session.ariaSnapshotResult = '- main [ref=e1]';
+      const { client, create } = sequencedClient(fitDraftJson);
+      const recon = new LlmReconnoiterer({ model: 'test/model', client });
+      await recon.recon(
+        { url: 'u', prompt: 'short', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
+        session,
+      );
+      expect(create.mock.calls.length).toBe(1);
+    });
+
+    it('keeps the walked plan when the reconverge LLM returns a plan that is not shorter (no infinite shrinking)', async () => {
+      const session = new FakePageSession();
+      session.ariaSnapshotResult = '- main [ref=e1]';
+      // Both calls return the same overbudget draft → reconverge tried, no win.
+      const { client, create } = sequencedClient(overbudgetDraftJson, overbudgetDraftJson);
+      const recon = new LlmReconnoiterer({ model: 'test/model', client });
+      const perf = await recon.recon(
+        { url: 'u', prompt: 'browse', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
+        session,
+      );
+      expect(create.mock.calls.length).toBe(2);
+      // Walked plan (the original 6 steps) is kept — reconverge was tried,
+      // didn't shrink, so the original survives. fitPlanToBudget compresses
+      // the durations but step count is preserved.
+      expect(perf.steps.length).toBe(6);
+    });
+  });
+
   describe('reconverge-on-initial-resolve-drop (ADR §0042 / P13 fix)', () => {
     // Draft A: requests a click that won't resolve (the bad ref).
     const dropDraftJson = JSON.stringify({

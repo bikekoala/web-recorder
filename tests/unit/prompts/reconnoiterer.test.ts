@@ -52,6 +52,41 @@ describe('buildReconUserText', () => {
     expect(text.toLowerCase()).toContain('dead air');
   });
 
+  it('renders the priorAttemptOverBudgetMs hint when set (plan Y reconverge feedback)', () => {
+    const text = buildReconUserText(
+      {
+        url: 'https://news.ycombinator.com/',
+        prompt: 'look at top stories',
+        durationMs: 10000,
+        viewport: { width: 1280, height: 720 },
+        screenshot: null,
+        priorAttemptOverBudgetMs: { actualMs: 17400, budgetMs: 10000 },
+      },
+      '- link [ref=e1]',
+    );
+    expect(text).toMatch(/RE-PLAN/);
+    expect(text).toContain('17400ms');
+    expect(text).toContain('10000ms');
+    // A is told this is the runner's truth, not A's
+    expect(text.toLowerCase()).toContain('source of truth');
+    // Concrete moves a person can act on
+    expect(text).toMatch(/drill-and-return|drop|dwell/i);
+  });
+
+  it('omits the priorAttemptOverBudgetMs block when not set', () => {
+    const text = buildReconUserText(
+      {
+        url: 'https://example.com/',
+        prompt: 'p',
+        durationMs: 10000,
+        viewport: { width: 1280, height: 720 },
+        screenshot: null,
+      },
+      '- main [ref=e1]',
+    );
+    expect(text).not.toMatch(/RE-PLAN — your previous plan/);
+  });
+
   it('omits the pageScrollableHeight line when the caller did not supply it (legacy / pre-2026-05-15 fixtures)', () => {
     const text = buildReconUserText(
       {
@@ -102,15 +137,30 @@ describe('buildReconvergeUserText', () => {
   });
 });
 
-describe('reconnoitererSystemPrompt — F1 DURATION & SCOPE section', () => {
+describe('reconnoitererSystemPrompt — DURATION & SCOPE section (plan Y, 2026-05-15)', () => {
   it('contains a DURATION & SCOPE section that names durationMs as a hard constraint', () => {
     expect(reconnoitererSystemPrompt).toContain('DURATION & SCOPE');
     expect(reconnoitererSystemPrompt).toMatch(/hard constraint/i);
-    expect(reconnoitererSystemPrompt).toMatch(/totalEstimatedMs.*within.*10%/i);
+    expect(reconnoitererSystemPrompt).toMatch(/plan MUST fit the durationMs/i);
+  });
+
+  it('does NOT ask A to self-report totalEstimatedMs (plan Y — runner is source of truth)', () => {
+    // Plan Y: A's arithmetic is unreliable (10-number sums exceed working
+    // memory). B computes cost; A no longer emits totalEstimatedMs.
+    expect(reconnoitererSystemPrompt).not.toMatch(/totalEstimatedMs/);
+    expect(reconnoitererSystemPrompt).toMatch(/runner does, deterministically|deterministic cost model/i);
+  });
+
+  it('mentions that the runner will reconverge on overshoot (so A knows the feedback loop exists)', () => {
+    expect(reconnoitererSystemPrompt).toMatch(/reconverge|gap|drop steps/i);
+  });
+
+  it('gives A a coarse cost intuition (acting steps ≈ 2 s) rather than a step-by-step formula', () => {
+    expect(reconnoitererSystemPrompt).toMatch(/2-second commitment|≈\s*a/);
+    expect(reconnoitererSystemPrompt).toMatch(/drill-and-return/i);
   });
 
   it('tells the LLM to identify prohibitions itself (we do not regex the prompt)', () => {
-    // The whole point of F1 is no hardcoded prohibition detection. A's job.
     expect(reconnoitererSystemPrompt).toMatch(/prohib|forbid/i);
     expect(reconnoitererSystemPrompt).toMatch(/your call|you judge|你判断/i);
   });
@@ -119,33 +169,11 @@ describe('reconnoitererSystemPrompt — F1 DURATION & SCOPE section', () => {
     expect(reconnoitererSystemPrompt).toMatch(/(do not|don't).*(mechanical|generic).*(scroll|filler|pad)/i);
   });
 
-  it('says irreconcilable prompt/duration mismatch goes into `rationale` (not a failure)', () => {
-    expect(reconnoitererSystemPrompt).toMatch(/rationale/i);
-    expect(reconnoitererSystemPrompt).toMatch(/underfilled/i);
-  });
-
-  it('imposes a Scroll-budget discipline that ties scroll deltaPx to pageScrollableHeight (HN over-scroll mitigation, 2026-05-15)', () => {
-    // A 511px-tall HN page got 3 scrolls totaling 1000px because A acknowledged
-    // pageScrollableHeight in rationale but didn't size against it. The prompt
-    // must require a `Scroll budget:` running-total + comparison.
-    expect(reconnoitererSystemPrompt).toMatch(/SCROLL-BUDGET DISCIPLINE|Scroll budget/);
-    expect(reconnoitererSystemPrompt).toMatch(/Scroll budget:.*\+/);
-    expect(reconnoitererSystemPrompt).toMatch(/pageScrollableHeight.*1\.2/);
-    // and the consequence path — short page favors zero/one scroll
+  it('keeps SCROLL-BUDGET guidance against pageScrollableHeight (HN over-scroll mitigation)', () => {
+    expect(reconnoitererSystemPrompt).toContain('SCROLL-BUDGET');
+    expect(reconnoitererSystemPrompt).toMatch(/pageScrollableHeight/);
+    expect(reconnoitererSystemPrompt).toMatch(/1\.2/);
     expect(reconnoitererSystemPrompt).toMatch(/(zero|one) scroll/i);
-  });
-
-  it('forces explicit per-step arithmetic in `rationale` (HN dwell-crush mitigation, 2026-05-15)', () => {
-    // Mental-math fails on 8-12 step sums — A wrote correct rows but bombed
-    // the final 10-number rollup. The prompt must force pairwise running-total
-    // accumulation so each addition involves only two numbers.
-    expect(reconnoitererSystemPrompt).toMatch(/DO THE ARITHMETIC EXPLICITLY|do not mental-math/i);
-    expect(reconnoitererSystemPrompt).toMatch(/Cost:.*s1.*\+280/);
-    expect(reconnoitererSystemPrompt).toMatch(/Running total/);
-    expect(reconnoitererSystemPrompt).toMatch(/pairwise/i);
-    expect(reconnoitererSystemPrompt).toMatch(/SUM\s*=/);
-    // and the consequence path — drop steps if the sum overshoots
-    expect(reconnoitererSystemPrompt).toMatch(/DROP STEPS|drop steps/);
   });
 });
 

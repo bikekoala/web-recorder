@@ -78,7 +78,15 @@ export type ReconDraftStep = z.infer<typeof ReconDraftStepSchema>;
 export const ReconDraftSchema = z.object({
   prompt: z.string().min(1),
   steps: z.array(ReconDraftStepSchema).min(1),
-  totalEstimatedMs: z.number().int().nonnegative(),
+  /**
+   * Plan Y (2026-05-15): A no longer self-reports plan cost. B (the runner)
+   * computes the deterministic cost via `sumDurations(steps)` and gates on it;
+   * if A overshoots the budget, B fires a reconverge with the actual gap.
+   * Kept optional so a stale-prompt LLM that still emits the field parses
+   * cleanly; the value is captured into `PlanDurationFit.claimedMs` for
+   * comparison but is no longer load-bearing.
+   */
+  totalEstimatedMs: z.number().int().nonnegative().optional(),
   rationale: z.string().min(1),
 });
 export type ReconDraft = z.infer<typeof ReconDraftSchema>;

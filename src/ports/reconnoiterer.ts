@@ -49,6 +49,22 @@ export interface ReconInput {
    */
   priorAttemptDrops?: string[];
   /**
+   * Reconverge-on-overbudget context (plan Y, 2026-05-15): when the previous
+   * draft's deterministic cost recomputation was over budget by more than the
+   * tolerance, the next recon call hands A the actual gap so A can drop steps.
+   * Undefined / omitted when no overbudget retry is happening.
+   *
+   * AI-first: B (the runner) computes cost; A only acts on the feedback. A's
+   * self-reported `totalEstimatedMs` is no longer trusted (HN run showed A
+   * routinely under-counts by 30-100% on multi-step sums).
+   */
+  priorAttemptOverBudgetMs?: {
+    /** B's deterministic recomputation of the previous plan's cost in ms. */
+    actualMs: number;
+    /** The original budget A was given (== `durationMs`). */
+    budgetMs: number;
+  };
+  /**
    * Maximum scrollable pixel offset of the current page
    * (`document.scrollHeight − viewport.height`). 0 means the page fits in
    * one viewport. Surfaced into the recon prompt so the planner LLM can

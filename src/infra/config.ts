@@ -124,6 +124,16 @@ const Schema = z.object({
   reconReconvergeOnDrop: z.enum(['true', 'false', '1', '0']).transform((v) => v === 'true' || v === '1').default('true'),
 
   /**
+   * Reconverge-on-overbudget (plan Y, 2026-05-15): when the initial draft's
+   * recomputed cost is over `durationMs × (1 + planDurationFitToleranceRatio)`,
+   * fire ONE more recon LLM call telling A the actual gap and asking it to
+   * drop steps to fit. Independent of `reconReconvergeOnDrop` and may fire
+   * after it. Off ⇒ fall straight through to `fitPlanToBudget`'s compress
+   * (legacy, often crushes `dwell` to unreadable durations on big overshoots).
+   */
+  reconReconvergeOnOverbudget: z.enum(['true', 'false', '1', '0']).transform((v) => v === 'true' || v === '1').default('true'),
+
+  /**
    * Depth cap for the recon planner's `IPageSession.ariaSnapshot()` tree
    * (ADR §0036). `mode: 'ai'` already prunes generic/text-only nodes; the depth
    * cap bounds the token cost on huge content sites. Override with
@@ -331,6 +341,7 @@ const raw = {
   reconRehearsalBudgetMs: process.env.RECON_REHEARSAL_BUDGET_MS,
   reconReconvergeMax: process.env.RECON_RECONVERGE_MAX,
   reconReconvergeOnDrop: process.env.RECON_RECONVERGE_ON_DROP || undefined,
+  reconReconvergeOnOverbudget: process.env.RECON_RECONVERGE_ON_OVERBUDGET || undefined,
   ariaSnapshotDepth: process.env.ARIA_SNAPSHOT_DEPTH,
   ariaSnapshotMaxChars: process.env.ARIA_SNAPSHOT_MAX_CHARS,
   blockerDismiss: process.env.BLOCKER_DISMISS || undefined,

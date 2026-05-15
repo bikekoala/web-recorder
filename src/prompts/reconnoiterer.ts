@@ -37,8 +37,7 @@ OUTPUT — strict JSON, single object, exactly this shape:
   "prompt": "<echo the user's intent>",
   "durationMs": <the budget you were given — a single integer>,
   "steps": [ <step>, ... ],
-  "totalEstimatedMs": <a single computed integer in ms, e.g. \`9450\`. Sum the steps' durations yourself and emit the RESULT — DO NOT emit an arithmetic expression like \`500 + 800 + 280 + 1500\`; that is not valid JSON and will be rejected.>,
-  "rationale": "<1-3 sentences: why this plan>"
+  "rationale": "<1-3 sentences: why this plan; mention if you irreconcilably underfill the budget so the runner can flag it>"
 }
 
 Each step is exactly one of:
@@ -58,7 +57,7 @@ JSON SAFETY RULES — read carefully:
 4. No markdown, no code fences, no commentary outside the JSON object.
 5. \`"reasoning"\` on EACH step is a SHORT phrase — one clause, ideally under ~80 characters, never over ~200. It is a label for the step, NOT a place to narrate the whole plan. Do NOT pour a paragraph of explanation into a single step's reasoning — that breaks the JSON shape (the model often loses track of brackets mid-paragraph and never closes the steps array). Each step gets its own short reasoning; the OVERALL plan's explanation goes ONLY in the top-level \`rationale\` field.
 6. Emit ALL the steps for the plan — do NOT stop after one step. The \`steps\` array MUST close with \`]\` and the outer object MUST close with \`}\`. Re-check the closing punctuation before ending your response.
-7. EVERY numeric value (durationMs, totalEstimatedMs, deltaPx, anticipationMs, preMs, keystrokeMs, dwellAfterMs, etc.) is a single JSON number literal — \`9450\`, \`-300\`, \`1.5\`. NEVER an arithmetic expression (\`500 + 800\`), variable, percentage string, or math equation. JSON.parse rejects all of those.
+7. EVERY numeric value (durationMs, deltaPx, anticipationMs, preMs, keystrokeMs, dwellAfterMs, etc.) is a single JSON number literal — \`9450\`, \`-300\`, \`1.5\`. NEVER an arithmetic expression (\`500 + 800\`), variable, percentage string, or math equation. JSON.parse rejects all of those.
 
 PACING — you decide how human this looks:
 - "anticipationMs" on a click: 500-800ms for a normal click (the recorder pauses there as if locating the target). Shorter (~300ms) for an obvious button; longer (~1000ms) for an ambiguous target. NOTE: a click/key/back/goto ALSO costs ~1.5 s afterwards while the page settles (navigating, re-rendering) — that's automatic, you don't add a step for it, but DO count it when you budget the window: a click/goto is roughly anticipationMs + ~1.5 s of recording time, not just anticipationMs.
@@ -92,22 +91,13 @@ WHEN TO USE \`goto\` (direct URL navigation — ADR §0041):
 - HARD CONSTRAINT — same-host only: the \`goto\` URL's hostname MUST equal the starting URL's hostname (paths and query strings are free to differ). \`github.com → github.com/trending\` ✓; \`github.com → docs.github.com\` ✗ (different subdomain — use a click); \`github.com → google.com\` ✗ (different site — never). Cross-host gotos are dropped by the runner.
 
 DURATION & SCOPE (hard constraint — supersedes the soft ~15% mention in PACING):
-- Your plan's totalEstimatedMs MUST land within ±10% of the durationMs you are given. Estimate using the same model the runner uses:
-    each non-\`done\` step: +~280ms (per-step overhead the Director can't avoid)
-    click / goto:         +anticipationMs + ~1500ms (anticipation pause + the post-action page-settle wait)
-    key / back:           +~1500ms (post-action page-settle wait)
-    dwell:                +durationMs
-    scroll:               +durationMs + dwellAfterMs
-    type:                 +preMs + text.length × keystrokeMs
-- DO THE ARITHMETIC EXPLICITLY — DO NOT MENTAL-MATH IT. Recon LLMs (including you) systematically under-count: rows are computed correctly, but the FINAL sum of 8-12 four-digit terms exceeds working memory. Measured 2026-05-15: A wrote each row right (10 rows of 1000-3000ms each) but its \`SUM=…\` was off by ~7700ms — about 40% under — and then the runner crushed every \`dwell\` to ~150ms to make it fit; the judge called the recording robotic. Mitigation, REQUIRED:
-    1. Open \`rationale\` with a \`Cost:\` line listing one term per step in order — every step contributes, none silently skipped. Format the per-step cost as the formula AND the result: \`s1 dwell 1000+280=1280\`.
-    2. After the per-step list, write a \`Running total:\` line that builds the sum **pairwise** so every addition is just two numbers. Format: \`Running total: 1280; +2580=3860; +480=4340; +1780=6120; ...; SUM=10120ms.\`. Nine reliable 2-number adds beats one impossible 10-number add.
-    3. Emit \`totalEstimatedMs\` = exactly the final \`SUM=\` from that line, NOT a separately-recalled number.
-    4. If SUM > durationMs × 1.10, DROP STEPS (cut a drill-and-return, drop a redundant scroll, etc.) and rewrite the \`Cost:\` + \`Running total:\` lines before emitting. Do not ship a plan you know is over — the corrector crushes \`dwell\` durations to unreadable amounts and the judge calls it robotic. Symmetric for SUM < durationMs × 0.90: add a step a real person would do here, OR note the irreconcilable underfill in \`rationale\`.
-- SCROLL-BUDGET DISCIPLINE — same arithmetic shape, applied to scroll deltaPx. When the user message lists a \`Scrollable height below the current scroll position\` value, the page has FINITE vertical room. Scrolling past the bottom is a no-op = dead air on camera. Required when that signal is present:
-    1. Add a \`Scroll budget:\` line in \`rationale\` summing each scroll step's |deltaPx| pairwise — same running-total format. \`Scroll budget: s2=450; +350=800; +200=1000.\`
-    2. Compare the final sum to pageScrollableHeight. If \`sum > pageScrollableHeight × 1.2\` you have scrolls that hit the bottom and freeze the frame. DROP the redundant scrolls (favor fewer-but-larger over more-but-smaller; 1 well-chosen 600 px scroll beats 3 metronomic 350 px scrolls on a 500 px page).
-    3. If the page is small enough (< 1 viewport-height of scroll room), prefer zero or one scroll plus reading dwells — the rest of the page is already visible. Pure scroll-and-stare on a tiny page is the metronomic anti-pattern judges call out.
+- Your plan MUST fit the durationMs you are given. **You don't compute the cost — the runner does, deterministically.** A rough mental model for sizing the plan (NOT for you to sum on paper):
+    click / goto:         anticipation (0.5-0.8 s) + page settle (~1.5 s) ≈ a **2-second commitment**
+    key / back:           page settle ~1.5 s + step overhead ~0.3 s ≈ a **2-second commitment**
+    dwell:                its own duration + step overhead
+    scroll / type:        their declared time + small overhead
+  Sizing intuition: a 10-second budget fits **~2 acting steps + a couple of read dwells**, NOT a full click→read→back→scroll→click→read→back. A drill-and-return (click + dwell + back) costs ≈ 4 s + the read; plan at most one of those in a 10 s window. The runner's cost recompute is the source of truth — if your plan overshoots the budget, the runner will reconverge (give you the exact gap and ask you to drop steps), then if you still overshoot it falls through to mechanical compression which crushes dwells to unreadable durations. Aim to land it on the first draft.
+- SCROLL-BUDGET — when the user message lists a \`Scrollable height below the current scroll position\` value, the page has FINITE vertical room. Scrolling past the bottom is a no-op = dead air. Sum your scroll deltaPxs mentally and compare to pageScrollableHeight; if it would exceed ~1.2× of that, drop scrolls (favor fewer-but-larger over more-but-smaller — 1 well-chosen 600 px scroll beats 3 metronomic 350 px scrolls on a 500 px page). On pages with < 1 viewport-height of scroll room, prefer zero or one scroll plus reading dwells.
 - If the user's prompt forbids an action (any expression — "only", "just", "no X", "don't", "without", 中英任何 — your call), your plan MUST NOT contain that action, and any filler exploration MUST respect the prohibition. We do not pattern-match the prompt for you; identifying prohibitions is your job.
 - If the explicit intent does not fill durationMs, do NOT pad with mechanical generic scroll+dwell. Add steps a real person would naturally do on THIS page given THIS prompt: read a result card, scan top chips, glance at the sidebar, scroll to a specific content section worth dwelling on. Each filler step must be groundable in the accessibility tree — the rehearsal walk will verify; ungroundable filler will be dropped.
 - MOTION BACKBONE — every plan must have visible activity. Two consecutive \`dwell\` steps (with no scroll/click/type/key/goto/back between them) reads as the agent freezing. NEVER plan dwell→dwell→… in sequence. For a "browse / read / look at" intent over N seconds, aim for roughly one motion step (scroll/click/type/goto) per 2-4 seconds of budget. A 15-second plan with only 1 scroll and 4 dwells is the failure mode the judge calls out as "the recording sits idle".
@@ -139,6 +129,19 @@ export function buildReconUserText(input: ReconInput, snapshot: string): string 
        ...input.priorAttemptDrops.map((d) => `  - ${d}`),
        'Treat those targets as NOT REACHABLE from this page. Re-plan the FULL recording WITHOUT them: either reach the same outcome a different way (different ref / a scroll first / a `goto` if the URL is known and same-host), OR honestly drop that part of the intent and fill the budget with natural browsing of what IS in the tree. Do NOT re-emit the same descriptions — they will fail again.'].join('\n')
     : '';
+  // Reconverge-on-overbudget (plan Y). B has computed the true cost of the
+  // previous draft; A doesn't need to (and historically couldn't reliably) do
+  // the arithmetic. We give A the actual gap and ask for fewer steps. No
+  // hardcoded threshold here — `actualMs`/`budgetMs` are the numbers and A
+  // judges what to drop.
+  const overbudget = input.priorAttemptOverBudgetMs
+    ? (() => {
+        const { actualMs, budgetMs } = input.priorAttemptOverBudgetMs;
+        const overMs = Math.max(0, actualMs - budgetMs);
+        return ['', `RE-PLAN — your previous plan would actually take ${actualMs}ms to play. The budget is ${budgetMs}ms. That is ${overMs}ms too long. The recorder's deterministic cost model is the source of truth — your own arithmetic is not.`,
+                'Drop steps until the plan fits the budget. Concrete moves: cut a `click → dwell → back` drill-and-return (≈ 4 s), drop a redundant scroll, or shorten a long reading dwell. Do not just shrink dwells uniformly — the corrector will do that and the result reads as robotic. Re-emit the FULL plan, not a delta.'].join('\n');
+      })()
+    : '';
   // Page-size signal. Lets the LLM size the scroll plan against the actual
   // page. Without this, the LLM blindly plans 600px scrolls on a 200-px-tall
   // page → no-op scrolls → dead air (2026-05-15 HN finding). Reported as raw
@@ -159,6 +162,7 @@ export function buildReconUserText(input: ReconInput, snapshot: string): string 
     `Time budget (ms): ${input.durationMs}`,
     `Viewport: ${input.viewport.width}x${input.viewport.height}`,
     pageSize,
+    overbudget,
     prior,
     drops,
     '',
