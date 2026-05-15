@@ -30,5 +30,5 @@
  */
 
 export { recordingJudgeSystemPrompt, buildRecordingJudgeUserText } from './recording-judge.js';
-export { reconnoitererSystemPrompt, buildReconUserText, buildReconvergeUserText } from './reconnoiterer.js';
+export { reconnoitererSystemPrompt, buildReconUserText, buildReconvergeUserText, buildOverbudgetEditUserText } from './reconnoiterer.js';
 export { blockerDismisserSystemPrompt, buildBlockerDismissUserText } from './blocker-dismisser.js';

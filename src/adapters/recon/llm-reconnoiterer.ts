@@ -11,13 +11,14 @@ import {
   type RehearsalTrace,
 } from '../../domain/performance.js';
 import {
+  OverbudgetEditSchema,
   ReconDraftSchema,
   ReconvergeDraftSchema,
   type ReconDraftStep,
 } from '../../domain/recon-draft.js';
 import { config } from '../../infra/config.js';
 import { logger as rootLogger } from '../../infra/logger.js';
-import { buildReconUserText, buildReconvergeUserText, reconnoitererSystemPrompt } from '../../prompts/index.js';
+import { buildOverbudgetEditUserText, buildReconUserText, buildReconvergeUserText, reconnoitererSystemPrompt } from '../../prompts/index.js';
 import type { IPageSession } from '../../ports/page-session.js';
 import { ARIA_SNAPSHOT_TRUNCATION_MARKER } from '../../ports/page-session.js';
 import type { IReconnoiterer, ReconInput } from '../../ports/reconnoiterer.js';
@@ -307,73 +308,84 @@ export class LlmReconnoiterer implements IReconnoiterer {
 
     // Plan Y (2026-05-15): reconverge-on-overbudget. B computes the
     // deterministic cost of the walked plan; if it overshoots the budget by
-    // more than the tolerance, give A ONE retry with the actual gap. A no
-    // longer self-reports cost — the runner does, and tells A the truth.
-    // Independent of the §0042 reconverge-on-drop and the rehearsal walk's
-    // mid-step reconverge. Gated after the walk (not before) because the
-    // walk's divergence-driven adjustments can grow the plan — that's the
-    // cost we actually need to gate against.
+    // more than the tolerance, give A ONE retry with the actual gap.
     //
-    // We do NOT walk the reconverged plan a second time: the reconverge is
-    // asked to drop steps from an already-walked plan, so most of the new
-    // plan is a subset of validated steps. The Director's graceful-degrade
-    // handles any residual divergence on-camera.
+    // Slim variant (2026-05-15): A doesn't re-plan — A returns just the
+    // indices to drop. No aria tree, no screenshot, response is ~30 tokens
+    // instead of ~1000. Total LLM call ~2-3 s vs ~10-15 s for the full
+    // re-plan variant. The full re-plan was overkill because at this point
+    // A doesn't need to re-pick targets, just shed steps.
     //
     // GATE — only "are we over budget" and "is this not already a retry".
     // A truncated tree is NOT a gate here (unlike §0042 reconverge-on-drop):
-    // overbudget asks A to drop steps from the SAME tree it just planned
-    // against — truncation didn't cause the overshoot, the planner's
-    // step-count choice did. The 2026-05-15 HN run had a truncated tree and
-    // a 2× overshoot; gating on truncation kept the dwell-crush failure
-    // mode alive.
+    // overbudget asks A to drop steps from a plan it already produced;
+    // truncation didn't cause the overshoot, the step-count choice did.
     const TOL = config.planDurationFitToleranceRatio;
     const walkedCostMs = sumDurations(finalSteps);
     if (
       config.reconReconvergeOnOverbudget
-      && !input.priorAttemptOverBudgetMs
       && walkedCostMs > Math.round(input.durationMs * (1 + TOL))
     ) {
-      this.logger.info({ walkedCostMs, budgetMs: input.durationMs, ratio: +(walkedCostMs / input.durationMs).toFixed(2) }, 'plan over budget — reconverging on overbudget');
+      this.logger.info({ walkedCostMs, budgetMs: input.durationMs, ratio: +(walkedCostMs / input.durationMs).toFixed(2) }, 'plan over budget — reconverging on overbudget (slim)');
       try {
-        const snapshot3 = await session.ariaSnapshot();
-        const treeTruncated3 = snapshot3.includes(ARIA_SNAPSHOT_TRUNCATION_MARKER);
-        const pageScrollableHeight3 = await session.scrollableHeight().catch(() => pageScrollableHeight);
-        const userText3 = buildReconUserText({
-          ...input,
-          pageScrollableHeight: pageScrollableHeight3,
-          priorAttemptOverBudgetMs: { actualMs: walkedCostMs, budgetMs: input.durationMs },
-        }, snapshot3);
-        const userContent3: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: 'text', text: userText3 }];
-        if (input.screenshot && input.screenshot.length > 0) {
-          userContent3.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${input.screenshot.toString('base64')}` } });
-        }
-        const draftRaw3 = await this.callReconLlm(
+        const userText3 = buildOverbudgetEditUserText({
+          intent: input.prompt,
+          budgetMs: input.durationMs,
+          actualMs: walkedCostMs,
+          previousSteps: finalSteps,
+        });
+        const editRaw = await this.callReconLlm(
           [
             { role: 'system', content: reconnoitererSystemPrompt },
-            { role: 'user', content: userContent3 },
+            { role: 'user', content: userText3 },
           ],
           { allowRetry: true, usage },
         );
-        const draftParsed3 = ReconDraftSchema.safeParse(draftRaw3);
-        if (!draftParsed3.success) {
-          this.logger.warn({ err: draftParsed3.error.message.slice(0, 200) }, 'reconverge-on-overbudget draft failed schema — keeping walked plan');
+        const editParsed = OverbudgetEditSchema.safeParse(editRaw);
+        if (!editParsed.success) {
+          this.logger.warn({ err: editParsed.error.message.slice(0, 200) }, 'reconverge-on-overbudget edit failed schema — keeping walked plan');
         } else {
-          const result3 = await this.resolveDraftSteps(draftParsed3.data.steps, session, input.url);
-          const newCostMs = sumDurations(result3.steps);
-          // Take the new plan only if it's actually shorter and resolves to
-          // a usable set of steps. A occasionally returns a plan as long as
-          // (or longer than) the original — in that case the original is no
-          // worse and we save the swap.
-          if (result3.steps.length > 0 && newCostMs < walkedCostMs) {
-            finalSteps = result3.steps;
-            // Merge unresolved targets so nothing gets silently dropped
-            // between attempts (§0042 transparency).
-            unresolved = [...new Set([...unresolved, ...result3.unresolved])];
-            treeTruncated = treeTruncated3;
-            draft = draftParsed3.data;
-            this.logger.info({ newCostMs, oldCostMs: walkedCostMs, gapMs: walkedCostMs - newCostMs }, 'reconverge-on-overbudget produced a shorter plan');
+          // Apply drops deterministically. Filter:
+          //   - 1-based indices in-range
+          //   - dedupe
+          //   - exclude the `done` step (it costs ~0 and signals end)
+          //   - if the resulting set is empty or wipes the only acting step
+          //     that satisfies the prompt, reject — A misread the brief
+          const dropSet = new Set<number>();
+          for (const idx of editParsed.data.dropIndices) {
+            const i = idx - 1;
+            if (i >= 0 && i < finalSteps.length && finalSteps[i]!.kind !== 'done') {
+              dropSet.add(i);
+            }
+          }
+          const editedSteps = finalSteps.filter((_, i) => !dropSet.has(i));
+          const newCostMs = sumDurations(editedSteps);
+          // Two integrity guards on what A is allowed to drop:
+          //   1. If the original plan satisfied the user intent with an acting
+          //      step (click/type/goto), keep at least one — A must not drop
+          //      the only intent-fulfiller.
+          //   2. If the original plan had ANY motion (scroll OR acting),
+          //      the edited plan must keep at least one — a plan of pure
+          //      dwells is a multi-second static stare that breaks goal #1
+          //      (Wiki 2026-05-15: A dropped every scroll on a "slowly read"
+          //      prompt, judge flagged robotic with "static at top of page").
+          const isActing = (s: PerformanceStep) => s.kind === 'click' || s.kind === 'type' || s.kind === 'goto';
+          const isMotion = (s: PerformanceStep) => isActing(s) || s.kind === 'scroll' || s.kind === 'key' || s.kind === 'back';
+          const hadActing = finalSteps.some(isActing);
+          const stillHasActing = editedSteps.some(isActing);
+          const hadMotion = finalSteps.some(isMotion);
+          const stillHasMotion = editedSteps.some(isMotion);
+          if (dropSet.size === 0) {
+            this.logger.warn({ dropIndices: editParsed.data.dropIndices }, 'reconverge-on-overbudget returned no valid drops — keeping walked plan');
+          } else if (hadActing && !stillHasActing) {
+            this.logger.warn({ dropped: [...dropSet] }, 'reconverge-on-overbudget would have dropped every acting step — rejecting; keeping walked plan');
+          } else if (hadMotion && !stillHasMotion) {
+            this.logger.warn({ dropped: [...dropSet] }, 'reconverge-on-overbudget would have left a plan of pure dwells — rejecting; keeping walked plan');
+          } else if (newCostMs >= walkedCostMs) {
+            this.logger.warn({ newCostMs, oldCostMs: walkedCostMs }, 'reconverge-on-overbudget drops did not shrink the plan — keeping walked plan');
           } else {
-            this.logger.warn({ newCostMs, oldCostMs: walkedCostMs, newStepCount: result3.steps.length }, 'reconverge-on-overbudget did not shrink the plan — keeping walked plan');
+            finalSteps = editedSteps;
+            this.logger.info({ newCostMs, oldCostMs: walkedCostMs, gapMs: walkedCostMs - newCostMs, dropped: [...dropSet], rationale: editParsed.data.rationale }, 'reconverge-on-overbudget shrunk the plan');
           }
         }
       } catch (err) {

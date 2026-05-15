@@ -141,67 +141,59 @@ describe('LlmReconnoiterer', () => {
       .rejects.toBeInstanceOf(ReconError);
   });
 
-  describe('reconverge-on-overbudget (plan Y, 2026-05-15)', () => {
+  describe('reconverge-on-overbudget — slim variant (plan Y, 2026-05-15)', () => {
     // Pure scroll+dwell plans — no clicks, so the rehearsal walk's divergence
     // checks don't fire (the walk verifies clicks against page changes; the
-    // fake session can't simulate navigation cleanly enough to test the
-    // overbudget branch in isolation otherwise).
+    // fake session can't simulate navigation cleanly enough to isolate the
+    // overbudget branch otherwise).
     //
     // budget 5000ms; threshold = 5000 * (1 + 0.20) = 6000ms.
-    // Draft 1 costs ~9300ms — way over → reconverge fires.
+    // The initial draft below costs ~9300ms — way over → overbudget reconverge fires.
     const overbudgetDraftJson = JSON.stringify({
       prompt: 'browse',
       durationMs: 5000,
       steps: [
-        { kind: 'dwell', durationMs: 800, reasoning: 'land' },
-        { kind: 'scroll', deltaPx: 600, durationMs: 1500, dwellAfterMs: 200, easing: 'inOutQuad', reasoning: 'down' },
-        { kind: 'dwell', durationMs: 2500, reasoning: 'read' },
-        { kind: 'scroll', deltaPx: 500, durationMs: 1200, dwellAfterMs: 200, easing: 'inOutQuad', reasoning: 'down again' },
-        { kind: 'dwell', durationMs: 1500, reasoning: 'read more' },
-        { kind: 'done', reasoning: 'fin' },
+        { kind: 'dwell', durationMs: 800, reasoning: 'land' },                                                          // s1: 1080
+        { kind: 'scroll', deltaPx: 600, durationMs: 1500, dwellAfterMs: 200, easing: 'inOutQuad', reasoning: 'down' },   // s2: 1980
+        { kind: 'dwell', durationMs: 2500, reasoning: 'read' },                                                          // s3: 2780
+        { kind: 'scroll', deltaPx: 500, durationMs: 1200, dwellAfterMs: 200, easing: 'inOutQuad', reasoning: 'down again' }, // s4: 1680
+        { kind: 'dwell', durationMs: 1500, reasoning: 'read more' },                                                     // s5: 1780
+        { kind: 'done', reasoning: 'fin' },                                                                              // s6: 0
       ],
       rationale: 'over budget on purpose',
     });
-    // Draft 2 costs ~5840ms — still slightly over but SHORTER. The runner
-    // takes the new plan only when it's shorter; fitPlanToBudget handles
-    // any residual overshoot.
-    const shorterDraftJson = JSON.stringify({
-      prompt: 'browse',
-      durationMs: 5000,
-      steps: [
-        { kind: 'dwell', durationMs: 800, reasoning: 'land' },
-        { kind: 'scroll', deltaPx: 600, durationMs: 1500, dwellAfterMs: 200, easing: 'inOutQuad', reasoning: 'down' },
-        { kind: 'dwell', durationMs: 2500, reasoning: 'read' },
-        { kind: 'done', reasoning: 'fin' },
-      ],
-      rationale: 'dropped the second scroll+dwell to fit',
-    });
+    // The slim variant returns just the indices to drop — no full re-plan.
+    // Dropping steps 4 and 5 (~3460ms saved) brings cost ~9300 → ~5840.
+    const dropTailJson = JSON.stringify({ dropIndices: [4, 5], rationale: 'cut the second scroll+dwell' });
+    // An empty/invalid drop set means A didn't help — keep the walked plan.
+    const dropNoneJson = JSON.stringify({ dropIndices: [], rationale: 'no clear cuts' });
+    // Out-of-range indices are filtered server-side — same as no drops.
+    const dropOutOfRangeJson = JSON.stringify({ dropIndices: [99, 100], rationale: 'tried to drop nonexistent steps' });
 
-    it('fires a second recon call when the walked plan overshoots the budget, and uses the new plan if it is shorter', async () => {
+    it('fires a slim reconverge call when the walked plan overshoots, and applies valid drops', async () => {
       const session = new FakePageSession();
       session.url = 'https://site.test/';
       session.ariaSnapshotResult = '- main [ref=e1]';
-      const { client, create } = sequencedClient(overbudgetDraftJson, shorterDraftJson);
+      const { client, create } = sequencedClient(overbudgetDraftJson, dropTailJson);
       const recon = new LlmReconnoiterer({ model: 'test/model', client });
       const perf = await recon.recon(
         { url: 'https://site.test/', prompt: 'browse', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
         session,
       );
-      // The overshoot triggered a second LLM call.
+      // The overshoot triggered a second LLM call (the slim edit).
       expect(create.mock.calls.length).toBe(2);
-      // The second call's user-text contains the actual cost gap (plan Y signal).
+      // The slim user prompt is small: budget + per-step cost listing,
+      // NO aria tree (that's the point of the slim variant).
       const secondUserMsg = create.mock.calls[1]![0].messages.find((m: { role: string }) => m.role === 'user')!;
-      const userText = typeof secondUserMsg.content === 'string'
-        ? secondUserMsg.content
-        : (secondUserMsg.content as Array<{ type: string; text?: string }>).find((p) => p.type === 'text')?.text ?? '';
-      expect(userText).toMatch(/RE-PLAN/);
-      // walked cost in the 9000-9999 range surfaced verbatim
+      const userText = typeof secondUserMsg.content === 'string' ? secondUserMsg.content : '';
+      expect(userText).toMatch(/EDIT THE PLAN/);
+      expect(userText).toMatch(/5000ms/);
       expect(userText).toMatch(/9\d{3}ms/);
-      expect(userText).toMatch(/5000ms/); // budget surfaced verbatim
-      // The shorter draft came through — the final plan has 4 steps
-      // (drafted), not 6 (overbudget). fitPlanToBudget may compress
-      // step durations but never adds/removes steps.
+      expect(userText).not.toMatch(/PAGE ACCESSIBILITY TREE/);
+      expect(userText).not.toMatch(/\[ref=/);
+      // Steps 4 and 5 were dropped → final plan has 4 steps (s1, s2, s3, done).
       expect(perf.steps.length).toBe(4);
+      expect(perf.steps.map((s) => s.kind)).toEqual(['dwell', 'scroll', 'dwell', 'done']);
     });
 
     it('does NOT fire when the walked plan fits the budget (no needless reconverge call)', async () => {
@@ -225,21 +217,53 @@ describe('LlmReconnoiterer', () => {
       expect(create.mock.calls.length).toBe(1);
     });
 
-    it('keeps the walked plan when the reconverge LLM returns a plan that is not shorter (no infinite shrinking)', async () => {
+    it('keeps the walked plan when A returns no valid drops (empty array)', async () => {
       const session = new FakePageSession();
       session.ariaSnapshotResult = '- main [ref=e1]';
-      // Both calls return the same overbudget draft → reconverge tried, no win.
-      const { client, create } = sequencedClient(overbudgetDraftJson, overbudgetDraftJson);
+      const { client, create } = sequencedClient(overbudgetDraftJson, dropNoneJson);
       const recon = new LlmReconnoiterer({ model: 'test/model', client });
       const perf = await recon.recon(
         { url: 'u', prompt: 'browse', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
         session,
       );
       expect(create.mock.calls.length).toBe(2);
-      // Walked plan (the original 6 steps) is kept — reconverge was tried,
-      // didn't shrink, so the original survives. fitPlanToBudget compresses
-      // the durations but step count is preserved.
+      // Walked plan (6 steps) is kept — reconverge was tried, no valid drops.
       expect(perf.steps.length).toBe(6);
+    });
+
+    it('rejects a drop set that would leave a plan of pure dwells (Wiki 2026-05-15 fix)', async () => {
+      // A returns drops that would remove both scroll steps from the
+      // overbudget plan — that leaves only dwells + done, which renders as
+      // a static stare. The guard rejects and keeps the walked plan.
+      const dropAllMotionJson = JSON.stringify({
+        dropIndices: [2, 4], // both scroll steps in overbudgetDraftJson
+        rationale: 'cut all the scrolls',
+      });
+      const session = new FakePageSession();
+      session.ariaSnapshotResult = '- main [ref=e1]';
+      const { client, create } = sequencedClient(overbudgetDraftJson, dropAllMotionJson);
+      const recon = new LlmReconnoiterer({ model: 'test/model', client });
+      const perf = await recon.recon(
+        { url: 'u', prompt: 'slowly read down the page', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
+        session,
+      );
+      expect(create.mock.calls.length).toBe(2);
+      // Walked plan preserved — A's drop would have killed all motion.
+      expect(perf.steps.length).toBe(6);
+      expect(perf.steps.some((s) => s.kind === 'scroll')).toBe(true);
+    });
+
+    it('filters out-of-range indices and treats the result as "no drops"', async () => {
+      const session = new FakePageSession();
+      session.ariaSnapshotResult = '- main [ref=e1]';
+      const { client, create } = sequencedClient(overbudgetDraftJson, dropOutOfRangeJson);
+      const recon = new LlmReconnoiterer({ model: 'test/model', client });
+      const perf = await recon.recon(
+        { url: 'u', prompt: 'browse', durationMs: 5000, viewport: { width: 1280, height: 720 }, screenshot: null },
+        session,
+      );
+      expect(create.mock.calls.length).toBe(2);
+      expect(perf.steps.length).toBe(6); // unchanged
     });
   });
 

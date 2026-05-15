@@ -129,19 +129,6 @@ export function buildReconUserText(input: ReconInput, snapshot: string): string 
        ...input.priorAttemptDrops.map((d) => `  - ${d}`),
        'Treat those targets as NOT REACHABLE from this page. Re-plan the FULL recording WITHOUT them: either reach the same outcome a different way (different ref / a scroll first / a `goto` if the URL is known and same-host), OR honestly drop that part of the intent and fill the budget with natural browsing of what IS in the tree. Do NOT re-emit the same descriptions — they will fail again.'].join('\n')
     : '';
-  // Reconverge-on-overbudget (plan Y). B has computed the true cost of the
-  // previous draft; A doesn't need to (and historically couldn't reliably) do
-  // the arithmetic. We give A the actual gap and ask for fewer steps. No
-  // hardcoded threshold here — `actualMs`/`budgetMs` are the numbers and A
-  // judges what to drop.
-  const overbudget = input.priorAttemptOverBudgetMs
-    ? (() => {
-        const { actualMs, budgetMs } = input.priorAttemptOverBudgetMs;
-        const overMs = Math.max(0, actualMs - budgetMs);
-        return ['', `RE-PLAN — your previous plan would actually take ${actualMs}ms to play. The budget is ${budgetMs}ms. That is ${overMs}ms too long. The recorder's deterministic cost model is the source of truth — your own arithmetic is not.`,
-                'Drop steps until the plan fits the budget. Concrete moves: cut a `click → dwell → back` drill-and-return (≈ 4 s), drop a redundant scroll, or shorten a long reading dwell. Do not just shrink dwells uniformly — the corrector will do that and the result reads as robotic. Re-emit the FULL plan, not a delta.'].join('\n');
-      })()
-    : '';
   // Page-size signal. Lets the LLM size the scroll plan against the actual
   // page. Without this, the LLM blindly plans 600px scrolls on a 200-px-tall
   // page → no-op scrolls → dead air (2026-05-15 HN finding). Reported as raw
@@ -162,7 +149,6 @@ export function buildReconUserText(input: ReconInput, snapshot: string): string 
     `Time budget (ms): ${input.durationMs}`,
     `Viewport: ${input.viewport.width}x${input.viewport.height}`,
     pageSize,
-    overbudget,
     prior,
     drops,
     '',
@@ -210,5 +196,100 @@ export function buildReconvergeUserText(args: {
     `IMPORTANT — the failed step's GOAL still matters: the action did not work AS DESCRIBED, but if it was the thing the task asks for (e.g. clicking a particular link), DON'T abandon that outcome. What you must not do is blindly re-issue the EXACT same action on the EXACT same node and hope. Instead reach the same outcome a DIFFERENT way: pick a DIFFERENT, more specific node (a different \`ref\`) than the one that failed, or \`scroll\` first to bring the right node fully into view and then act on it, or \`dwell\` so late-loading content appears and then act. Only if the goal genuinely cannot be reached from this page should you move on to whatever else the task asks for and fill the remaining time with that.`,
     `HARD CHECK before you emit: if the original task asked you to click / open / go to something (a link, a button, a page), your "steps" array MUST still contain a \`click\` (or \`key\`) step that does it — re-pointed at a different \`ref\` or preceded by a \`scroll\`. A reconverged plan that is all scroll/dwell with no attempt at the requested click is WRONG; fix it. Re-read "Original task" above and check.`,
     `Respond with ONLY that JSON object — no prose, no markdown, nothing before or after it. If a node isn't in the tree right now, plan a scroll toward the nearest one rather than narrating.`,
+  ].join('\n');
+}
+
+/**
+ * Plan Y slim reconverge (2026-05-15). When the walked plan overshoots
+ * the budget, A doesn't need to re-plan from scratch — A just names which
+ * steps to drop. We don't re-send the aria tree (A isn't re-picking
+ * targets) or the screenshot. Response is a tiny `{ dropIndices: [...] }`.
+ *
+ * Why this exists: the original Y reconverge reused `buildReconUserText`
+ * which re-sent the full aria tree (~10-20 k tokens) and asked for a full
+ * `ReconDraft` response (~1000 tokens). Total LLM call ~10-15 s, almost
+ * all of it output generation. This slim variant brings the call down to
+ * ~2-3 s by shrinking the output to a handful of integers.
+ *
+ * Constraints encoded in the prompt: A may only DROP steps (not add or
+ * swap), and must keep the user-intent-satisfying acting step if any.
+ * The runner filters out-of-range indices server-side; A's job is just
+ * to nominate.
+ */
+export function buildOverbudgetEditUserText(args: {
+  intent: string;
+  budgetMs: number;
+  actualMs: number;
+  previousSteps: PerformanceStep[];
+}): string {
+  const { intent, budgetMs, actualMs, previousSteps } = args;
+  const overByMs = Math.max(0, actualMs - budgetMs);
+  const targetMs = budgetMs;
+  // Render each step as a one-line "N. <kind> <gist> (cost ~Xms)". The
+  // costs match `sumDurations` so A can mentally subtract them and pick
+  // a set that drops at least `overByMs` total.
+  const lines: string[] = [];
+  previousSteps.forEach((s, i) => {
+    const n = i + 1;
+    let label = '';
+    let cost = 0;
+    const overhead = s.kind === 'done' ? 0 : 280;
+    switch (s.kind) {
+      case 'dwell':
+        label = `dwell ${s.durationMs}ms — ${s.reasoning}`;
+        cost = s.durationMs + overhead;
+        break;
+      case 'scroll':
+        label = `scroll ${s.deltaPx}px in ${s.durationMs}ms — ${s.reasoning}`;
+        cost = s.durationMs + s.dwellAfterMs + overhead;
+        break;
+      case 'click':
+        label = `click "${s.target.description}" — ${s.reasoning}`;
+        cost = s.anticipationMs + 1500 + overhead;
+        break;
+      case 'type':
+        label = `type "${s.text.slice(0, 40)}${s.text.length > 40 ? '…' : ''}" — ${s.reasoning}`;
+        cost = s.preMs + s.text.length * s.keystrokeMs + overhead;
+        break;
+      case 'key':
+        label = `key ${s.key} — ${s.reasoning}`;
+        cost = 1500 + overhead;
+        break;
+      case 'back':
+        label = `back — ${s.reasoning}`;
+        cost = 1500 + overhead;
+        break;
+      case 'goto':
+        label = `goto ${s.url} — ${s.reasoning}`;
+        cost = s.anticipationMs + 1500 + overhead;
+        break;
+      case 'done':
+        label = `done — ${s.reasoning}`;
+        cost = 0;
+        break;
+    }
+    lines.push(`  ${n}. ${label} (cost ~${cost}ms)`);
+  });
+  return [
+    'EDIT THE PLAN — over budget.',
+    `User intent: ${intent}`,
+    `Budget: ${budgetMs}ms.  Walked plan would actually take ${actualMs}ms — that is ${overByMs}ms too long.`,
+    'The runner computed each cost above using its deterministic model — those costs are the ground truth.',
+    '',
+    'Previous plan:',
+    ...lines,
+    '',
+    `Drop one or more step indices (1-based) so the remaining plan fits ${targetMs}ms (after subtracting the dropped costs). Prefer:`,
+    '  - cutting a drill-and-return: \`click → dwell → back\` is a ~6-second saving',
+    '  - dropping a redundant scroll or a short bridging dwell',
+    '',
+    'DO NOT drop the LAST acting step that satisfies the user intent (e.g. if the user said "click the X link" do not drop the click on X — drop something else). DO NOT drop every motion step (scroll/click/type) at once — a plan of pure dwells is a static stare and the recording reads as motionless. For a read/browse intent at least one scroll MUST remain. DO NOT drop the `done` step (it costs ~0ms anyway).',
+    '',
+    'Output JSON only:',
+    '{',
+    '  "dropIndices": [<positive integer step numbers, e.g. 4 and 5>],',
+    '  "rationale": "<one short sentence — why these and which intent step you preserved>"',
+    '}',
+    'No prose, no markdown, nothing else.',
   ].join('\n');
 }

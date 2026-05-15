@@ -100,3 +100,20 @@ export const ReconvergeDraftSchema = z.object({
   steps: z.array(ReconDraftStepSchema).min(1),
 });
 export type ReconvergeDraft = z.infer<typeof ReconvergeDraftSchema>;
+
+/**
+ * Plan Y slim reconverge (2026-05-15): on overbudget, A doesn't re-plan; A
+ * just names which step indices to drop. We don't re-send the aria tree
+ * (A isn't re-picking targets — it's editing a plan it already produced)
+ * and the response is ~30 tokens instead of ~1000. Total reconverge LLM
+ * call drops from ~10-15 s to ~2-3 s.
+ *
+ * Indices are 1-based, matching how the previous plan is rendered to the
+ * user prompt. Out-of-range / duplicate / the implicit `done` step are
+ * filtered server-side — the schema only validates shape.
+ */
+export const OverbudgetEditSchema = z.object({
+  dropIndices: z.array(z.number().int().positive()),
+  rationale: z.string().optional(),
+});
+export type OverbudgetEdit = z.infer<typeof OverbudgetEditSchema>;

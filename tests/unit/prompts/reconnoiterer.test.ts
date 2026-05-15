@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildReconUserText, buildReconvergeUserText, reconnoitererSystemPrompt } from '../../../src/prompts/index.js';
+import { buildOverbudgetEditUserText, buildReconUserText, buildReconvergeUserText, reconnoitererSystemPrompt } from '../../../src/prompts/index.js';
 import type { PerformanceStep } from '../../../src/domain/performance.js';
 
 const divergedStep: PerformanceStep = {
@@ -52,28 +52,10 @@ describe('buildReconUserText', () => {
     expect(text.toLowerCase()).toContain('dead air');
   });
 
-  it('renders the priorAttemptOverBudgetMs hint when set (plan Y reconverge feedback)', () => {
-    const text = buildReconUserText(
-      {
-        url: 'https://news.ycombinator.com/',
-        prompt: 'look at top stories',
-        durationMs: 10000,
-        viewport: { width: 1280, height: 720 },
-        screenshot: null,
-        priorAttemptOverBudgetMs: { actualMs: 17400, budgetMs: 10000 },
-      },
-      '- link [ref=e1]',
-    );
-    expect(text).toMatch(/RE-PLAN/);
-    expect(text).toContain('17400ms');
-    expect(text).toContain('10000ms');
-    // A is told this is the runner's truth, not A's
-    expect(text.toLowerCase()).toContain('source of truth');
-    // Concrete moves a person can act on
-    expect(text).toMatch(/drill-and-return|drop|dwell/i);
-  });
-
-  it('omits the priorAttemptOverBudgetMs block when not set', () => {
+  it('does not render an overbudget-replan block in the main builder (handled by the slim builder)', () => {
+    // Sanity: the main user-text builder no longer carries the overbudget
+    // re-plan path (plan Y slim, 2026-05-15). The overbudget reconverge has
+    // its own builder + schema — see `buildOverbudgetEditUserText`.
     const text = buildReconUserText(
       {
         url: 'https://example.com/',
@@ -100,6 +82,62 @@ describe('buildReconUserText', () => {
     );
     expect(text.toLowerCase()).not.toContain('scrollable height');
     expect(text.toLowerCase()).not.toContain('viewport-heights');
+  });
+});
+
+describe('buildOverbudgetEditUserText (plan Y slim, 2026-05-15)', () => {
+  const steps: PerformanceStep[] = [
+    { kind: 'dwell', durationMs: 800, reasoning: 'land' },
+    { kind: 'click', target: { selector: 'a', bbox: { x: 0, y: 0, width: 1, height: 1 }, description: 'the first story' }, anticipationMs: 600, reasoning: 'click into story' },
+    { kind: 'dwell', durationMs: 2500, reasoning: 'read article' },
+    { kind: 'back', reasoning: 'back to list' },
+    { kind: 'dwell', durationMs: 1500, reasoning: 'scan' },
+    { kind: 'done', reasoning: 'fin' },
+  ];
+
+  it('renders the budget gap, lists each step with its computed cost, and asks for index-based drops only', () => {
+    const text = buildOverbudgetEditUserText({
+      intent: 'look at top stories',
+      budgetMs: 10000,
+      actualMs: 17400,
+      previousSteps: steps,
+    });
+    // Surfaces the gap (deterministic, from the runner — not A's arithmetic).
+    expect(text).toContain('10000ms');
+    expect(text).toContain('17400ms');
+    expect(text).toContain('7400ms');
+    // Per-step listing with index and cost — that's A's reference for picking
+    // drops. dwell 800 + overhead 280 = 1080ms; click 600 + 1500 + 280 = 2380.
+    expect(text).toMatch(/1\.\s+dwell 800ms — land \(cost ~1080ms\)/);
+    expect(text).toMatch(/2\.\s+click "the first story"[^()]*\(cost ~2380ms\)/);
+    expect(text).toMatch(/4\.\s+back — back to list \(cost ~1780ms\)/);
+    // Strictly nominate indices to drop — not a full re-plan.
+    expect(text).toMatch(/dropIndices/);
+    expect(text).toMatch(/JSON only/i);
+    // No aria tree, no full-plan re-emit, no rules about ref-picking.
+    expect(text).not.toMatch(/\[ref=/);
+    expect(text).not.toMatch(/PAGE ACCESSIBILITY TREE/);
+  });
+
+  it('protects the last acting step verbally so A does not drop the only intent fulfiller', () => {
+    const text = buildOverbudgetEditUserText({
+      intent: 'click the X link',
+      budgetMs: 5000,
+      actualMs: 9000,
+      previousSteps: steps,
+    });
+    expect(text.toLowerCase()).toMatch(/do not drop the last acting step/);
+  });
+
+  it('always keeps `done` mentioned but at ~0ms cost (it never gets dropped)', () => {
+    const text = buildOverbudgetEditUserText({
+      intent: 'browse',
+      budgetMs: 5000,
+      actualMs: 9000,
+      previousSteps: steps,
+    });
+    expect(text).toMatch(/done — fin \(cost ~0ms\)/);
+    expect(text.toLowerCase()).toContain('do not drop the `done` step');
   });
 });
 
