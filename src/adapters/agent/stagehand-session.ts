@@ -241,46 +241,33 @@ export class StagehandPageSession implements IPageSession {
 
     await mkdir(this.cfg.outputDir, { recursive: true });
 
-    // Step 1: launch the cloakbrowser-patched Chromium via Playwright with
-    // recordVideo + a remote-debugging-port so Stagehand can attach over CDP.
+    // Launch cloakbrowser's stealth Chromium via Playwright with recordVideo
+    // + a remote-debugging-port so Stagehand can attach over CDP.
     //
-    // Bot-detection mitigations (ADR §0044 — full cloakbrowser replacement):
-    //   - cloakbrowser ships a C++-level fingerprint-patched Chromium build
-    //     (canvas / WebGL / WebRTC / audio / fonts / GPU all spoofed at
-    //     compile time, so client-side checks see internally-consistent
-    //     numbers no JS injection can fake). `ensureBinary()` downloads the
-    //     binary on first use (cached at `~/.cloakbrowser`); subsequent runs
-    //     reuse the cache. Network is the only failure mode here.
-    //   - `getDefaultStealthArgs()` is the matching CLI-flag set the patches
-    //     read at startup (timezone, locale, GPU vendor strings, etc.).
-    //   - We tell Playwright to skip its `--enable-automation` and
-    //     `--enable-unsafe-swiftshader` defaults — those would defeat the
-    //     stealth at the runtime/CDP level even though the C++ patches hold.
-    //   - Stagehand attaches over CDP exactly as before; cloakbrowser is
-    //     just a binary swap, no SDK change.
+    // cloakbrowser's C++-patched build handles canvas / WebGL / audio / fonts
+    // / GPU / WebRTC fingerprint spoofing at compile time. We consume only
+    // `ensureBinary()` (executablePath) and `getDefaultStealthArgs()` (the
+    // matching flag set) — Stagehand attaches over CDP identically to a
+    // vanilla launch.
     //
-    // Behavioral humanization (mouse curves / typing pacing / scroll easing)
-    // stays OUR responsibility — naturalness catalog + ADR §0031/§0039 own
-    // the on-camera rendering. cloakbrowser's `humanize` Playwright-wrapper
-    // option is for users not running their own pipeline; we explicitly do
-    // not use cloakbrowser's launchPersistentContext wrapper, only its
-    // binary + flags, so the wrapper option is moot for us.
+    // We deliberately do NOT use cloakbrowser's wrapper API (which has its
+    // own `humanize` option for mouse curves / typing / scroll). Our own
+    // naturalness pipeline (§0031 / §0039 / judge §0030) owns on-camera
+    // rendering.
     //
-    // Optional `storageState` from disk lets the user sign into sites once
-    // (in a separate browser session) and reuse cookies here. Path comes
-    // from STORAGE_STATE_PATH env var. Only loaded if present.
+    // Optional `storageState` (STORAGE_STATE_PATH) preloads cookies/local
+    // storage for sites that need a logged-in start — goals.md non-goal:
+    // we don't manage credentials, only honor pre-prepared session files.
     try {
       this.userDataDir = await mkdtemp(join(tmpdir(), 'web-recorder-'));
-      const [cloakBinaryPath, cloakStealthArgs] = await Promise.all([
-        cloakEnsureBinary().catch((err: unknown) => {
-          throw new SessionStartError(
-            'cloakbrowser binary unavailable — first run downloads ~200MB to ~/.cloakbrowser; ' +
-              'check network or pre-fetch with "npx cloakbrowser install". (ADR §0044)',
-            err,
-          );
-        }),
-        Promise.resolve(cloakDefaultStealthArgs()),
-      ]);
+      const cloakBinaryPath = await cloakEnsureBinary().catch((err: unknown) => {
+        throw new SessionStartError(
+          'cloakbrowser binary unavailable — first run downloads ~150 MB to ~/.cloakbrowser; ' +
+            'check network or pre-fetch with `npm run cloakbrowser:install`.',
+          err,
+        );
+      });
+      const cloakStealthArgs = cloakDefaultStealthArgs();
       // Resolve the device preset: desktop uses the caller's viewport (so e.g.
       // a 1280×720 vs 1920×1080 desktop both work); mobile/tablet inherit the
       // preset's viewport so the device is internally consistent (a Pixel 7 UA
@@ -322,13 +309,6 @@ export class StagehandPageSession implements IPageSession {
           dir: this.cfg.outputDir,
           size: resolvedViewport,
         },
-        // `channel` is intentionally NOT honored here — cloakbrowser provides
-        // its own patched Chromium via `executablePath`. BROWSER_CHANNEL=chrome
-        // would point at system Google Chrome and bypass the stealth patches,
-        // defeating the whole point of ADR §0044. The env var stays read for
-        // smoke-recording.ts (which doesn't go through this adapter); future
-        // sessions wanting plain Chromium back can revert this adapter to its
-        // pre-§0044 form.
         // Optional persistent login state. The storage-state file is
         // produced offline by `npx playwright codegen --save-storage=...`
         // (or any other Playwright session). We do NOT manage credentials

@@ -120,23 +120,9 @@ Each entry: **context · options · choice · rationale · consequences**. Appen
 
 ---
 
-## 0007 · Browser binary: `BROWSER_CHANNEL` env var (default = bundled Chromium)
+## 0007 · ~~Browser binary: `BROWSER_CHANNEL` env var~~ (SUPERSEDED — removed 2026-05-15)
 
-**Date**: project inception (post-investigation)
-
-**Context**: Playwright's bundled Chromium download from `cdn.playwright.dev` failed mid-stream twice during dev setup on this machine. Need a robust path that does not block the prototype on flaky downloads.
-
-**Choice**: Add a `BROWSER_CHANNEL` env var (validated by `src/infra/config.ts`). When unset, Playwright uses its bundled Chromium (the reproducible default). When set to `chrome`, Playwright launches the system Google Chrome instead.
-
-**Rationale**:
-- Bundled Chromium is the right default for production: pinned version, deterministic across machines, no dependency on a user's installed browser.
-- System Chrome is the right escape hatch for dev when the bundled download is broken or slow on the user's network.
-- Using a flag (vs. silently falling back) keeps the choice explicit and reproducible.
-
-**Consequences**:
-- Server deployment / CI must run `npx playwright install chromium` and leave `BROWSER_CHANNEL` unset.
-- macOS dev machines without a clean bundled install can `BROWSER_CHANNEL=chrome` to unblock.
-- The `IPageSession` adapter is unaware of which channel — it only reads `config.browserChannel`. Switching channels does not change the action log or recording behavior.
+The Chromium binary choice is no longer configurable. `StagehandPageSession` always launches the cloakbrowser-patched build via `cloakbrowser.ensureBinary()` (see `package.json` + the adapter's launch path). Pre-fetch with `npm run cloakbrowser:install`. The `BROWSER_CHANNEL` env var and `config.browserChannel` field are gone.
 
 ---
 
@@ -1508,65 +1494,7 @@ Requirements (5) and (6) collide with the current recording stack. Playwright's 
 
 **Preserves**: §0034 (Director / re-plan checkpoint), §0036/§0038 (recon target resolution), §0040 (plan-duration fit), §0042 (graceful `unmet` contract). Port surfaces are the same plus one new port (`IUrlResolver`); no existing port broke.
 
-**Addendum (same day, design conversation)**: added a `device: 'desktop' | 'mobile' | 'tablet'` parameter (default `desktop`). Maps to Playwright `devices[…]` presets — `Desktop Chrome` / `Pixel 7` / `Galaxy Tab S9`, all chromium-native so the engine matches the UA. Spread into `chromium.launchPersistentContext`, so UA + isMobile + hasTouch + deviceScaleFactor (and viewport, for non-desktop) come from Playwright's auto-maintained table. Removed the hand-pasted macOS Chrome 134 UA constant — staleness was a memory item (no hardcoded heuristic logic). The deeper browser-fingerprint surface (canvas/WebGL/permissions/plugins) is handled by §0044 (cloakbrowser).
-
----
-
-## 0044 · cloakbrowser: full replacement of vanilla Chromium for the stealth layer
-
-**Date**: 2026-05-15
-
-**Context**: §0042 classified anti-bot walls (Cloudflare / login walls / FingerprintJS) as graceful-`unmet` territory — not a bug, just outside what vanilla Chromium can record. §0043 added the `device` parameter (UA + viewport + touch) for sites that serve different HTML for mobile, but that's surface-level; it doesn't help against canvas/WebGL/audio/font/GPU fingerprinters that infer "this is automation" from intrinsic browser-build values no JS injection can fully fake. The 2026-05-15 conversation surfaced [CloakBrowser](https://github.com/CloakHQ/cloakbrowser) — a custom-compiled Chromium binary with 49+ C++-level patches that spoof exactly those values at build time. Drop-in for Playwright via `executablePath` + a matching stealth-args array. Decision: stop classifying anti-bot walls as out-of-reach; use cloakbrowser as the default (and only) recording engine.
-
-**Options considered**:
-
-(A) Keep vanilla Playwright Chromium; reaffirm §0042 graceful-`unmet`. Zero new risk, but real content sites (Twitter feed without login, Cloudflare-fronted news, even some recipe blogs with anti-scraping) stay `unmet`. The "transparent unmet" is honest but unsatisfying when the user actually wants the recording.
-
-(B) Add cloakbrowser as an optional feature behind `CLOAKBROWSER_ENABLED=true`. Lowest blast radius but doubles the testing matrix and effectively keeps the §0042 honest-unmet path live for the default-off case.
-
-(C) **Replace vanilla Chromium entirely with cloakbrowser**: every recording goes through the patched binary. One path, no flag, no fallback. Picked (C).
-
-**Choice**:
-
-1. **Adapter swap, single call site**. `StagehandPageSession.start()` calls `cloakbrowser.ensureBinary()` to resolve the binary path, then passes it to Playwright's `chromium.launchPersistentContext({ executablePath, ignoreDefaultArgs, args: [...stealthArgs, ...ours], ...preset })`. Stagehand attaches over CDP exactly as before — cloakbrowser is just a binary swap, no SDK change.
-
-2. **Stealth = C++ layer; humanization = ours**. cloakbrowser's TypeScript wrapper exposes a `humanize: true` option (Bezier mouse curves, realistic typing, smooth scrolling) — we do NOT use that. We only consume `ensureBinary()` + `getDefaultStealthArgs()` and call Playwright's `launchPersistentContext` directly, so the humanize wrapper is never reached. Our naturalness pipeline (§0031 typing/scroll-tail, §0039 dwell soft-align, §0030 vision judge) is the on-camera renderer. The two layers don't fight because cloakbrowser's humanize is opt-in via a wrapper option we never set.
-
-3. **`device` parameter (§0043) still applies**. The Playwright preset (`Desktop Chrome` / `Pixel 7` / `Galaxy Tab S9`) is spread into the launch options *before* cloakbrowser's `executablePath` + stealth args. UA / viewport / isMobile / hasTouch come from the preset; intrinsic build values (canvas / WebGL / fonts / GPU) come from cloakbrowser's C++ patches. Verified at smoke time: `navigator.webdriver === false`, UA from the `Desktop Chrome` preset, no `HeadlessChrome` substring, page loads cleanly.
-
-4. **No fallback**. There is no `CLOAKBROWSER_ENABLED=false` escape hatch. If `ensureBinary()` throws (no network on first run / corrupted cache / cloakbrowser registry down), the session fails fast with `SessionStartError` and an actionable message pointing at `npx cloakbrowser install`. The runner surfaces it as a `SESSION_START_FAILED` job; no silent degradation.
-
-5. **`BROWSER_CHANNEL` env var becomes a no-op for this adapter**. Pointing Playwright at system Chrome would bypass cloakbrowser's patches and defeat the whole point. The env var is still read by `scripts/smoke-recording.ts` (a different code path that intentionally uses vanilla Chromium to verify the recording pipeline alone).
-
-**Operational realities** (encountered during the smoke-in test, 2026-05-15):
-
-- **First-run download is flaky**. The 151MB tarball (`darwin-x64`) crashed at 69% on the first `npx cloakbrowser install` with `ERR_STREAM_DESTROYED` from the tar pipe — and succeeded on a clean retry. The downloader doesn't auto-retry. Operators should expect at-most-one retry on a fresh machine. (Could be transient cloakbrowser CDN behavior; flagging it here so a future reader sees this and doesn't think the integration is broken.)
-- **Cache size**: ~151MB per platform under `~/.cloakbrowser/chromium-<version>/`. Survives between sessions.
-- **Auto-update**: `CLOAKBROWSER_AUTO_UPDATE=true` by default. Background check on every launch. Disable in CI to avoid surprise downloads.
-- **CI / Docker**: pre-fetch in image build with `npx cloakbrowser install` (now a `npm run cloakbrowser:install` script) and pin the cache directory via `CLOAKBROWSER_CACHE_DIR` if running multi-tenant. `CLOAKBROWSER_BINARY_PATH=/path/to/chrome` is the escape hatch if you ever need vanilla Chromium back (smoke-recording style).
-- **License**: wrapper is MIT, binary is "free to use, no redistribution" per `BINARY-LICENSE.md`. We install + run from end-user machines; we do not bundle the binary into anything we ship. Fine for our usage.
-- **Supply chain**: third-party-compiled Chromium. SHA-256 checksum verification is on by default; we don't disable it.
-
-**Rationale**: §0042 said "we don't fight anti-bot walls"; this ADR is the moment that decision becomes "because we don't *have to* — the lower-level stealth handles it." Three reasons (C) over (B):
-
-- Two paths means two test matrices forever — and we'd never know which one a recording was using without checking config.
-- A flag implies the default is "the safer one" — but in this case the cloakbrowser path is strictly more capable (more sites recordable), so flagging it as opt-in is backwards.
-- The cost (binary download, 3rd-party supply chain) is paid once per install, not per recording. Amortized over a deployment's lifetime it's trivial; the per-job code path is faster (no `--disable-blink-features=AutomationControlled`, the patches handle it).
-
-**Consequences**:
-
-- `package.json` gains `cloakbrowser` as a runtime dependency + `npm run cloakbrowser:install` script.
-- `StagehandPageSession.start()` calls `ensureBinary()` before `launchPersistentContext`. If the binary isn't cached, this adds ~30 s to the first session of a process; subsequent sessions reuse the cache (~50 ms).
-- The `--disable-blink-features=AutomationControlled` flag we used to pass is gone — cloakbrowser's patches cover that and more.
-- `BROWSER_CHANNEL` env var no longer affects this adapter (still affects `smoke-recording.ts`).
-- §0042's "unmet is success" contract still stands, but the bar moves: a wall that's specifically `navigator.webdriver`/canvas/WebGL-gated is now recordable, so calling such a recording `unmet` would be a regression to fix. Hard walls (real CAPTCHA, login required, geofenced content) stay graceful-`unmet`.
-- run.json gains a structured log entry recording the cloakbrowser version + platform that ran the session — useful when triaging a "this was recordable yesterday but unmet today" report.
-
-**§0042 v1 contract update** (no schema change): the "honest-graceful-degrade" path is now reserved for sites that are *genuinely* unreachable — login walls, payment walls, geographic restrictions, real human-verify challenges. Sites that previously hit the §0042 path because of *fingerprint detection* are no longer in scope as graceful-unmet; if a current cloakbrowser build can't get through them, that's a real regression.
-
-**Preserves**: §0034 (Director / re-plan checkpoint), §0036/§0038 (recon target resolution), §0040 (plan-duration fit), §0042's "transparent unmet is a success path" (just with a tighter definition of what counts), §0043 (device parameter). Port surfaces unchanged.
-
-**Open question deferred**: cloakbrowser's `humanize` mouse/keyboard/scroll layer overlaps with our own naturalness pipeline. We disabled it by not invoking the wrapper, but the operator follow-up is "if cloakbrowser's humanize is empirically *better* than our own on some axis, do we adopt theirs / replace ours / blend?" Tabled for a separate spike after some real recordings on real sites.
+**Addendum (same day, design conversation)**: added a `device: 'desktop' | 'mobile' | 'tablet'` parameter (default `desktop`). Maps to Playwright `devices[…]` presets — `Desktop Chrome` / `Pixel 7` / `Galaxy Tab S9`, all chromium-native so the engine matches the UA. Spread into `chromium.launchPersistentContext`, so UA + isMobile + hasTouch + deviceScaleFactor (and viewport, for non-desktop) come from Playwright's auto-maintained table. Removed the hand-pasted macOS Chrome 134 UA constant — staleness was a memory item (no hardcoded heuristic logic).
 
 ---
 

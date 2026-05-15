@@ -56,7 +56,7 @@ When a feature seems to need a port broken, **say so explicitly** in the respons
 | Cursor trajectory synth (`ICursorSynthesizer`) | ⏳ |
 | HTTP API v1 (§0043) — Node `http` (zero new deps); REST under `/api/v1/recordings`: POST create (Zod-parsed `{prompt, durationMs, device?, width?, height?, format?, crf?, audio?}`), GET list, GET status, GET `/video`, GET `/run.json`, plus `/health`. **Concurrent execution** (no JobQueue). `audio: true` → 501 NOT_IMPLEMENTED (recorder-rebuild sub-project). Service-mode hard-codes `headless:true`; manual `npm run prototype:stagehand` is headed. Entry: `npm run serve` (`PORT`, default 8787) | ✅ |
 | `device` parameter (desktop / mobile / tablet) — default desktop. Maps to a Playwright `devices[…]` preset (`Desktop Chrome` / `Pixel 7` / `Galaxy Tab S9`) so viewport + UA + isMobile + hasTouch + deviceScaleFactor all come from Playwright's auto-maintained table (no hand-pasted UA strings, goals.md #6). Mobile/tablet inherit the preset's viewport — sites that serve different HTML/CSS for mobile see a real mobile UA + touch at the right viewport. Persisted in `run.json.request.device`. Override per-run via PROTOTYPE_DEVICE / EVAL_DEVICE | ✅ |
-| CloakBrowser stealth Chromium (§0044) — full replacement of vanilla Playwright Chromium. `StagehandPageSession` calls `cloakbrowser.ensureBinary()` for the executable path + `getDefaultStealthArgs()` for the matching flags. 49+ C++-level fingerprint patches (canvas / WebGL / audio / fonts / GPU / WebRTC) so `navigator.webdriver === false` and intrinsic build values look like a real human's Chrome. No fallback — `npm run cloakbrowser:install` to pre-fetch the ~151 MB binary (cached at `~/.cloakbrowser`). cloakbrowser's optional `humanize` wrapper is **not** used; our naturalness pipeline (§0031 / §0039 / judge §0030) owns on-camera rendering | ✅ |
+| CloakBrowser stealth Chromium — replaces vanilla Playwright Chromium. C++-patched build handles canvas / WebGL / audio / fonts / GPU / WebRTC fingerprints; `navigator.webdriver === false`. `npm run cloakbrowser:install` to pre-fetch the ~150 MB binary (cached at `~/.cloakbrowser`); first session of a fresh install runs it implicitly. cloakbrowser's `humanize` wrapper is **not** used — naturalness stays on §0031/§0039 + judge §0030 | ✅ |
 | mp4 default output + clarity via `crf` (§0043) — `trimVideo()` outputs mp4 H.264 + yuv420p + `+faststart` at the request's `crf` (default 18, visually lossless); falls back to webm/VP8 when only Playwright's bundled (VP8-only) ffmpeg is available. System ffmpeg discovery: `FFMPEG_PATH` → `$PATH` → bundled. `brew install ffmpeg` recommended on macOS dev for the mp4 path | ✅ |
 | Audio capture | ⏳ (§0043 follow-up — `IMediaRecorder` port + ffmpeg-based adapter, xvfb+PulseAudio on Linux/Docker, AVFoundation+BlackHole on macOS dev) |
 
@@ -94,7 +94,7 @@ Known remaining recon-plan-quality gap: the recon LLM is **not great at picking 
 npm install
 npm run playwright:install
 npx playwright install ffmpeg     # bundled trim binary
-npm run cloakbrowser:install      # ~151 MB stealth Chromium (§0044, first-run download is occasionally flaky — retry once if it crashes mid-stream)
+npm run cloakbrowser:install      # ~150 MB stealth Chromium (cached at ~/.cloakbrowser; first-run download is occasionally flaky — retry once if it crashes mid-stream)
 
 # Type-check (strict, no emit)
 npm run typecheck
@@ -143,8 +143,6 @@ cp .env.example .env
 # OPENROUTER_API_KEY=sk-or-v1-...
 # (optional) LLM_MODEL=google/gemini-2.5-pro    # any OpenRouter model id
 ```
-
-Local dev tip — if Playwright's bundled Chromium download is flaky, set `BROWSER_CHANNEL=chrome` to use the system Google Chrome ([`docs/decisions.md`](./docs/decisions.md) §0007).
 
 Local dev tip — `npm run prototype:stagehand` is visible by default (`PROTOTYPE_HEADLESS=true` for no window). On a multi-monitor macOS setup, `BROWSER_WINDOW_POSITION="x,y"` places the Chromium window on a specific display (no-op when headless or off-macOS). The browser briefly takes keyboard focus when it launches — that's a macOS behavior for any newly-launched GUI app and there's no clean way around it; just click back to your terminal.
 

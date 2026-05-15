@@ -57,7 +57,6 @@ async function main(): Promise<void> {
     viewport: config.viewport,
     args: ['--remote-debugging-port=0'],
     recordVideo: { dir: outputDir, size: config.viewport },
-    ...(config.browserChannel ? { channel: config.browserChannel } : {}),
   });
 
   try {

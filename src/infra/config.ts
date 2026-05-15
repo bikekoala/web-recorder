@@ -281,16 +281,6 @@ const Schema = z.object({
   }).default({}),
 
   /**
-   * Which Chromium build Playwright should launch. Leave undefined to use
-   * Playwright's bundled Chromium (most reproducible, requires
-   * `npx playwright install chromium`). Set to 'chrome' to use the system
-   * Google Chrome — useful in dev when the bundled download is unavailable.
-   */
-  browserChannel: z
-    .enum(['chromium', 'chrome', 'chrome-beta', 'msedge', 'msedge-beta', 'msedge-dev'])
-    .optional(),
-
-  /**
    * Optional path to a Playwright `storageState.json` file. When set, the
    * browser launches with the cookies + localStorage + sessionStorage from
    * that file pre-loaded — letting recordings start from a "logged-in"
@@ -380,7 +370,6 @@ const raw = {
     width: process.env.VIEWPORT_WIDTH ? Number(process.env.VIEWPORT_WIDTH) : undefined,
     height: process.env.VIEWPORT_HEIGHT ? Number(process.env.VIEWPORT_HEIGHT) : undefined,
   },
-  browserChannel: process.env.BROWSER_CHANNEL,
   storageStatePath: process.env.STORAGE_STATE_PATH,
   browserWindowPosition: process.env.BROWSER_WINDOW_POSITION,
 };
