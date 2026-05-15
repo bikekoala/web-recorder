@@ -530,6 +530,32 @@ describe('fitPlanToBudget — ±20% corrector + structured status (F1)', () => {
     expect(out.fit.targetMs).toBe(10000);
   });
 
+  // ── claimedMs diagnostic — HN dwell-crush investigation, 2026-05-15 ───────
+  it('passes the LLM-claimed totalEstimatedMs through to fit.claimedMs verbatim', () => {
+    // A real failure mode: A reported 10193ms; B's recomputation said 20430ms;
+    // B compressed dwells to unreadable durations. Capturing both sides
+    // separates "A bad at arithmetic" from "A knowingly over-planning".
+    const steps: PerformanceStep[] = [
+      { kind: 'dwell', durationMs: 1000, reasoning: 'absorb' },
+      { kind: 'click', target: { selector: 'a', bbox: { x: 0, y: 0, width: 1, height: 1 }, description: 'a' }, anticipationMs: 800, reasoning: 'tap' },
+      { kind: 'dwell', durationMs: 3000, reasoning: 'read' },
+      { kind: 'done', reasoning: 'fin' },
+    ];
+    const out = fitPlanToBudget(steps, 10000, 10193);
+    expect(out.fit.claimedMs).toBe(10193);
+    // Sanity: estimatedMs is B's recomputation, independent of claimedMs
+    expect(out.fit.estimatedMs).toBeGreaterThan(0);
+  });
+
+  it('omits fit.claimedMs entirely when the caller did not provide one', () => {
+    const steps: PerformanceStep[] = [
+      { kind: 'dwell', durationMs: 1000, reasoning: 'absorb' },
+      { kind: 'done', reasoning: 'fin' },
+    ];
+    const out = fitPlanToBudget(steps, 5000);
+    expect(out.fit.claimedMs).toBeUndefined();
+  });
+
   it('inside-tolerance under-plan (ratio in [0.80, 1.00)) is ok, untouched', () => {
     // Plan estimate ~8.4 s; budget 10 s; ratio 0.84 → inside tolerance → ok, untouched.
     const steps: PerformanceStep[] = [

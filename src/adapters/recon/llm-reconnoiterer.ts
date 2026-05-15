@@ -310,7 +310,7 @@ export class LlmReconnoiterer implements IReconnoiterer {
     // the plan deterministically so it fits the duration the user paid for
     // before we hand it off (goals.md #2). "Fit the recording into the budget"
     // is mechanical — goals.md #6 carve-out.
-    const fitOutcome = fitPlanToBudget(finalSteps, input.durationMs);
+    const fitOutcome = fitPlanToBudget(finalSteps, input.durationMs, draft.totalEstimatedMs);
     finalSteps = fitOutcome.steps;
 
     // What requested intent we couldn't actually plan — surfaced so the metric
@@ -634,6 +634,13 @@ function sumDurations(steps: PerformanceStep[]): number {
 export function fitPlanToBudget(
   steps: PerformanceStep[],
   durationMs: number,
+  /**
+   * Optional: the `totalEstimatedMs` the LLM self-reported in its draft.
+   * Surfaced verbatim on the returned `fit.claimedMs` so we can tell A's
+   * self-estimate apart from B's recomputation. HN dwell-crush investigation —
+   * see {@link PlanDurationFitSchema}.
+   */
+  claimedMs?: number,
 ): { steps: PerformanceStep[]; fit: PlanDurationFit } {
   let fixedMs = 0;       // costs we can't shrink: post-action settle waits + typing speed + per-step overhead
   let controllableMs = 0; // scroll/dwell/anticipation/preMs — the slack we can compress
@@ -690,19 +697,19 @@ export function fitPlanToBudget(
 
   // Out-of-tolerance over: compress (best-effort) + surface as compressed-hard.
   if (ratio > 1 + TOL) {
-    return { steps: compressIfPossible(), fit: { estimatedMs, targetMs: durationMs, ratio, status: 'compressed-hard' } };
+    return { steps: compressIfPossible(), fit: { estimatedMs, targetMs: durationMs, ratio, status: 'compressed-hard', ...(claimedMs !== undefined ? { claimedMs } : {}) } };
   }
 
   // Out-of-tolerance under: surface as underfilled. F1 explicitly forbids B
   // from inventing filler — A owns natural filler (durationMs is now a
   // first-class constraint in the recon prompt). Return steps untouched.
   if (ratio < 1 - TOL) {
-    return { steps, fit: { estimatedMs, targetMs: durationMs, ratio, status: 'underfilled' } };
+    return { steps, fit: { estimatedMs, targetMs: durationMs, ratio, status: 'underfilled', ...(claimedMs !== undefined ? { claimedMs } : {}) } };
   }
 
   // Inside tolerance: still allow a light compress when the plan is slightly
   // over (so C's ±2 s soft-align can land it inside ±10%); never pad.
-  return { steps: compressIfPossible(), fit: { estimatedMs, targetMs: durationMs, ratio, status: 'ok' } };
+  return { steps: compressIfPossible(), fit: { estimatedMs, targetMs: durationMs, ratio, status: 'ok', ...(claimedMs !== undefined ? { claimedMs } : {}) } };
 }
 
 function stripCodeFence(s: string): string {

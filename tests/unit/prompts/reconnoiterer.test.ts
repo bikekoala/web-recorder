@@ -123,6 +123,19 @@ describe('reconnoitererSystemPrompt — F1 DURATION & SCOPE section', () => {
     expect(reconnoitererSystemPrompt).toMatch(/rationale/i);
     expect(reconnoitererSystemPrompt).toMatch(/underfilled/i);
   });
+
+  it('forces explicit per-step arithmetic in `rationale` (HN dwell-crush mitigation, 2026-05-15)', () => {
+    // Mental-math fails on 8-12 step sums — A wrote correct rows but bombed
+    // the final 10-number rollup. The prompt must force pairwise running-total
+    // accumulation so each addition involves only two numbers.
+    expect(reconnoitererSystemPrompt).toMatch(/DO THE ARITHMETIC EXPLICITLY|do not mental-math/i);
+    expect(reconnoitererSystemPrompt).toMatch(/Cost:.*s1.*\+280/);
+    expect(reconnoitererSystemPrompt).toMatch(/Running total/);
+    expect(reconnoitererSystemPrompt).toMatch(/pairwise/i);
+    expect(reconnoitererSystemPrompt).toMatch(/SUM\s*=/);
+    // and the consequence path — drop steps if the sum overshoots
+    expect(reconnoitererSystemPrompt).toMatch(/DROP STEPS|drop steps/);
+  });
 });
 
 describe('reconnoitererSystemPrompt — READING RHYTHM + END-OF-CONTENT (wild-prompts sweep follow-up)', () => {

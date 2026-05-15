@@ -180,6 +180,17 @@ export const PlanDurationFitSchema = z.object({
   targetMs: z.number().int().nonnegative(),
   ratio: z.number(),
   status: z.enum(['ok', 'compressed-hard', 'underfilled']),
+  /**
+   * Diagnostic (HN dwell-crush investigation, 2026-05-15): the `totalEstimatedMs`
+   * the LLM **self-reported in its draft**, captured BEFORE the runner overwrites
+   * it with its own recomputation. Lets us tell apart two failure modes:
+   *  - `claimedMs ≈ estimatedMs` → A is over-planning openly (knows the cost,
+   *    submits anyway). Fix is at the planning-discipline layer.
+   *  - `claimedMs ≪ estimatedMs` → A is bad at the cost arithmetic (forgets
+   *    per-step overhead / settle waits). Fix is in the prompt's cost formula.
+   * Optional — pre-2026-05-15 fixtures + reconverge intermediates omit it.
+   */
+  claimedMs: z.number().int().nonnegative().optional(),
 });
 export type PlanDurationFit = z.infer<typeof PlanDurationFitSchema>;
 
