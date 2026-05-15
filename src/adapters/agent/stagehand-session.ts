@@ -6,6 +6,7 @@ import OpenAI from 'openai';
 
 import { CustomOpenAIClient, Stagehand } from '@browserbasehq/stagehand';
 import { chromium, devices as playwrightDevices, type BrowserContext, type Page } from 'playwright';
+import { ensureBinary as cloakEnsureBinary, getDefaultStealthArgs as cloakDefaultStealthArgs, binaryInfo as cloakBinaryInfo } from 'cloakbrowser';
 
 import {
   ActionLog,
@@ -87,6 +88,20 @@ const DEVICE_PRESET_NAME: Record<DeviceKind, string> = {
   mobile: 'Pixel 7',
   tablet: 'Galaxy Tab S9',
 };
+
+/**
+ * Playwright's default Chromium args include two flags that defeat
+ * cloakbrowser's stealth: `--enable-automation` (sets navigator.webdriver
+ * back to true through the CDP-side runtime, even though cloakbrowser
+ * patches the C++ side) and `--enable-unsafe-swiftshader` (a tell for GPU
+ * fingerprinters). cloakbrowser exports an `IGNORE_DEFAULT_ARGS` list with
+ * exactly these two strings (verified in v0.3.28 / `dist/config.js`) but
+ * doesn't re-export from the package root. We inline them here — short
+ * enough that copy-paste maintenance is cheaper than deep-importing private
+ * paths, and the constants are intrinsic Chrome flag names, not their
+ * choice. Re-sync if cloakbrowser's list changes.
+ */
+const CLOAK_IGNORE_DEFAULT_ARGS = ['--enable-automation', '--enable-unsafe-swiftshader'];
 
 /**
  * Browser-side runtime helpers, injected via `context.addInitScript`.
@@ -226,24 +241,46 @@ export class StagehandPageSession implements IPageSession {
 
     await mkdir(this.cfg.outputDir, { recursive: true });
 
-    // Step 1: launch Chromium via Playwright with recordVideo + a
-    // remote-debugging-port so Stagehand can attach over CDP.
+    // Step 1: launch the cloakbrowser-patched Chromium via Playwright with
+    // recordVideo + a remote-debugging-port so Stagehand can attach over CDP.
     //
-    // Bot-detection mitigations are deliberately modest — see
-    // `docs/goals.md` non-goals: we are not building a stealth research
-    // project. These three knobs catch the common "page renders empty for
-    // bots" cases without going to war with Cloudflare/etc:
+    // Bot-detection mitigations (ADR §0044 — full cloakbrowser replacement):
+    //   - cloakbrowser ships a C++-level fingerprint-patched Chromium build
+    //     (canvas / WebGL / WebRTC / audio / fonts / GPU all spoofed at
+    //     compile time, so client-side checks see internally-consistent
+    //     numbers no JS injection can fake). `ensureBinary()` downloads the
+    //     binary on first use (cached at `~/.cloakbrowser`); subsequent runs
+    //     reuse the cache. Network is the only failure mode here.
+    //   - `getDefaultStealthArgs()` is the matching CLI-flag set the patches
+    //     read at startup (timezone, locale, GPU vendor strings, etc.).
+    //   - We tell Playwright to skip its `--enable-automation` and
+    //     `--enable-unsafe-swiftshader` defaults — those would defeat the
+    //     stealth at the runtime/CDP level even though the C++ patches hold.
+    //   - Stagehand attaches over CDP exactly as before; cloakbrowser is
+    //     just a binary swap, no SDK change.
     //
-    //   1. `--disable-blink-features=AutomationControlled` removes the
-    //      `navigator.webdriver === true` flag. Cheap, no side effects.
-    //   2. A real Chrome User-Agent string (no "HeadlessChrome"). Servers
-    //      that gate on the UA string for "real users only" stop noticing.
-    //   3. Optional `storageState` from disk so the user can sign into
-    //      sites once (in a separate browser session) and reuse cookies
-    //      here. Path comes from STORAGE_STATE_PATH env var. Only loaded
-    //      if present; falls back to a fresh persistent profile.
+    // Behavioral humanization (mouse curves / typing pacing / scroll easing)
+    // stays OUR responsibility — naturalness catalog + ADR §0031/§0039 own
+    // the on-camera rendering. cloakbrowser's `humanize` Playwright-wrapper
+    // option is for users not running their own pipeline; we explicitly do
+    // not use cloakbrowser's launchPersistentContext wrapper, only its
+    // binary + flags, so the wrapper option is moot for us.
+    //
+    // Optional `storageState` from disk lets the user sign into sites once
+    // (in a separate browser session) and reuse cookies here. Path comes
+    // from STORAGE_STATE_PATH env var. Only loaded if present.
     try {
       this.userDataDir = await mkdtemp(join(tmpdir(), 'web-recorder-'));
+      const [cloakBinaryPath, cloakStealthArgs] = await Promise.all([
+        cloakEnsureBinary().catch((err: unknown) => {
+          throw new SessionStartError(
+            'cloakbrowser binary unavailable — first run downloads ~200MB to ~/.cloakbrowser; ' +
+              'check network or pre-fetch with "npx cloakbrowser install". (ADR §0044)',
+            err,
+          );
+        }),
+        Promise.resolve(cloakDefaultStealthArgs()),
+      ]);
       // Resolve the device preset: desktop uses the caller's viewport (so e.g.
       // a 1280×720 vs 1920×1080 desktop both work); mobile/tablet inherit the
       // preset's viewport so the device is internally consistent (a Pixel 7 UA
@@ -263,11 +300,13 @@ export class StagehandPageSession implements IPageSession {
       this.cfg.viewport = resolvedViewport;
       this.context = await chromium.launchPersistentContext(this.userDataDir, {
         ...preset,
+        executablePath: cloakBinaryPath,
+        ignoreDefaultArgs: CLOAK_IGNORE_DEFAULT_ARGS,
         headless: this.cfg.headless,
         viewport: resolvedViewport,
         args: [
+          ...cloakStealthArgs,
           '--remote-debugging-port=0',
-          '--disable-blink-features=AutomationControlled',
           // Local-dev only (no effect headless). When BROWSER_WINDOW_POSITION
           // is set, place the window at those screen coords AND pin its size to
           // the viewport — position alone lets Chromium pick its own size and
@@ -283,9 +322,13 @@ export class StagehandPageSession implements IPageSession {
           dir: this.cfg.outputDir,
           size: resolvedViewport,
         },
-        // `channel` is a Playwright option naming a Chromium variant
-        // (chrome | msedge | ...). Undefined means "use bundled Chromium".
-        ...(config.browserChannel ? { channel: config.browserChannel } : {}),
+        // `channel` is intentionally NOT honored here — cloakbrowser provides
+        // its own patched Chromium via `executablePath`. BROWSER_CHANNEL=chrome
+        // would point at system Google Chrome and bypass the stealth patches,
+        // defeating the whole point of ADR §0044. The env var stays read for
+        // smoke-recording.ts (which doesn't go through this adapter); future
+        // sessions wanting plain Chromium back can revert this adapter to its
+        // pre-§0044 form.
         // Optional persistent login state. The storage-state file is
         // produced offline by `npx playwright codegen --save-storage=...`
         // (or any other Playwright session). We do NOT manage credentials
@@ -321,12 +364,19 @@ export class StagehandPageSession implements IPageSession {
     // Step 3: connect Stagehand. We build a Stagehand `LLMClient` backed by
     // a stock OpenAI client pointed at OpenRouter — OpenRouter is OpenAI-API
     // compatible, so this is the cheapest possible bridge.
+    // Capture which cloakbrowser binary the session is running against —
+    // surfaces into run.json indirectly via the structured log + makes a
+    // "did this run use the stealth Chromium?" question a one-grep answer
+    // for future triage.
+    let cloakInfo: ReturnType<typeof cloakBinaryInfo> | null = null;
+    try { cloakInfo = cloakBinaryInfo(); } catch { /* ignore — log will just omit it */ }
     this.logger.info(
       {
         model: config.llmModel,
         outputDir: this.cfg.outputDir,
         headless: this.cfg.headless,
         viewport: this.cfg.viewport,
+        cloakbrowser: cloakInfo ? { version: cloakInfo.version, platform: cloakInfo.platform } : null,
       },
       'starting Stagehand session',
     );
