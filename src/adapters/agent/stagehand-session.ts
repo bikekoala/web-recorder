@@ -5,8 +5,9 @@ import { join, resolve } from 'node:path';
 import OpenAI from 'openai';
 
 import { CustomOpenAIClient, Stagehand } from '@browserbasehq/stagehand';
-import { chromium, devices as playwrightDevices, type BrowserContext, type Page } from 'playwright';
+import { chromium, devices as playwrightDevices, type BrowserContext, type CDPSession, type Page } from 'playwright';
 import { ensureBinary as cloakEnsureBinary, getDefaultStealthArgs as cloakDefaultStealthArgs, binaryInfo as cloakBinaryInfo } from 'cloakbrowser';
+import { humanMove as cloakHumanMove, humanClick as cloakHumanClick, humanType as cloakHumanType, resolveConfig as cloakResolveHumanConfig, type HumanConfig as CloakHumanConfig } from 'cloakbrowser/human';
 
 import {
   ActionLog,
@@ -217,6 +218,23 @@ export class StagehandPageSession implements IPageSession {
    * Null until the user marks it.
    */
   private recordingStartedAtMs: number | null = null;
+
+  /**
+   * Running mouse position — only meaningful when `humanizeStrategy === 'cloakbrowser'`
+   * (their `humanMove` needs the start point to draw a Bezier path). Initialized
+   * to viewport center on first use. Each `humanMove(...endX, endY)` updates it.
+   */
+  private cursor: { x: number; y: number } | null = null;
+
+  /**
+   * Cached CDP session for cloakbrowser's `humanType` — lets it dispatch shift
+   * symbols as `isTrusted=true` keyboard events (vs the detectable
+   * `page.evaluate` fallback). Created lazily on first type() call.
+   */
+  private cdpSession: CDPSession | null = null;
+
+  /** Resolved cloakbrowser human-config (Bezier curve params, typing speed, etc). */
+  private humanConfig: CloakHumanConfig | null = null;
 
   constructor(cfg: StagehandPageSessionConfig) {
     this.cfg = {
@@ -1064,18 +1082,65 @@ export class StagehandPageSession implements IPageSession {
     }
   }
 
+  /**
+   * Lazy-init the cloakbrowser HumanConfig (idempotent). Only consumed when
+   * `config.humanizeStrategy === 'cloakbrowser'`; otherwise this never runs.
+   */
+  private getHumanConfig(): CloakHumanConfig {
+    if (!this.humanConfig) this.humanConfig = cloakResolveHumanConfig('default');
+    return this.humanConfig;
+  }
+
+  /** Lazy CDPSession for shift-symbol typing via `Input.dispatchKeyEvent`. */
+  private async getCdpSession(): Promise<CDPSession | null> {
+    if (this.cdpSession) return this.cdpSession;
+    const ctx = this.context;
+    const page = this.page;
+    if (!ctx || !page) return null;
+    try {
+      this.cdpSession = await ctx.newCDPSession(page);
+      return this.cdpSession;
+    } catch (err) {
+      this.logger.warn({ err }, 'CDPSession unavailable — humanType will use evaluate fallback');
+      return null;
+    }
+  }
+
+  /** Center-of-viewport seed for the first humanMove (no real "current" cursor on launch). */
+  private seedCursor(): { x: number; y: number } {
+    if (this.cursor) return this.cursor;
+    this.cursor = {
+      x: Math.round(this.cfg.viewport.width / 2),
+      y: Math.round(this.cfg.viewport.height / 2),
+    };
+    return this.cursor;
+  }
+
   async clickAt(
     x: number,
     y: number,
     opts: { description?: string } = {},
   ): Promise<void> {
     const page = this.requirePage();
-    this.logger.debug({ x, y, description: opts.description }, 'clickAt');
+    this.logger.debug({ x, y, description: opts.description, strategy: config.humanizeStrategy }, 'clickAt');
 
     const scrollY = await this.readScrollY();
     const urlBefore = page.url();
 
-    await page.mouse.click(x, y);
+    if (config.humanizeStrategy === 'cloakbrowser') {
+      // cloakbrowser path: Bezier mouse curve from the current cursor to the
+      // target, then humanClick (small jitter + hold duration). `humanClick`
+      // clicks at wherever the mouse currently is — humanMove just landed it
+      // at (x, y), so this is effectively click-at-target.
+      const cfg = this.getHumanConfig();
+      const cur = this.seedCursor();
+      const raw = page.mouse;
+      await cloakHumanMove(raw, cur.x, cur.y, x, y, cfg);
+      await cloakHumanClick(raw, /*isInput*/ false, cfg);
+      this.cursor = { x, y };
+    } else {
+      await page.mouse.click(x, y);
+    }
     await page.waitForLoadState('domcontentloaded', { timeout: 1500 }).catch(() => {});
     const urlAfter = page.url();
 
@@ -1289,12 +1354,22 @@ export class StagehandPageSession implements IPageSession {
     const t0 = this.elapsed();
     const startedAtWall = Date.now();
 
-    const preMs = opts.preMs ?? randInRange(config.typingPreMinMs, config.typingPreMaxMs);
-    if (preMs > 0) {
-      await page.waitForTimeout(preMs);
+    if (config.humanizeStrategy === 'cloakbrowser') {
+      // cloakbrowser owns the typing rhythm — skip our pre-pause and let
+      // humanType do the per-character timing + mistype simulation. CDP
+      // session is best-effort; if null, humanType falls back to
+      // page.evaluate (still works, just slightly detectable).
+      const cfg = this.getHumanConfig();
+      const cdp = await this.getCdpSession();
+      await cloakHumanType(page, page.keyboard, text, cfg, cdp);
+    } else {
+      const preMs = opts.preMs ?? randInRange(config.typingPreMinMs, config.typingPreMaxMs);
+      if (preMs > 0) {
+        await page.waitForTimeout(preMs);
+      }
+      const delay = opts.keystrokeMs ?? randInRange(config.typingKeystrokeMinMs, config.typingKeystrokeMaxMs);
+      await page.keyboard.type(text, { delay });
     }
-    const delay = opts.keystrokeMs ?? randInRange(config.typingKeystrokeMinMs, config.typingKeystrokeMaxMs);
-    await page.keyboard.type(text, { delay });
 
     this.recordEntry({
       t: t0,

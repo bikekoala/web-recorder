@@ -25,7 +25,11 @@ export class PerformanceDirector implements IDirector {
 
   constructor(opts: PerformanceDirectorOpts) {
     this.replanner = opts.replanner;
-    this.softAlign = opts.softAlign ?? true;
+    // Default softAlign follows the humanize strategy: when cloakbrowser owns
+    // on-camera rendering, our dwell-stretching would compete with its own
+    // pacing; explicit `opts.softAlign` always wins so unit tests stay
+    // deterministic.
+    this.softAlign = opts.softAlign ?? (config.humanizeStrategy === 'ours');
   }
 
   async run(performance: Performance, session: IPageSession): Promise<DirectorReport> {
