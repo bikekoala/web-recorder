@@ -124,6 +124,17 @@ describe('reconnoitererSystemPrompt — F1 DURATION & SCOPE section', () => {
     expect(reconnoitererSystemPrompt).toMatch(/underfilled/i);
   });
 
+  it('imposes a Scroll-budget discipline that ties scroll deltaPx to pageScrollableHeight (HN over-scroll mitigation, 2026-05-15)', () => {
+    // A 511px-tall HN page got 3 scrolls totaling 1000px because A acknowledged
+    // pageScrollableHeight in rationale but didn't size against it. The prompt
+    // must require a `Scroll budget:` running-total + comparison.
+    expect(reconnoitererSystemPrompt).toMatch(/SCROLL-BUDGET DISCIPLINE|Scroll budget/);
+    expect(reconnoitererSystemPrompt).toMatch(/Scroll budget:.*\+/);
+    expect(reconnoitererSystemPrompt).toMatch(/pageScrollableHeight.*1\.2/);
+    // and the consequence path — short page favors zero/one scroll
+    expect(reconnoitererSystemPrompt).toMatch(/(zero|one) scroll/i);
+  });
+
   it('forces explicit per-step arithmetic in `rationale` (HN dwell-crush mitigation, 2026-05-15)', () => {
     // Mental-math fails on 8-12 step sums — A wrote correct rows but bombed
     // the final 10-number rollup. The prompt must force pairwise running-total
