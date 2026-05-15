@@ -11,7 +11,7 @@
  * the orchestration.
  *
  * Run:
- *   npm run prototype:stagehand
+ *   bun run prototype:stagehand
  *
  * To override the test scenario, edit the constants below or set:
  *   PROTOTYPE_PROMPT       the natural-language instruction (may include a URL)

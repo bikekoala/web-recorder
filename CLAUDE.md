@@ -32,25 +32,27 @@ The full feature ledger is `docs/decisions.md` (§0001-§0043+). The pieces a fu
 - **v1 graceful-unmet contract** (§0042): when content isn't reachable, `intentSatisfaction: unmet`/`partial` naming what was missed **is the success path** — not a bug. Bugs are confined to wasted budget when content IS available.
 - **HTTP API v1** (§0043): REST under `/api/v1/recordings`. Natural-language entry point (`prompt, durationMs`); `IUrlResolver` picks start URL via Haiku 4.5. Concurrent execution, no JobQueue. Service-mode is hard-coded headless.
 - **Recording stack**: CloakBrowser stealth Chromium (replaces vanilla; canvas/WebGL/audio/fonts spoofed), Playwright `recordVideo`, ffmpeg trim → mp4 H.264 default. CloakBrowser's Bezier mouse curve folded into `clickAt`; `humanize` wrapper not used.
-- **Vision judge** (§0030) + **`intentSatisfaction` 1-to-1 bipartite matching** (§0033) are the two automated quality signals; bright-line specs in `npm run eval` hard-fail, quality is CONCERNS.
+- **Vision judge** (§0030) + **`intentSatisfaction` 1-to-1 bipartite matching** (§0033) are the two automated quality signals; bright-line specs in `bun run eval` hard-fail, quality is CONCERNS.
 
 `output/<date>/<run>/run.json` is the canonical record. `docs/naturalness-catalog.md` tracks every observable "looks human" behavior.
 
 ## Common commands
 
-```bash
-npm install
-npm run playwright:install
-npx playwright install ffmpeg
-npm run cloakbrowser:install    # ~150 MB; first-run download occasionally flaky — retry once
+Runtime is **Bun ≥1.3** — Bun executes the `.ts` scripts directly, no separate TS runner needed. (Migrated from Node + tsx + npm on 2026-05-15; infra swap, no ADR per the standing rule.)
 
-npm run typecheck               # tsc --noEmit (strict)
-npm run prototype:stagehand     # manual driver; headed on macOS, headless on Linux
-npm run eval                    # one-scenario canary (bright-line specs + judge); see .claude/skills/run-eval.md
-npm run regression              # multi-site categorical sweep
-npm run smoke:recording         # recording pipeline alone, no LLM
-npm run judge -- <video> "<prompt>" --duration-ms 10000
-npm run serve                   # HTTP API v1; PORT default 8787
+```bash
+bun install
+bun run playwright:install
+bunx playwright install ffmpeg
+bun run cloakbrowser:install    # ~150 MB; first-run download occasionally flaky — retry once
+
+bun run typecheck               # tsc --noEmit (strict)
+bun run prototype:stagehand     # manual driver; headed on macOS, headless on Linux
+bun run eval                    # one-scenario canary (bright-line specs + judge); see .claude/skills/run-eval.md
+bun run regression              # multi-site categorical sweep
+bun run smoke:recording         # recording pipeline alone, no LLM
+bun run judge -- <video> "<prompt>" --duration-ms 10000
+bun run serve                   # HTTP API v1; PORT default 8787
 ```
 
 ## Environment

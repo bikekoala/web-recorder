@@ -12,11 +12,11 @@
  *     "let humans review the videos for naturalness — that's the only ground
  *     truth we trust"). CONCERNS still print loudly so you don't miss them.
  *
- * Run:  npm run eval
+ * Run:  bun run eval
  * Env:  EVAL_URL / EVAL_PROMPT / EVAL_DURATION_MS / EVAL_HEADLESS (default
  *       follows the platform — headed on macOS so you watch as it runs,
  *       headless on Linux where there's no display server)
- *       — single scenario only; for multi-site robustness use `npm run regression`.
+ *       — single scenario only; for multi-site robustness use `bun run regression`.
  */
 import { statSync } from 'node:fs';
 

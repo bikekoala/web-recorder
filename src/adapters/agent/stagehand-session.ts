@@ -107,10 +107,10 @@ const CLOAK_IGNORE_DEFAULT_ARGS = ['--enable-automation', '--enable-unsafe-swift
 /**
  * Browser-side runtime helpers, injected via `context.addInitScript`.
  *
- * IMPORTANT: this is a plain-JS *string*, not transpiled by tsx/esbuild.
- * Do not refactor it into a TypeScript function passed to `page.evaluate` —
- * esbuild will hoist `__name` / `keepNames` helpers that don't exist in the
- * browser's global scope, causing runtime ReferenceErrors.
+ * IMPORTANT: this is a plain-JS *string*, NOT a TypeScript function passed
+ * to `page.evaluate`. Bun (and tsx, esbuild) hoist `__name` / `keepNames`
+ * helpers that don't exist in the browser's global scope, causing runtime
+ * ReferenceErrors. Keep this as a string literal.
  *
  * Add new helpers here when you need browser-side logic; the rest of the
  * adapter calls them via tiny `window.__webRecorder.*` invocations.
@@ -294,7 +294,7 @@ export class StagehandPageSession implements IPageSession {
       const cloakBinaryPath = await cloakEnsureBinary().catch((err: unknown) => {
         throw new SessionStartError(
           'cloakbrowser binary unavailable — first run downloads ~150 MB to ~/.cloakbrowser; ' +
-            'check network or pre-fetch with `npm run cloakbrowser:install`.',
+            'check network or pre-fetch with `bun run cloakbrowser:install`.',
           err,
         );
       });

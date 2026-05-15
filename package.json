@@ -5,18 +5,19 @@
   "description": "AI-driven web page recording service. URL + natural language → video.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "bun": ">=1.3"
   },
+  "packageManager": "bun@1.3.14",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "regression": "vitest run --config vitest.regression.config.ts",
-    "smoke:recording": "tsx scripts/smoke-recording.ts",
-    "prototype:stagehand": "tsx scripts/prototype-stagehand.ts",
-    "judge": "tsx scripts/judge-recording.ts",
-    "eval": "tsx scripts/self-eval.ts",
-    "serve": "tsx scripts/serve.ts",
+    "smoke:recording": "bun scripts/smoke-recording.ts",
+    "prototype:stagehand": "bun scripts/prototype-stagehand.ts",
+    "judge": "bun scripts/judge-recording.ts",
+    "eval": "bun scripts/self-eval.ts",
+    "serve": "bun scripts/serve.ts",
     "playwright:install": "playwright install chromium",
     "cloakbrowser:install": "cloakbrowser install"
   },
@@ -30,8 +31,8 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/bun": "^1.3.0",
     "@types/node": "^22.9.0",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.9"
   }

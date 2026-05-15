@@ -5,7 +5,7 @@
  * evidence list.
  *
  * Usage:
- *   tsx scripts/judge-recording.ts <video-path> "<user-prompt>" [--duration-ms 10000]
+ *   bun scripts/judge-recording.ts <video-path> "<user-prompt>" [--duration-ms 10000]
  *
  * Convenience: if you pass a recording.webm under output/, the script
  * looks for the run's `action-log.json` and infers the prompt + duration
@@ -17,7 +17,7 @@
  * not gating.
  *
  * Example:
- *   tsx scripts/judge-recording.ts \
+ *   bun scripts/judge-recording.ts \
  *     output/2026-05-11/11-14-38-regression-github-multistep-natural/recording.webm \
  *     "go to GitHub Recordly, switch to 简中, click into build folder, read source"
  */

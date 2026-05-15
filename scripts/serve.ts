@@ -14,7 +14,7 @@
  * accepted at the schema level but currently returns 501 — see ADR §0043.
  *
  * Run:
- *   npm run serve
+ *   bun run serve
  *
  * Smoke test:
  *   curl -s http://localhost:8787/health

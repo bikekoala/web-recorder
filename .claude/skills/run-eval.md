@@ -1,24 +1,24 @@
 ---
 name: run-eval
-description: Interpret `npm run eval` canary output — what each row means, when to fix-in-place vs file a follow-up task, which env knobs override the scenario
+description: Interpret `bun run eval` canary output — what each row means, when to fix-in-place vs file a follow-up task, which env knobs override the scenario
 ---
 
-# `npm run eval` — canary interpretation
+# `bun run eval` — canary interpretation
 
-Single-scenario regression check before declaring a change done. `npm run regression` is the multi-site sweep. This skill is what to *do* with `npm run eval`'s output.
+Single-scenario regression check before declaring a change done. `bun run regression` is the multi-site sweep. This skill is what to *do* with `bun run eval`'s output.
 
 ## Invocation
 
 ```bash
 # Default: canonical Recordly README "click 简体中文 + slow scroll", 10s.
-npm run eval
+bun run eval
 
 # Override (any combination):
 EVAL_PROMPT="去 https://news.ycombinator.com/ 看看头条故事"  \
 EVAL_DURATION_MS=10000                                       \
 EVAL_DEVICE=desktop                                          \
 EVAL_HEADLESS=false                                          \
-npm run eval
+bun run eval
 ```
 
 `EVAL_HEADLESS` defaults to `process.platform !== 'darwin'`, so:

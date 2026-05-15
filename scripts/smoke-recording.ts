@@ -9,10 +9,10 @@
  *   3. recordVideo produces a .webm file when the context closes.
  *
  * If this smoke test passes, the only remaining unknown for the full
- * `npm run prototype:stagehand` run is the Stagehand wiring itself.
+ * `bun run prototype:stagehand` run is the Stagehand wiring itself.
  *
  * Run:
- *   npm run smoke:recording
+ *   bun run smoke:recording
  */
 
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';

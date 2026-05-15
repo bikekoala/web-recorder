@@ -10,7 +10,7 @@ import { LlmVisionJudge, RecordingJudgeError } from '../../../../src/adapters/ju
  * Unit tests for LlmVisionJudge. The OpenRouter fetch is mocked via the
  * `fetcher` constructor option; we never make a real network call here.
  *
- * The actual model behaviour is exercised by the standalone `npm run judge`
+ * The actual model behaviour is exercised by the standalone `bun run judge`
  * script (manual) and by the regression suite optionally invoking the
  * judge on each video.
  */
