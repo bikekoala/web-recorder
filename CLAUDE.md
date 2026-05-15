@@ -42,9 +42,8 @@ Runtime is **Bun ≥1.3** — Bun executes the `.ts` scripts directly, no separa
 
 ```bash
 bun install
-bun run playwright:install
-bunx playwright install ffmpeg
-bun run cloakbrowser:install    # ~150 MB; first-run download occasionally flaky — retry once
+bunx playwright install ffmpeg  # only the bundled-ffmpeg fallback; no Chromium download — we ship one Chromium (CloakBrowser)
+bun run cloakbrowser:install    # ~150 MB stealth Chromium; first-run download occasionally flaky — retry once
 
 bun run typecheck               # tsc --noEmit (strict)
 bun run prototype:stagehand     # manual driver; headed on macOS, headless on Linux

@@ -69,7 +69,7 @@ export async function resolveFfmpeg(): Promise<FfmpegBinary> {
     entries = await readdir(cacheDir);
   } catch {
     throw new FfmpegError(
-      `No ffmpeg on $PATH and could not list Playwright cache at ${cacheDir}. Install one: "brew install ffmpeg" or "bun run playwright:install".`,
+      `No ffmpeg on $PATH and could not list Playwright cache at ${cacheDir}. Install one: "brew install ffmpeg" or "bunx playwright install ffmpeg".`,
     );
   }
 

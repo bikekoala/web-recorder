@@ -1,15 +1,16 @@
 /**
  * Smoke test: validate the Playwright + recordVideo + remote-debugging-port
- * pipeline with NO Stagehand involvement and NO LLM API key required.
+ * pipeline with NO Stagehand involvement and NO LLM API key required. Uses
+ * the same CloakBrowser binary as production (2026-05-15 — dropped vanilla
+ * Playwright Chromium so we only ship one Chromium binary), but does NOT
+ * exercise stealth-args / fingerprint code paths. This is still the
+ * "minimum" recording test: does recordVideo produce a video?
  *
  * Goals:
  *   1. `chromium.launchPersistentContext` with `--remote-debugging-port=0`
- *      starts up cleanly.
+ *      starts up cleanly on the CloakBrowser binary.
  *   2. `DevToolsActivePort` appears and we can read a valid CDP URL from it.
  *   3. recordVideo produces a .webm file when the context closes.
- *
- * If this smoke test passes, the only remaining unknown for the full
- * `bun run prototype:stagehand` run is the Stagehand wiring itself.
  *
  * Run:
  *   bun run smoke:recording
@@ -19,6 +20,7 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
+import { ensureBinary as cloakEnsureBinary } from 'cloakbrowser';
 import { chromium } from 'playwright';
 
 import { config } from '../src/infra/config.js';
@@ -50,7 +52,11 @@ async function main(): Promise<void> {
   await mkdir(outputDir, { recursive: true });
 
   const userDataDir = await mkdtemp(join(tmpdir(), 'web-recorder-smoke-'));
-  log.info({ outputDir, userDataDir }, 'launching Chromium');
+
+  // Use the same CloakBrowser binary as production. First run downloads it
+  // (~150 MB to `~/.cloakbrowser`); subsequent runs hit the cache.
+  const cloakBinaryPath = await cloakEnsureBinary();
+  log.info({ outputDir, userDataDir, cloakBinaryPath }, 'launching CloakBrowser (via Playwright)');
 
   // Headed on macOS so you can watch the smoke test; headless on Linux where
   // there's no display server. Override via SMOKE_HEADLESS=true/false.
@@ -58,6 +64,7 @@ async function main(): Promise<void> {
     ? process.env.SMOKE_HEADLESS !== 'false'
     : process.platform !== 'darwin';
   const ctx = await chromium.launchPersistentContext(userDataDir, {
+    executablePath: cloakBinaryPath,
     headless,
     viewport: config.viewport,
     args: ['--remote-debugging-port=0'],

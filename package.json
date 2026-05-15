@@ -17,8 +17,8 @@
     "prototype:stagehand": "bun scripts/prototype-stagehand.ts",
     "judge": "bun scripts/judge-recording.ts",
     "eval": "bun scripts/self-eval.ts",
+    "stability": "bun scripts/stability-sweep.ts",
     "serve": "bun scripts/serve.ts",
-    "playwright:install": "playwright install chromium",
     "cloakbrowser:install": "cloakbrowser install"
   },
   "dependencies": {
