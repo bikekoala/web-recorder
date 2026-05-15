@@ -60,7 +60,8 @@ describe('regression suite', () => {
 
         const session = new StagehandPageSession({
           outputDir,
-          headless: false,
+          // Headed on macOS (dev), headless on Linux (CI / no display).
+          headless: process.platform !== 'darwin',
           viewport: config.viewport,
           verbose: 0,
         });

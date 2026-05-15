@@ -17,9 +17,10 @@
  *   PROTOTYPE_PROMPT       the natural-language instruction (may include a URL)
  *   PROTOTYPE_DURATION_MS  the target recording duration in ms
  *
- * This is a manual dev script — runs headed (`headless: false`) so you can
- * watch the browser. The HTTP server entry (scripts/serve.ts) is the service
- * counterpart and runs headless.
+ * This is a manual dev script — headed on macOS so you can watch the browser,
+ * headless on Linux (no display server). Override via PROTOTYPE_HEADLESS=true/false.
+ * The HTTP server entry (scripts/serve.ts) is the service counterpart and
+ * hard-codes headless: true.
  */
 
 import { StagehandPageSession } from '../src/adapters/agent/stagehand-session.js';
@@ -57,11 +58,15 @@ async function main(): Promise<void> {
 
   const outputDir = buildRunDir({ outputRoot: config.outputDir, kind: 'prototype' });
 
-  // Manual dev script runs headed so you can watch the browser — service-mode
-  // runs through scripts/serve.ts which hard-codes headless: true.
+  // Manual dev script — headed on macOS so you can watch the browser; headless
+  // on Linux where there's no display server. Override via PROTOTYPE_HEADLESS.
+  // Service-mode runs through scripts/serve.ts which hard-codes headless: true.
+  const headless = process.env.PROTOTYPE_HEADLESS !== undefined
+    ? process.env.PROTOTYPE_HEADLESS !== 'false'
+    : process.platform !== 'darwin';
   const session = new StagehandPageSession({
     outputDir,
-    headless: false,
+    headless,
     viewport: config.viewport,
     device: DEVICE,
     verbose: 1,

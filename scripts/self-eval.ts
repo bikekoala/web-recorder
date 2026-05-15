@@ -13,7 +13,9 @@
  *     truth we trust"). CONCERNS still print loudly so you don't miss them.
  *
  * Run:  npm run eval
- * Env:  EVAL_URL / EVAL_PROMPT / EVAL_DURATION_MS / EVAL_HEADLESS (default true)
+ * Env:  EVAL_URL / EVAL_PROMPT / EVAL_DURATION_MS / EVAL_HEADLESS (default
+ *       follows the platform — headed on macOS so you watch as it runs,
+ *       headless on Linux where there's no display server)
  *       — single scenario only; for multi-site robustness use `npm run regression`.
  */
 import { statSync } from 'node:fs';
@@ -36,7 +38,11 @@ import { writeJudgmentReport } from '../src/infra/run-record-writer.js';
 const PROMPT = process.env.EVAL_PROMPT
   ?? '去 https://github.com/webadderallorg/Recordly 点击页面上的"简体中文"链接，然后慢慢向下滑动浏览内容';
 const DURATION_MS = Number(process.env.EVAL_DURATION_MS ?? 10_000);
-const HEADLESS = process.env.EVAL_HEADLESS !== 'false';
+// Default: headed on macOS (watch the run); headless on Linux (no display).
+// Explicit EVAL_HEADLESS=true/false overrides.
+const HEADLESS = process.env.EVAL_HEADLESS !== undefined
+  ? process.env.EVAL_HEADLESS !== 'false'
+  : process.platform !== 'darwin';
 const DEVICE = (process.env.EVAL_DEVICE as 'desktop' | 'mobile' | 'tablet' | undefined) ?? 'desktop';
 
 const WALL_CLOCK_LIMIT_MS = 60_000; // goals.md #5
@@ -113,7 +119,7 @@ function assess(result: RunResult, judge: RecordingJudgeReport | { error: string
     rows.push({
       status: ok ? 'ok' : 'warn',
       label: 'planDurationFit',
-      value: `${fit.status} — ratio ${fit.ratio.toFixed(2)} (est ${fmtMs(fit.estimatedMs)} / target ${fmtMs(fit.targetMs)})`,
+      value: `${fit.status} — ratio ${fit.ratio.toFixed(2)} (est ${fmtMs(fit.estimatedMs)} / target ${fmtMs(fit.targetMs)}${fit.claimedMs !== undefined ? ` / A claimed ${fmtMs(fit.claimedMs)}` : ''})`,
       note: ok ? undefined :
         fit.status === 'underfilled'
           ? "the recon LLM's plan is shorter than durationMs by more than the tolerance — A did not (or could not) fill the time naturally; the recording will run short. Check the rationale: A may have flagged a prompt/duration irreconcilability (goal #3 transparent miss), or A may simply have under-planned (recon-quality miss)."

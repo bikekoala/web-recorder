@@ -52,8 +52,13 @@ async function main(): Promise<void> {
   const userDataDir = await mkdtemp(join(tmpdir(), 'web-recorder-smoke-'));
   log.info({ outputDir, userDataDir }, 'launching Chromium');
 
+  // Headed on macOS so you can watch the smoke test; headless on Linux where
+  // there's no display server. Override via SMOKE_HEADLESS=true/false.
+  const headless = process.env.SMOKE_HEADLESS !== undefined
+    ? process.env.SMOKE_HEADLESS !== 'false'
+    : process.platform !== 'darwin';
   const ctx = await chromium.launchPersistentContext(userDataDir, {
-    headless: false,
+    headless,
     viewport: config.viewport,
     args: ['--remote-debugging-port=0'],
     recordVideo: { dir: outputDir, size: config.viewport },
