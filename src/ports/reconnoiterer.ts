@@ -48,4 +48,13 @@ export interface ReconInput {
    * no drops happened.
    */
   priorAttemptDrops?: string[];
+  /**
+   * Maximum scrollable pixel offset of the current page
+   * (`document.scrollHeight − viewport.height`). 0 means the page fits in
+   * one viewport. Surfaced into the recon prompt so the planner LLM can
+   * size its scroll plan against the page that actually exists, instead of
+   * blindly planning a stack of 600px scrolls on a 200-px-tall page (the
+   * 2026-05-15 HN failure). Optional — pre-2026-05-15 fixtures omit it.
+   */
+  pageScrollableHeight?: number;
 }

@@ -30,6 +30,42 @@ describe('buildReconUserText', () => {
     );
     expect(text.toLowerCase()).toContain('snapshot failed');
   });
+
+  it('renders the pageScrollableHeight signal (raw px + viewport-heights multiplier) so the LLM sizes the scroll plan to the real page (HN short-page fix, 2026-05-15)', () => {
+    const text = buildReconUserText(
+      {
+        url: 'https://news.ycombinator.com/',
+        prompt: 'browse the top stories',
+        durationMs: 10000,
+        viewport: { width: 1280, height: 720 },
+        screenshot: null,
+        pageScrollableHeight: 494,
+      },
+      '- main\n  - link "first story" [ref=e1]',
+    );
+    expect(text).toContain('494px');
+    // 494 / 720 ≈ 0.7 viewport-heights
+    expect(text).toMatch(/0\.7\s*viewport-heights/);
+    // Make sure the rationale (no-op past the bottom → dead air) is conveyed,
+    // so the LLM understands WHY the number matters.
+    expect(text.toLowerCase()).toContain('past the bottom');
+    expect(text.toLowerCase()).toContain('dead air');
+  });
+
+  it('omits the pageScrollableHeight line when the caller did not supply it (legacy / pre-2026-05-15 fixtures)', () => {
+    const text = buildReconUserText(
+      {
+        url: 'https://example.com/',
+        prompt: 'p',
+        durationMs: 1000,
+        viewport: { width: 1280, height: 720 },
+        screenshot: null,
+      },
+      '- main [ref=e1]',
+    );
+    expect(text.toLowerCase()).not.toContain('scrollable height');
+    expect(text.toLowerCase()).not.toContain('viewport-heights');
+  });
 });
 
 describe('buildReconvergeUserText', () => {

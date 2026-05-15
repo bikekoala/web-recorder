@@ -1656,6 +1656,22 @@ export class StagehandPageSession implements IPageSession {
     return this.readScrollY();
   }
 
+  async scrollableHeight(): Promise<number> {
+    try {
+      const page = this.requirePage();
+      const n = await page.evaluate(() => {
+        // documentElement.scrollHeight is the document height; innerHeight is
+        // the viewport. The difference is the max scroll position.
+        const sh = document.documentElement.scrollHeight ?? 0;
+        const ih = window.innerHeight ?? 0;
+        return Math.max(0, sh - ih);
+      });
+      return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+    } catch {
+      return 0;
+    }
+  }
+
   async pageTitle(): Promise<string> {
     try {
       return await this.requirePage().title();

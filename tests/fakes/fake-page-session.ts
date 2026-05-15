@@ -27,6 +27,8 @@ export class FakePageSession implements IPageSession {
   startedAt = Date.now();
 
   scrollYValue = 0;
+  /** Default 4000 — "a typical-tall page". Tests for short-page handling override to e.g. 0 or 200. */
+  scrollableHeightValue = 4000;
   url = 'https://test.example/';
   viewport: Viewport = { width: 1280, height: 720 };
   screenshotBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]); // PNG header
@@ -138,6 +140,7 @@ export class FakePageSession implements IPageSession {
   historyDepthValue = 1;
 
   async scrollY(): Promise<number> { return this.scrollYValue; }
+  async scrollableHeight(): Promise<number> { return this.scrollableHeightValue; }
   async pageTitle(): Promise<string> { return this.pageTitleValue; }
   async focusedValue(): Promise<string | null> { return this.focusedValueResult; }
   async historyDepth(): Promise<number> { return this.historyDepthValue; }

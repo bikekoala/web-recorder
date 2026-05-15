@@ -130,11 +130,26 @@ export function buildReconUserText(input: ReconInput, snapshot: string): string 
        ...input.priorAttemptDrops.map((d) => `  - ${d}`),
        'Treat those targets as NOT REACHABLE from this page. Re-plan the FULL recording WITHOUT them: either reach the same outcome a different way (different ref / a scroll first / a `goto` if the URL is known and same-host), OR honestly drop that part of the intent and fill the budget with natural browsing of what IS in the tree. Do NOT re-emit the same descriptions — they will fail again.'].join('\n')
     : '';
+  // Page-size signal. Lets the LLM size the scroll plan against the actual
+  // page. Without this, the LLM blindly plans 600px scrolls on a 200-px-tall
+  // page → no-op scrolls → dead air (2026-05-15 HN finding). Reported as raw
+  // px + a viewport-height multiplier (the unit the LLM thinks in for scroll
+  // planning); no behavioral threshold is hardcoded here — A decides how to
+  // use the number (goals.md #6).
+  const pageSize = typeof input.pageScrollableHeight === 'number'
+    ? (() => {
+        const px = input.pageScrollableHeight;
+        const vh = input.viewport.height;
+        const mult = vh > 0 ? (px / vh).toFixed(1) : '?';
+        return `Scrollable height below the current scroll position: ${px}px (≈ ${mult} viewport-heights). Plan only as many scrolls as the page can actually absorb — past the bottom is a no-op and reads as dead air to the viewer.`;
+      })()
+    : '';
   return [
     `User intent: ${input.prompt}`,
     `Current URL: ${input.url}`,
     `Time budget (ms): ${input.durationMs}`,
     `Viewport: ${input.viewport.width}x${input.viewport.height}`,
+    pageSize,
     prior,
     drops,
     '',

@@ -142,6 +142,17 @@ export interface IPageSession {
   scrollY(): Promise<number>;
 
   /**
+   * Maximum scrollable pixel offset of the current document
+   * (`document.documentElement.scrollHeight − window.innerHeight`).
+   * `0` means the whole page fits in one viewport — no useful scrolling. Used
+   * by the reconnoiterer to surface "how tall is this page actually" to the
+   * planner LLM, so it stops planning more scrolls than the page can absorb
+   * (short pages produce no-op scrolls → dead air in the recording, validated
+   * 2026-05-15 HN eval). Best-effort; returns 0 on any failure.
+   */
+  scrollableHeight(): Promise<number>;
+
+  /**
    * Title of the currently-loaded page. Read-only. Used by the Director
    * to detect whether a click triggered navigation/SPA-route change
    * even when the URL doesn't update (turbo-frame, hash routing).

@@ -102,7 +102,14 @@ export class LlmReconnoiterer implements IReconnoiterer {
 
     // Deterministic ref-tagged accessibility tree — the planner's view of the page.
     const snapshot = await session.ariaSnapshot().catch(() => '');
-    const userText = buildReconUserText(input, snapshot);
+    // Measure how far the page can scroll below the current position. Lets the
+    // recon prompt size scrolls against reality (2026-05-15 HN finding —
+    // blind 600px scrolls on a 200-px-tall page are no-ops + dead air). Caller
+    // can pre-fill via input.pageScrollableHeight (re-plan paths know what
+    // they observed); first-recon path measures here.
+    const pageScrollableHeight = input.pageScrollableHeight
+      ?? await session.scrollableHeight().catch(() => 0);
+    const userText = buildReconUserText({ ...input, pageScrollableHeight }, snapshot);
     const userContent: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: 'text', text: userText }];
     if (input.screenshot && input.screenshot.length > 0) {
       userContent.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${input.screenshot.toString('base64')}` } });
@@ -152,7 +159,8 @@ export class LlmReconnoiterer implements IReconnoiterer {
       try {
         const snapshot2 = await session.ariaSnapshot();
         const treeTruncated2 = snapshot2.includes(ARIA_SNAPSHOT_TRUNCATION_MARKER);
-        const userText2 = buildReconUserText({ ...input, priorAttemptDrops: unresolved }, snapshot2);
+        const pageScrollableHeight2 = await session.scrollableHeight().catch(() => pageScrollableHeight);
+        const userText2 = buildReconUserText({ ...input, priorAttemptDrops: unresolved, pageScrollableHeight: pageScrollableHeight2 }, snapshot2);
         const userContent2: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: 'text', text: userText2 }];
         if (input.screenshot && input.screenshot.length > 0) {
           userContent2.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${input.screenshot.toString('base64')}` } });
