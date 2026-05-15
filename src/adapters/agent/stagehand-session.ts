@@ -251,7 +251,25 @@ export class StagehandPageSession implements IPageSession {
       return;
     }
 
+    // Phase timing — surfaces in structured logs as `phase=<name>, ms=<n>` so
+    // wall-clock investigations don't need ad-hoc instrumentation. Each phase
+    // is the wall-clock from its preceding marker to its own log line.
+    // The phase boundaries are intentionally coarse — sub-phases inside
+    // launchPersistentContext or stagehand.init() aren't reachable from here.
+    const phases: Record<string, number> = {};
+    const t = (() => {
+      let last = Date.now();
+      return (name: string) => {
+        const now = Date.now();
+        const ms = now - last;
+        phases[name] = ms;
+        last = now;
+        this.logger.debug({ phase: name, ms }, `session.start phase`);
+      };
+    })();
+
     await mkdir(this.cfg.outputDir, { recursive: true });
+    t('mkdir');
 
     // Launch cloakbrowser's stealth Chromium via Playwright with recordVideo
     // + a remote-debugging-port so Stagehand can attach over CDP.
@@ -272,6 +290,7 @@ export class StagehandPageSession implements IPageSession {
     // we don't manage credentials, only honor pre-prepared session files.
     try {
       this.userDataDir = await mkdtemp(join(tmpdir(), 'web-recorder-'));
+      t('mkdtemp');
       const cloakBinaryPath = await cloakEnsureBinary().catch((err: unknown) => {
         throw new SessionStartError(
           'cloakbrowser binary unavailable — first run downloads ~150 MB to ~/.cloakbrowser; ' +
@@ -280,6 +299,7 @@ export class StagehandPageSession implements IPageSession {
         );
       });
       const cloakStealthArgs = cloakDefaultStealthArgs();
+      t('cloakEnsureBinary');
       // Resolve the device preset: desktop uses the caller's viewport (so e.g.
       // a 1280×720 vs 1920×1080 desktop both work); mobile/tablet inherit the
       // preset's viewport so the device is internally consistent (a Pixel 7 UA
@@ -330,6 +350,7 @@ export class StagehandPageSession implements IPageSession {
           : {}),
       });
 
+      t('launchPersistentContext');
       // launchPersistentContext returns a context with one page already open.
       const pages = this.context.pages();
       this.page = pages[0] ?? (await this.context.newPage());
@@ -339,6 +360,7 @@ export class StagehandPageSession implements IPageSession {
       // existing about:blank page), so all later `window.__webRecorder.*`
       // calls will resolve.
       await this.context.addInitScript({ content: RUNTIME_HELPERS_SCRIPT });
+      t('addInitScript');
     } catch (err) {
       await this.cleanupPartial();
       throw new SessionStartError('Failed to launch Playwright Chromium', err);
@@ -348,6 +370,7 @@ export class StagehandPageSession implements IPageSession {
     let cdpUrl: string;
     try {
       cdpUrl = await this.resolveCdpUrl(this.userDataDir);
+      t('resolveCdpUrl');
     } catch (err) {
       await this.cleanupPartial();
       throw new SessionStartError('Failed to resolve Chromium CDP URL', err);
@@ -391,6 +414,7 @@ export class StagehandPageSession implements IPageSession {
         },
       });
       await this.stagehand.init();
+      t('stagehand.init');
     } catch (err) {
       await this.cleanupPartial();
       throw new SessionStartError('Failed to initialize Stagehand', err);
@@ -398,6 +422,11 @@ export class StagehandPageSession implements IPageSession {
 
     this.startedAtMs = Date.now();
     this.startedAtIso = new Date(this.startedAtMs).toISOString();
+
+    // Phase-timing summary log — one line, easy to grep. Wall-clock
+    // investigations land here.
+    const totalMs = Object.values(phases).reduce((a, b) => a + b, 0);
+    this.logger.info({ phases, totalMs }, 'session.start phases (ms)');
   }
 
   async stop(): Promise<SessionArtifacts> {

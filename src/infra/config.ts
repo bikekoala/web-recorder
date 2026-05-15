@@ -28,30 +28,29 @@ const Schema = z.object({
    * shapes). Must be a model whose JSON-mode output matches Stagehand's
    * parsers — empirically `openai/gpt-4o-mini` is the most reliable here.
    *
-   * Despite the name, this is NOT the planner's model. See `llmPlannerModel`.
+   * Despite the name, this is NOT the recon model. See `llmReconModel`.
    * (Historical note: these were one variable; we split when Anthropic
    * planners broke Stagehand's internal expectations — see §0023.)
    */
   llmModel: z.string().min(1).default('openai/gpt-4o-mini'),
 
   /**
-   * Fallback model for `llmReconModelResolved`. The recon model is resolved
-   * as: `llmReconModel` (LLM_RECON_MODEL) if set, else this
-   * (LLM_PLANNER_MODEL), else `llmModel` (LLM_MODEL). In other words, set
-   * this to a strong vision+planning model (e.g. `google/gemini-3.1-pro-preview`
-   * or `anthropic/claude-sonnet-4.6`) to use it for reconnaissance when
-   * `LLM_RECON_MODEL` isn't set. Optional. (Vestigial name — it fed the
-   * old streaming planner's brief() call; that's gone, only the recon
-   * fallback role remains.)
-   */
-  llmPlannerModel: z.string().min(1).optional(),
-
-  /**
    * Reconnaissance model — used once per recording (and again per re-plan)
-   * to build the Performance. Needs strong vision + planning. Defaults to
-   * the resolved planner model. Override with LLM_RECON_MODEL.
+   * to build the Performance. Needs strong vision + planning.
+   *
+   * **Default `anthropic/claude-haiku-4.5`** (2026-05-15 bake-off).
+   * Validated: Recordly 10s click+scroll → `looks_human all-5`, $0.024;
+   * Photosynthesis 25s read → `looks_human all-5`, $0.027. Equal-or-better
+   * quality vs Sonnet 4.6, ~3× cheaper. Latency is comparable (both ~20–40 s
+   * on 20 k input tokens — prefill-dominated, output is short).
+   * The pre-2026-05-15 sweep R8 said Haiku regressed on long reads; the
+   * subsequent prompt fixes (`1065a61` variance + closing-dwell discipline,
+   * `bf178c7` lingering-dwell for ≥20 s reads) closed that gap.
+   * Override with `LLM_RECON_MODEL=<model>` (e.g. switch back to Sonnet 4.6
+   * for a tricky page where Haiku flaps); the explicit override beats the
+   * planner-model fallback chain below.
    */
-  llmReconModel: z.string().min(1).optional(),
+  llmReconModel: z.string().min(1).default('anthropic/claude-haiku-4.5'),
 
   /**
    * URL resolver model — turns a free-form prompt into the starting URL
@@ -321,7 +320,6 @@ const raw = {
   openrouterApiKey: process.env.OPENROUTER_API_KEY,
   openrouterBaseUrl: process.env.OPENROUTER_BASE_URL,
   llmModel: process.env.LLM_MODEL,
-  llmPlannerModel: process.env.LLM_PLANNER_MODEL,
   llmReconModel: process.env.LLM_RECON_MODEL,
   llmUrlResolverModel: process.env.LLM_URL_RESOLVER_MODEL,
   maxReplans: process.env.MAX_REPLANS ? Number(process.env.MAX_REPLANS) : undefined,
@@ -387,11 +385,7 @@ const data = parsed.data;
 
 export const config = {
   ...data,
-  // Resolved planner model: explicit `LLM_PLANNER_MODEL` if set, else fall
-  // back to `LLM_MODEL` for backwards compat. Adapters should read
-  // `config.llmPlannerModelResolved`, never `data.llmPlannerModel` directly.
-  llmPlannerModelResolved: data.llmPlannerModel ?? data.llmModel,
-  llmReconModelResolved: data.llmReconModel ?? data.llmPlannerModel ?? data.llmModel,
+  llmReconModelResolved: data.llmReconModel,
   llmBlockerModelResolved: data.llmBlockerModel ?? data.llmModel,
   isDev: data.nodeEnv === 'development',
   isProd: data.nodeEnv === 'production',
