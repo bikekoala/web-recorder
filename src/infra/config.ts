@@ -247,23 +247,6 @@ const Schema = z.object({
   planDurationFitToleranceRatio: z.coerce.number().min(0).max(1).default(0.20),
 
   /**
-   * Humanize strategy — which behavioral layer renders mouse/typing on-camera.
-   *
-   *   `ours`         — §0031/§0039: our `keyboard.type({delay})`, `mouse.click(x,y)`,
-   *                    and dwell soft-align. Default. Preserves the existing pipeline.
-   *   `cloakbrowser` — cloakbrowser's `humanMove`+`humanClick`+`humanType` (Bezier
-   *                    mouse curves, realistic typing with mistypes/CDP shift events).
-   *                    Disables `keyboard.type` delay + `typingPreMs` + dwell
-   *                    soft-align so the two layers don't fight. `scroll` stays
-   *                    on our smooth-scroll either way (cloakbrowser's scroll API
-   *                    is selector-based, doesn't match our deltaPx semantics).
-   *
-   * This is a 2026-05-15 bake-off knob — to A/B which mouse+typing renderer
-   * the §0030 vision judge scores higher. Once we know, the loser gets deleted.
-   */
-  humanizeStrategy: z.enum(['ours', 'cloakbrowser']).default('ours'),
-
-  /**
    * Typing rendering (catalog F2 + the gmaps "text appears instantly" finding).
    * - `typingPreMs`: pause AFTER focusing the input, BEFORE first keystroke.
    *   Real users glance at the empty field for a beat before starting.
@@ -383,7 +366,6 @@ const raw = {
   scrollTailMaxMs: process.env.SCROLL_TAIL_MAX_MS
     ? Number(process.env.SCROLL_TAIL_MAX_MS)
     : undefined,
-  humanizeStrategy: process.env.HUMANIZE_STRATEGY,
   viewport: {
     width: process.env.VIEWPORT_WIDTH ? Number(process.env.VIEWPORT_WIDTH) : undefined,
     height: process.env.VIEWPORT_HEIGHT ? Number(process.env.VIEWPORT_HEIGHT) : undefined,

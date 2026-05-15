@@ -11,6 +11,11 @@ been overridden.
 
 ## Active (informs current behavior)
 
+- [`2026-05-15-humanize-bake-off.md`](./2026-05-15-humanize-bake-off.md) — A/B
+  vs cloakbrowser's `humanize` wrapper. 12-cell judge bake-off shows their
+  full stack regresses pacing+intentExecution (typing blows the per-step
+  budget) but their Bezier mouse curve is a genuine motionQuality win. Decided
+  to fold just `humanMove` into our `clickAt`; strategy switch deleted.
 - [`2026-05-13-overnight-sweep.md`](./2026-05-13-overnight-sweep.md) — **the
   canonical current-state findings doc.** 31 evals across 24 distinct
   scenarios. Patterns P1–P18 classified into v1-contract graceful-degrade

@@ -17,7 +17,6 @@
     "judge": "tsx scripts/judge-recording.ts",
     "eval": "tsx scripts/self-eval.ts",
     "serve": "tsx scripts/serve.ts",
-    "bake-off": "tsx scripts/humanize-bake-off.ts",
     "playwright:install": "playwright install chromium",
     "cloakbrowser:install": "cloakbrowser install"
   },
