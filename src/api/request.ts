@@ -100,6 +100,35 @@ export const JobStateSchema = z.object({
       url: z.string().url(),
       reasoning: z.string().min(1),
     }),
+    /**
+     * Caller-facing transparency channel (goals.md #3 — "User intent is
+     * satisfied or transparently not"). Coarse, actionable signals only —
+     * NOT the full diagnostic surface (that lives at `runJsonUrl` for power
+     * users / debuggers).
+     *
+     * What's here:
+     *   - `intent.level`: complete / partial / unmet / unknown.
+     *   - `intent.note`: human-readable reason. When level != complete this
+     *     names what couldn't be done so the caller can retry with a different
+     *     prompt or duration. e.g. "couldn't locate '简体中文' (page tree too
+     *     large to analyze in full)".
+     *   - `actualDurationMs`: trimmed video duration; lets the caller verify
+     *     the recording landed near the requested `durationMs`.
+     *
+     * What's NOT here (deliberately — see ADR / 2026-05-15 design note):
+     *   - Vision-judge verdict / per-dim scores. Naturalness is our internal
+     *     quality concern, not the caller's. Exposing it would shift incentives
+     *     from "we make it good" to "caller optimizes against our judge".
+     *   - `planDurationFit` ratio, LLM cost, rehearsal stats — all internal
+     *     diagnostics accessible via `runJsonUrl`.
+     */
+    meta: z.object({
+      intent: z.object({
+        level: z.enum(['complete', 'partial', 'unmet', 'unknown']),
+        note: z.string(),
+      }),
+      actualDurationMs: z.number().nullable(),
+    }),
   }).optional(),
   /** Present on `failed` — error message + code (DomainError.code where applicable). */
   error: z.object({

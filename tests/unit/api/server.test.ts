@@ -23,7 +23,10 @@ function fakeResult(outputDir: string): RunResult {
     actionLogPath: join(outputDir, 'action-log.json'),
     urlResolution: { url: 'https://x.test/', reasoning: 'inline URL' },
     performance: { prompt: 'p', durationMs: 1000, steps: [{ kind: 'done', reasoning: 'fin' }], totalEstimatedMs: 0, rationale: 'r' } as RunResult['performance'],
-    metrics: {} as RunResult['metrics'],
+    metrics: {
+      intentSatisfaction: { level: 'complete', note: 'all good', hintsResolvedPreRecording: 0, clicksExecuted: 0, scrollsExecuted: 0 },
+      trimmedVideoMs: 1000,
+    } as RunResult['metrics'],
     directorReport: {} as RunResult['directorReport'],
   };
 }
@@ -194,8 +197,19 @@ describe('API server', () => {
           videoPath: expect.stringContaining('recording.mp4'),
           videoUrl: `${API}/${runId}/video`,
           urlResolution: { url: 'https://x.test/', reasoning: 'inline URL' },
+          // Caller-facing transparency channel (goals.md #3) — coarse signal only.
+          meta: {
+            intent: { level: 'complete', note: 'all good' },
+            actualDurationMs: 1000,
+          },
         },
       });
+      // Defensive: confirm we are NOT exposing the full diagnostic surface here.
+      // Power users go to runJsonUrl; this response stays small.
+      const result = (final as { result: Record<string, unknown> }).result;
+      expect(result).not.toHaveProperty('judge');
+      expect(result).not.toHaveProperty('planDurationFit');
+      expect(result).not.toHaveProperty('reconLlm');
     } finally { await s.close(); }
   });
 

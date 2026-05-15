@@ -190,6 +190,15 @@ async function runJob(
         videoUrl: `${API_PREFIX}/${runId}/video`,
         runJsonUrl: `${API_PREFIX}/${runId}/run.json`,
         urlResolution: result.urlResolution,
+        // Caller-facing transparency channel — goals.md #3. Coarse signals
+        // only; full diagnostic is reachable via runJsonUrl.
+        meta: {
+          intent: {
+            level: result.metrics.intentSatisfaction.level,
+            note: result.metrics.intentSatisfaction.note,
+          },
+          actualDurationMs: result.metrics.trimmedVideoMs,
+        },
       },
     });
     logger.info({ runId, outputDir, urlResolution: result.urlResolution }, 'recording job succeeded');
