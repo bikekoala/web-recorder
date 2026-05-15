@@ -1,167 +1,81 @@
 # web-recorder
 
-AI-driven service that turns `(URL, natural-language instruction)` into a recorded video of a browser session — eventually with synthesized human-like cursor trails and post-production polish.
+AI-driven service: `(natural-language prompt, durationMs)` → recorded video of a browser session that looks like a human did it.
 
-This is an **exploratory project**. The underlying tech stack is expected to evolve (Stagehand → other agent SDKs, Playwright recordVideo → CDP screencast → xvfb+ffmpeg, etc.). The architecture is built so swapping a layer does not ripple into the rest of the codebase.
+**Exploratory project** — the stack (Stagehand, Playwright recordVideo, ffmpeg, OpenRouter) is expected to evolve. Architecture isolates each layer behind a port so swaps don't ripple.
 
-## Hard rules
+## Read these first, in order
 
-These are non-negotiable across iterations. Read [`docs/goals.md`](./docs/goals.md) FIRST every session — it's the north star, and any change that doesn't serve a goal there does not ship. Then [`docs/architecture.md`](./docs/architecture.md) before adding code.
+1. [`docs/goals.md`](./docs/goals.md) — the north star. Any change that doesn't serve a goal here does not ship.
+2. [`docs/architecture.md`](./docs/architecture.md) — module map, dependency direction.
+3. [`docs/decisions.md`](./docs/decisions.md) — every architectural decision (ADRs §0001-§0043+). The canonical "why is it like this?" record.
+4. [`docs/findings/README.md`](./docs/findings/README.md) — investigations index (active vs historical). The 2026-05-13 overnight sweep is the current-state baseline.
+5. [`docs/output-layout.md`](./docs/output-layout.md) — when inspecting a past recording, this names every file under `output/<date>/<run>/`. **Start at `run.json`.**
 
-1. **Ports & Adapters (Hexagonal)**. Business logic lives in `src/core/` and depends only on interfaces defined in `src/ports/`. Concrete tech (Stagehand, Playwright, ffmpeg, OpenAI) lives in `src/adapters/`. Never import an adapter from `core/` directly.
-2. **Schema-first**. Anything crossing a boundary (LLM output, HTTP request, project file, persisted action log) is defined as a Zod schema in `src/domain/`. Parse before use.
-3. **Errors are typed**. Domain errors extend `DomainError` (`src/domain/errors.ts`) and carry a stable `code`. Adapters translate library exceptions into domain errors at the boundary.
-4. **Side effects are owned**. Every `Browser`, `BrowserContext`, child process, file handle, or temp directory has a clear owner with a `try/finally` cleanup. No reliance on GC.
-5. **Pure where possible**. Trajectory math, planning, coordinate transforms = pure functions. Adapters are the only impure code.
-6. **Config, not magic numbers**. Tunables (fps, viewport, timeouts, easing curves, model names, concurrency) live in `src/infra/config.ts` and can be overridden via env vars.
-7. **Structured logs from day 1**. All logging goes through `src/infra/logger.ts` (pino). Each job carries a `traceId`.
+## Hard rules (non-negotiable)
 
-When a feature seems to need a port broken, **say so explicitly** in the response and wait for a decision — do not silently leak adapter concerns into core.
+1. **Ports & Adapters (hexagonal).** `src/core/` depends only on `src/ports/`. Concrete tech (Stagehand, Playwright, ffmpeg, LLMs) lives in `src/adapters/`. If a feature needs a port broken, **say so explicitly and wait for a decision** — never silently leak adapter concerns into core.
+2. **Schema-first.** Anything crossing a boundary (LLM output, HTTP request, project file, persisted action log) is a Zod schema in `src/domain/`. Parse before use.
+3. **Errors are typed.** Domain errors extend `DomainError` (`src/domain/errors.ts`) and carry a stable `code`. Adapters translate library exceptions at the boundary.
+4. **Side effects are owned.** Every `Browser`, `BrowserContext`, child process, file handle, or temp dir has a clear owner with `try/finally`. No reliance on GC.
+5. **Pure where possible.** Planning, trajectory math, coordinate transforms = pure functions. Adapters are the only impure code.
+6. **Config, not magic numbers.** Tunables live in `src/infra/config.ts`, overridable via env vars. Behavior thresholds = AI judgement, not hardcoded heuristics.
+7. **Structured logs from day 1.** All logging through `src/infra/logger.ts` (pino). Each job carries a `traceId`.
 
-## Current state
+## Current state — load-bearing pieces
 
-| Layer | Status |
-|---|---|
-| Project scaffolding | ✅ |
-| `IPageSession` + Stagehand adapter | ✅ |
-| Playwright video recording + ffmpeg trim | ✅ |
-| `IReconnoiterer` + LlmReconnoiterer (recon draft → resolved `Performance`; reused as re-planner) | ✅ |
-| ref-tagged a11y snapshot target resolution (§0036) — recon sees a deterministic `IPageSession.ariaSnapshot()` tree (`page.ariaSnapshot({mode:'ai'})`, native in Playwright 1.59; replaced the `observeAll()` LLM enumeration); the LLM picks each click/type target by `ref` **+ a `targetDescription`** (the fallback if it picks a wrong/stale ref out of a huge tree — playwright-mcp's `target`+`element` pattern); `ReconDraftSchema` (recon output finally Zod-parsed — Hard Rule 2); `resolveAriaRef(ref)` → durable `{selector,bbox,description}`, deterministic, no LLM; on a ref miss → `resolveTargetCandidates(targetDescription)` fuzzy fallback. Roots out the wrong-element bug (robustness-sweep P2/finding 6) — fuzzy match is a fallback now, not the hot path. Validated: canonical Recordly run = `intentSatisfaction: complete`, judge `LOOKS_HUMAN`, recon ~24 s (was ~49 s) | ✅ |
-| Rehearsing reconnoiterer — `recon()` walks its draft against the live page off-camera, rewrites `expectAfter` to observed state, reconverges (with a fresh aria snapshot) on divergence, resets to start URL (`RECON_REHEARSE`, default on; §0034 / §0036; no more per-step `observe()` re-resolve) | ✅ |
-| Recon prompt: PRIORITY #1 (a step per requested action, re-check before emit) + scroll-to-target discipline + "pick targets by ref from the tree"; reconverge keeps the goal (different ref / scroll first, not blind retry) | ✅ |
-| `IBlockerDismisser` + LlmBlockerDismisser — off-camera probe→detect(vision LLM)→click→re-probe loop that clears cookie/consent banners + X-to-close modals before recon plans & before recording (gated on `pageDiagnostic.blockerSignals`; `BLOCKER_DISMISS`, default on; capped 3 rounds/10s; `RunMetrics.blockerDismissal`; §0035 / Task #20) | ✅ |
-| `resolveTargetCandidates` — all sized `observe()` matches, interactive elements ranked ahead of wrappers, deduped; the rehearsal walk's dead-click *recovery* sweep tries the other candidates before the LLM reconverge; reconverge prompt hard-checks the requested click survives (finding 6 — now a recovery path; the primary resolution is the §0036 aria-ref one) | ✅ |
-| Transparent giant-page handling (§0038) — recon draft `click` carries an optional `targetText` (the element's exact visible text); on a `ref` miss the chain is `resolveAriaRef` → `resolveByVisibleText(targetText)` (deterministic Playwright role/text lookup, **no DOM serialization** — works on huge pages where `observe()` overflows) → `resolveTargetCandidates(targetDescription)` → drop. A dropped requested click — at the initial resolve, **OR during the rehearsal walk's reconverge**, OR when the walk's recovery ends up with no acting step at all — is surfaced as `Performance.unresolvedTargets` → `RunMetrics` → `intentSatisfaction` reports `unmet`/`partial` naming what couldn't be located (annotated "(page tree too large to analyze in full)" when the aria tree was truncated — `ARIA_SNAPSHOT_TRUNCATION_MARKER`), never silent `unknown` | ✅ |
-| `IDirector` + PerformanceDirector (deterministic `Performance` playback + re-plan checkpoint, §0034) | ✅ |
-| PerformanceDirector graceful degradation — drops stale tail + gentle closing scroll when an `expectAfter` mismatch can't be re-planned (§0034) | ✅ |
-| `replanMinRemainingMs` gate (default 60s) — mid-recording re-plan only when enough budget remains; short recordings degrade instead (§0034) | ✅ |
-| Duration fidelity (§0037 + §0039 + §0040 / F1) — `durationMs` is a **first-class constraint in the recon prompt** (±10% discipline, prohibitions identified by A itself, natural filler is A's responsibility — §0040); `fitPlanToBudget` is a **±20% corrector** (`PLAN_DURATION_FIT_TOLERANCE_RATIO`) that runs after the rehearsal walk: scale-down compress kept, mechanical scroll+dwell pad **removed** (§0040), out-of-band misses surface as `RunMetrics.planDurationFit.status` (`ok` / `compressed-hard` / `underfilled`); `RecordJobRunner` trims by **video-relative** time (`videoRelativeTrimWindow` scales the wall-clock window by `rawVideoMs/sessionWallMs` to undo `recordVideo`'s lagging compositor clock); **Director soft-aligns** on-camera (§0039): each `dwell` nudged shorter/longer so the recording tracks the proportional `durationMs` schedule — `PerformanceDirector({ softAlign })` default on, bounds `DIRECTOR_DWELL_MIN_MS`/`DIRECTOR_DWELL_STRETCH_MAX_MS`. Trimmed-video duration lands ~`durationMs` (`endReason: done`, ~+0%) | ✅ |
-| `Performance` domain type (pre-resolved, paced action sequence) | ✅ |
-| Centralized prompts in `src/prompts/` — only `reconnoiterer` (+ `recording-judge`) remain | ✅ |
-| Two model knobs that matter: `LLM_MODEL` (Stagehand internals) / `LLM_RECON_MODEL` (recon+re-plan) | ✅ |
-| `RecordJobRunner` (orchestrates URL resolve → setup → recon → director → trim) | ✅ |
-| Natural-language entry point (`prompt, durationMs`) — URL is in the prompt; the runner's injected `IUrlResolver` picks the start URL (`anthropic/claude-haiku-4.5` default, `LLM_URL_RESOLVER_MODEL` override). No `url` / `headless` request params (§0043) | ✅ |
-| `IUrlResolver` + LlmUrlResolver — AI-first start-URL resolution from a free-form prompt (explicit URLs, well-known names, pure intent → search). ~200 in/~80 out tokens per call; cost incidental on Haiku 4.5 (§0043) | ✅ |
-| Vitest unit tests (235 passing) | ✅ |
-| Action vocabulary: 8 primitives (click / scroll / dwell / type / key / back / done / goto — same-host hard rule, §0041) | ✅ |
-| v1 contract: `unmet`/`partial` w/ a named reason IS success for unreachable content; bugs we fix are limited to wasted budget when content IS available (§0042) | ✅ |
-| Reconverge-on-initial-resolve-drop (§0042 P13 narrow scope) — when A's first draft requests targets the resolver can't locate AND the aria tree is NOT truncated, fire ONE more recon LLM call with the dropped descriptions as a "don't try these" hint; symmetric with the rehearsal walk's mid-step reconverge but fires before the walk; `RECON_RECONVERGE_ON_DROP`, default on | ✅ |
-| `IRecordingJudge` + LlmVisionJudge — automated 5-dim rubric naturalness grading via Gemini 3.1 Pro (§0030) | ✅ |
-| Naturalness rendering bundle — pre-typing pause, slower keystroke delay, inter-scroll micro-pause (§0031) | ✅ |
-| `intentSatisfaction` 1-to-1 bipartite matching — no more single-token UI-noun bridges over-crediting hints (§0033) | ✅ |
-| Regression suite — 3 sites × 2 human-prompt variants, categorical asserts only; wired to the prophet pipeline + blocker dismisser (`tests/regression/`) | ✅ |
-| Operation log: `replan` / `page_diagnostic` entries (`decision` / `decision_failure` kept as legacy) | ✅ |
-| `intentSatisfaction` metric (transparent "did we do what user asked?") | ✅ |
-| Bot-detection mitigations (chrome flags + UA + optional storageState) | ✅ |
-| Cursor trajectory synth (`ICursorSynthesizer`) | ⏳ |
-| HTTP API v1 (§0043) — Node `http` (zero new deps); REST under `/api/v1/recordings`: POST create (Zod-parsed `{prompt, durationMs, device?, width?, height?, format?, crf?, audio?}`), GET list, GET status, GET `/video`, GET `/run.json`, plus `/health`. **Concurrent execution** (no JobQueue). `audio: true` → 501 NOT_IMPLEMENTED (recorder-rebuild sub-project). Service-mode hard-codes `headless:true`; manual `npm run prototype:stagehand` is headed. Entry: `npm run serve` (`PORT`, default 8787) | ✅ |
-| `device` parameter (desktop / mobile / tablet) — default desktop. Maps to a Playwright `devices[…]` preset (`Desktop Chrome` / `Pixel 7` / `Galaxy Tab S9`) so viewport + UA + isMobile + hasTouch + deviceScaleFactor all come from Playwright's auto-maintained table (no hand-pasted UA strings, goals.md #6). Mobile/tablet inherit the preset's viewport — sites that serve different HTML/CSS for mobile see a real mobile UA + touch at the right viewport. Persisted in `run.json.request.device`. Override per-run via PROTOTYPE_DEVICE / EVAL_DEVICE | ✅ |
-| CloakBrowser stealth Chromium — replaces vanilla Playwright Chromium. C++-patched build handles canvas / WebGL / audio / fonts / GPU / WebRTC fingerprints; `navigator.webdriver === false`. `npm run cloakbrowser:install` to pre-fetch the ~150 MB binary (cached at `~/.cloakbrowser`); first session of a fresh install runs it implicitly. cloakbrowser's `humanize` wrapper is **not** used — naturalness stays on §0031/§0039 + judge §0030 | ✅ |
-| mp4 default output + clarity via `crf` (§0043) — `trimVideo()` outputs mp4 H.264 + yuv420p + `+faststart` at the request's `crf` (default 18, visually lossless); falls back to webm/VP8 when only Playwright's bundled (VP8-only) ffmpeg is available. System ffmpeg discovery: `FFMPEG_PATH` → `$PATH` → bundled. `brew install ffmpeg` recommended on macOS dev for the mp4 path | ✅ |
-| Audio capture | ⏳ (§0043 follow-up — `IMediaRecorder` port + ffmpeg-based adapter, xvfb+PulseAudio on Linux/Docker, AVFoundation+BlackHole on macOS dev) |
+The full feature ledger is `docs/decisions.md` (§0001-§0043+). The pieces a future session needs to know exist:
 
-Architectural decisions live in [`docs/decisions.md`](./docs/decisions.md). Update it whenever a decision is made or revised.
+- **Prophet pipeline** (§0034): off-camera recon (`IReconnoiterer`) emits a fully-paced `Performance`; on-camera `IDirector` plays it back deterministically with a re-plan checkpoint.
+- **Ref-tagged a11y target resolution** (§0036, §0038): recon picks click/type targets by `ref` from a deterministic `ariaSnapshot()` tree + `targetDescription`/`targetText` fallbacks; resolve chain is `resolveAriaRef → resolveByVisibleText → resolveTargetCandidates → drop-and-surface-as-unresolvedTargets`.
+- **Duration fidelity** (§0037 + §0039 + §0040 / F1): `durationMs` is a hard prompt constraint on A; `fitPlanToBudget` is a ±20% corrector that surfaces out-of-band misses; Director soft-aligns on-camera dwells; `RecordJobRunner` trims by video-relative time. A's plan cost uses a pairwise running-total to defeat 10-number mental-math errors.
+- **v1 graceful-unmet contract** (§0042): when content isn't reachable, `intentSatisfaction: unmet`/`partial` naming what was missed **is the success path** — not a bug. Bugs are confined to wasted budget when content IS available.
+- **HTTP API v1** (§0043): REST under `/api/v1/recordings`. Natural-language entry point (`prompt, durationMs`); `IUrlResolver` picks start URL via Haiku 4.5. Concurrent execution, no JobQueue. Service-mode is hard-coded headless.
+- **Recording stack**: CloakBrowser stealth Chromium (replaces vanilla; canvas/WebGL/audio/fonts spoofed), Playwright `recordVideo`, ffmpeg trim → mp4 H.264 default. CloakBrowser's Bezier mouse curve folded into `clickAt`; `humanize` wrapper not used.
+- **Vision judge** (§0030) + **`intentSatisfaction` 1-to-1 bipartite matching** (§0033) are the two automated quality signals; bright-line specs in `npm run eval` hard-fail, quality is CONCERNS.
 
-Every recording run writes a self-contained directory under `output/`. The file layout — `run.json` as the canonical entry point, `recording.webm` + `recording-raw.webm`, `action-log.json`, `judgment.json` — is documented in [`docs/output-layout.md`](./docs/output-layout.md). **For a future AI session continuing in this codebase: that's the file to read when inspecting a past run.**
-
-The **naturalness catalog** in [`docs/naturalness-catalog.md`](./docs/naturalness-catalog.md) tracks every observable behavior that contributes to "this looks like a human, not a robot." Every new natural-feeling feature (or gap) flips a status row there.
-
-### Measured performance (Recordly README, "click 简中, slow scroll, 10s")
-
-Post-**§0036 + §0037** (ref-tagged a11y target resolution; duration fidelity) and the **2026-05-15 Haiku promotion** (recon default switched to `anthropic/claude-haiku-4.5` — 3× cheaper, equal-or-better naturalness vs Sonnet on bake-off), `npm run eval` on macOS + OpenRouter, headless — figures are the spread over several runs:
-
-| Metric | Value |
-|---|---|
-| Pipeline | Prophet (§0034 + Task #21 + §0036 + §0037 + §0038 + §0039): blocker-dismiss → `ariaSnapshot()` ref-tagged tree → LLM picks a draft (targets by `ref` + `targetText` + `targetDescription`) → resolve refs (deterministic; visible-text then fuzzy fallback on a ref miss; dropped → `unresolvedTargets`) → off-camera rehearsal walk → `fitPlanToBudget` (compress/pad to `durationMs`) → deterministic paced playback, soft-aligning dwells to fill `durationMs` → video-relative trim |
-| Trimmed video duration | ~10.0 s (target 10 s, ~+0%) — the Director soft-aligns the closing dwells to fill exactly (§0039); was ~+4…+12% w/ §0037 alone, −12…+24% before that |
-| Reconnaissance (off-camera, incl. the rehearsal walk) | ~22–24 s (was ~49 s pre-§0036) |
-| Rehearsal trace | `{walkedSteps: 8–10, divergences: 0, reconverges: 0, truncated: false, timedOut: false}` |
-| On-camera recording | ~10.0 s — no dead air; `endReason: done` (the soft-aligned closing dwell lands it on `durationMs`; §0039) |
-| `planDurationFit` | `RunMetrics.planDurationFit.status` (`ok` / `compressed-hard` / `underfilled`) is the transparency channel (goals.md #3 / #6) for whether the recon LLM's plan fit `durationMs` within the ±20% tolerance; `npm run eval` prints a CONCERNS row when status ≠ `ok` (§0040 / F1). Pre-F1 numbers not yet measured for this field. |
-| Re-plans (on-camera) | 0 |
-| `intentSatisfaction` | **complete** — 1 click (简中, verified off-camera) + 4–5 scrolls |
-| Video judge verdict (Gemini 3.1 Pro) | **`LOOKS_HUMAN`** — motionQuality / pacing / intentExecution / recovery / visualCoherence all `pass` |
-| Total wall-clock | ~39–42 s (was ~72 s pre-§0036) |
-
-Note on goal #5 (cost): the aria tree is the recon prompt's big input. `ariaSnapshot()` keeps it bounded: (1) **prune** content/wrapper noise from the `mode:'ai'` tree (`pruneAriaSnapshot` in `aria-helpers.ts` — drop `generic`/`paragraph`/`text`/`StaticText`/inline-formatting lines, keep links/buttons/inputs/headings/landmarks/lists/tables; ~25% off a GitHub repo page); (2) over `ARIA_SNAPSHOT_MAX_CHARS` (40 KB ≈ ~10 k tokens — tightened from 100 KB on 2026-05-14 as F2 step 2) re-snapshot scoped to `<main>`; (3) still over → truncate to the top of the tree (line-boundary + a "scroll for more" note). `ARIA_SNAPSHOT_DEPTH=25` is the depth cap. **Typical numbers on Haiku 4.5 (default since 2026-05-15): `~$0.024–0.027` on a 20 k-token tree** — still ~2.5× the goal-#5 `$0.01` target, but the gap is small enough that further input-trimming + a future cheaper model close it. The pre-2026-05-15 sweep R8 said Haiku regressed on long reads; the subsequent prompt fixes (variance, closing-dwell discipline, lingering-dwell for ≥20 s reads) closed that gap — the 2026-05-15 bake-off measured `looks_human all-5` on both Recordly 10 s and Photosynthesis 25 s with Haiku. `LLM_RECON_MODEL=anthropic/claude-sonnet-4.6` is the escape hatch if a future site makes Haiku flap.
-
-Note on goal #5 (wall-clock < 60 s): **site-dependent**. Lighter pages (Wikipedia, static MediaWiki, simple SPAs) land at `~58 s` on Photosynthesis 25 s. Heavy pages (GitHub repo, JS-heavy SPAs that take >20 s to settle) overrun — `goto(github.com/<repo>)` alone is ~22 s. Setup overhead is small (`session.start` is ~1.7 s; the 18 s once attributed to "cloakbrowser launch" was actually GitHub's page load — phase timing in `session.start` (2026-05-15) revealed the misattribution). On heavy pages the 60 s target is fundamentally not reachable without a different recording approach.
-
-Known remaining recon-plan-quality gap: the recon LLM is **not great at picking the right `ref` out of a thousand-line tree**. The click-resolution chain is `resolveAriaRef(ref)` → `resolveByVisibleText(targetText)` (deterministic Playwright role/text lookup; §0038) → `resolveTargetCandidates(targetDescription)` (fuzzy `observe()` fallback) → drop. On a drop AND the tree wasn't truncated, the §0042 reconverge-on-drop fires one more recon call to re-plan without the unfindable targets. Giant pages (Wikipedia featured articles) remain the open case — the tree is too big to navigate one-shot, and on a hard target the rehearsal walk's reconverge LLM sometimes comes back with a click-less plan (the "keep the requested click" instruction sometimes ignored). Per **§0042 v1 contract**: a dropped requested click is **transparent**, not silent, wherever it's dropped (initial resolve / reconverge-on-drop / rehearsal walk's recovery): `intentSatisfaction` reports `unmet`/`partial` naming what couldn't be located ("couldn't locate … (page tree too large to analyze in full)" / "… (the rehearsal walk's recovery couldn't keep this in the plan)"), and that report **is the success path** when the site doesn't expose the content — not a regression. See ADR §0042 + [`docs/findings/2026-05-13-overnight-sweep.md`](./docs/findings/2026-05-13-overnight-sweep.md) for the patterns this covers. `RECON_REHEARSE=false` skips the walk (fast dev iteration); `RECON_RECONVERGE_ON_DROP=false` skips the §0042 retry.
+`output/<date>/<run>/run.json` is the canonical record. `docs/naturalness-catalog.md` tracks every observable "looks human" behavior.
 
 ## Common commands
 
 ```bash
-# Install dependencies + Chromium + ffmpeg
 npm install
 npm run playwright:install
-npx playwright install ffmpeg     # bundled trim binary
-npm run cloakbrowser:install      # ~150 MB stealth Chromium (cached at ~/.cloakbrowser; first-run download is occasionally flaky — retry once if it crashes mid-stream)
+npx playwright install ffmpeg
+npm run cloakbrowser:install    # ~150 MB; first-run download occasionally flaky — retry once
 
-# Type-check (strict, no emit)
-npm run typecheck
-
-# Run the natural-language driven prototype (manual, runs headed by default)
-# Defaults to GitHub Recordly README + the "click 简中, slow scroll" 10s test.
-# The URL goes in the prompt; the LlmUrlResolver picks it (explicit URLs +
-# well-known names + pure intent → search).
-# Override with PROTOTYPE_PROMPT / PROTOTYPE_DURATION_MS env vars.
-npm run prototype:stagehand
-
-# Grade a finished recording.webm against the 5-dimension naturalness rubric.
-# Writes judgment.json next to the video. See ADR §0030.
-npm run judge -- <video-path> "<user-prompt>" --duration-ms 10000
-
-# Self-eval — run the pipeline on one scenario (canonical Recordly by default;
-# EVAL_URL / EVAL_PROMPT / EVAL_DURATION_MS to override), judge the recording,
-# print a structured assessment against docs/goals.md's evaluation criteria +
-# the operator canaries. Bright-line specs (duration ±10% / wall-clock <60s /
-# disk <100MB) hard-fail (exit 1); quality/robustness is flagged as CONCERNS for
-# review (exit 0). Use this after a change to check "did I regress something?"
-# without watching the video. (`npm run regression` is the multi-site version.)
-npm run eval
-
-# Verify the recording pipeline alone (no LLM, no Stagehand)
-npm run smoke:recording
-
-# Boot the HTTP API v1 (default PORT=8787). Concurrent — no JobQueue (§0043).
-#   POST /api/v1/recordings         body: { prompt, durationMs, device?, width?, height?, format?, crf?, audio? }
-#   GET  /api/v1/recordings         list (newest-first)
-#   GET  /api/v1/recordings/:runId
-#   GET  /api/v1/recordings/:runId/video      (only on succeeded; Content-Type follows `format`)
-#   GET  /api/v1/recordings/:runId/run.json   (only on succeeded)
-#   GET  /health                              { ok, runningJobs, queueDepth }
-# audio:true → 501 AUDIO_NOT_IMPLEMENTED (§0043 follow-up sub-project).
-# Service-mode hard-codes headless:true; prototype is headed.
-npm run serve
+npm run typecheck               # tsc --noEmit (strict)
+npm run prototype:stagehand     # manual driver; headed on macOS, headless on Linux
+npm run eval                    # one-scenario canary (bright-line specs + judge); see .claude/skills/run-eval.md
+npm run regression              # multi-site categorical sweep
+npm run smoke:recording         # recording pipeline alone, no LLM
+npm run judge -- <video> "<prompt>" --duration-ms 10000
+npm run serve                   # HTTP API v1; PORT default 8787
 ```
 
 ## Environment
 
-Copy `.env.example` to `.env` and set `OPENROUTER_API_KEY`. Get a key at [openrouter.ai/keys](https://openrouter.ai/keys). See [`docs/decisions.md`](./docs/decisions.md) §0009 for why OpenRouter is the only supported provider.
+`cp .env.example .env`, then `OPENROUTER_API_KEY=sk-or-v1-...` ([openrouter.ai/keys](https://openrouter.ai/keys)). See ADR §0009 for why OpenRouter is the only supported provider.
 
-```bash
-cp .env.example .env
-# OPENROUTER_API_KEY=sk-or-v1-...
-# (optional) LLM_MODEL=google/gemini-2.5-pro    # any OpenRouter model id
-```
-
-Local dev tip — `npm run prototype:stagehand` is visible by default (`PROTOTYPE_HEADLESS=true` for no window). On a multi-monitor macOS setup, `BROWSER_WINDOW_POSITION="x,y"` places the Chromium window on a specific display (no-op when headless or off-macOS). The browser briefly takes keyboard focus when it launches — that's a macOS behavior for any newly-launched GUI app and there's no clean way around it; just click back to your terminal.
-
-## Important context for future iterations
-
-- **macOS-first development, Docker target for production.** Develop locally with `headless: false` to watch Stagehand work; verify Docker parity before considering a feature done.
-- **Architecture B was chosen for V1**: pure headless + post-process cursor overlay. See [`docs/decisions.md`](./docs/decisions.md) §0001.
-- **Coordinate system care**: action-log coordinates are **viewport-relative at the moment of action**, not page-absolute. The synth layer needs `scrollY` at each timestamp to render correctly.
-- **Stagehand provides Playwright's `Page` directly.** When we need primitives Stagehand doesn't expose (custom scroll easing, mouse path control, raw CDP), we fall through to `stagehand.page.*` which is a real Playwright Page. This is allowed inside the Stagehand adapter, not elsewhere.
+Key env knobs (defaults in `src/infra/config.ts`):
+- `LLM_RECON_MODEL` — recon planner (default `anthropic/claude-haiku-4.5`; `sonnet-4.6` escape hatch on flapping sites)
+- `LLM_MODEL` — Stagehand internals
+- `PROTOTYPE_HEADLESS` / `EVAL_HEADLESS` — overrides the platform default (macOS=headed, Linux=headless)
+- `BROWSER_WINDOW_POSITION="x,y"` — multi-monitor macOS dev
 
 ## When updating this project
 
-If you add/change/remove a feature:
-
-1. Update **this file** (`Current state` table, any new commands).
-2. Update **`docs/decisions.md`** if a non-obvious choice was made.
-3. Update **`docs/architecture.md`** if a new layer/port/adapter was introduced.
-4. Update **`docs/glossary.md`** if a new domain term was introduced.
+1. Update **`docs/decisions.md`** if a non-obvious choice is made or revised.
+2. Update **`docs/architecture.md`** if a port/adapter/layer was added.
+3. Update **`docs/glossary.md`** if a new domain term was introduced.
+4. Update **`docs/naturalness-catalog.md`** if a "looks-human" behavior was added or regressed.
+5. Update **this file** only if a *load-bearing* piece changed — not for every feature.
 
 Stale docs are worse than no docs. Touch them in the same commit as the code.
+
+## When picking up an unfamiliar area
+
+- The recon side is the most active surface. `src/adapters/recon/llm-reconnoiterer.ts` (750 lines) + `src/prompts/reconnoiterer.ts` (the system prompt) are where most quality wins land.
+- The page-driver side is `src/adapters/agent/stagehand-session.ts` (1848 lines — large; section comments lay out the cloakbrowser launch, ariaSnapshot, click chain, scroll, etc.).
+- The orchestrator is `src/core/record-job-runner.ts`.
+- Recurring workflows have their own setup under `.claude/`: skills (read-eval canary, recon-prompt iteration), hooks (end-of-session cleanup nudge).

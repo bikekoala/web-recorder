@@ -27,5 +27,11 @@ pnpm-debug.log*
 .vscode/
 .idea/
 
-# Tool runtime artifacts
-.claude/
+# Tool runtime artifacts — keep project-level Claude Code config in version
+# control (hooks/skills/settings are team conventions), but exclude personal
+# overrides + any local-state files the agent writes.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/skills/
+.claude/settings.local.json

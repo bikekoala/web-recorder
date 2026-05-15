@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/stop-reflect.sh",
+        "timeout": 15
+      }
+    ]
+  }
+}

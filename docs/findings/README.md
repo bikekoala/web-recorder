@@ -11,6 +11,10 @@ been overridden.
 
 ## Active (informs current behavior)
 
+- [`2026-05-15-claude-code-large-codebase-analysis.md`](./2026-05-15-claude-code-large-codebase-analysis.md)
+  — analysis of the Anthropic "Claude Code in large codebases" article against
+  this repo. Slimmed CLAUDE.md, added a stop-hook for end-of-session cleanup,
+  added skills + adapter-local CLAUDE.md. The proposals + their rationale.
 - [`2026-05-15-humanize-bake-off.md`](./2026-05-15-humanize-bake-off.md) — A/B
   vs cloakbrowser's `humanize` wrapper. 12-cell judge bake-off shows their
   full stack regresses pacing+intentExecution (typing blows the per-step
