@@ -106,6 +106,7 @@ describe('LlmVisionJudge', () => {
   it('throws RecordingJudgeError on HTTP non-2xx', async () => {
     const judge = new LlmVisionJudge({
       apiKey: 'k',
+      maxAttempts: 1,
       fetcher: async () => buildResponse({ error: 'no video support' }, false),
     });
     await expect(
@@ -116,6 +117,7 @@ describe('LlmVisionJudge', () => {
   it('throws when the LLM returns invalid JSON content', async () => {
     const judge = new LlmVisionJudge({
       apiKey: 'k',
+      maxAttempts: 1,
       fetcher: async () =>
         buildResponse({
           choices: [{ message: { content: 'not json at all' } }],
@@ -129,6 +131,7 @@ describe('LlmVisionJudge', () => {
   it('throws when the LLM JSON does not match the schema (missing dimension)', async () => {
     const judge = new LlmVisionJudge({
       apiKey: 'k',
+      maxAttempts: 1,
       fetcher: async () =>
         buildResponse({
           choices: [
@@ -158,6 +161,7 @@ describe('LlmVisionJudge', () => {
   it('rejects invalid verdict values via schema', async () => {
     const judge = new LlmVisionJudge({
       apiKey: 'k',
+      maxAttempts: 1,
       fetcher: async () =>
         buildResponse({
           choices: [
@@ -187,6 +191,7 @@ describe('LlmVisionJudge', () => {
   it('strips ```json code fences before parsing', async () => {
     const judge = new LlmVisionJudge({
       apiKey: 'k',
+      maxAttempts: 1,
       fetcher: async () =>
         buildResponse({
           choices: [
@@ -213,5 +218,75 @@ describe('LlmVisionJudge', () => {
     });
     const report = await judge.judge({ videoPath, userPrompt: 'p', durationMs: 1000 });
     expect(report.judgment.verdict).toBe('looks_human');
+  });
+
+  // ── retry behaviour (2026-05-19: Gemini ~67% transient fail on long video)
+  it('retries an empty-content response and succeeds on a later attempt', async () => {
+    let calls = 0;
+    const judge = new LlmVisionJudge({
+      apiKey: 'k',
+      maxAttempts: 3,
+      sleep: async () => {}, // no real backoff in tests
+      fetcher: async () => {
+        calls += 1;
+        // First two attempts: empty content (the Gemini long-video failure
+        // mode). Third: a valid judgment.
+        if (calls < 3) return buildResponse({ choices: [{ message: { content: '' }, finish_reason: 'stop' }] });
+        return happyPathResponse();
+      },
+    });
+    const report = await judge.judge({ videoPath, userPrompt: 'p', durationMs: 1000 });
+    expect(calls).toBe(3);
+    expect(report.judgment.verdict).toBe('probably_human');
+  });
+
+  it('retries a 5xx then succeeds; does NOT retry a 4xx (hard request error)', async () => {
+    // 5xx → retry → success.
+    let n = 0;
+    const retrying = new LlmVisionJudge({
+      apiKey: 'k',
+      maxAttempts: 2,
+      sleep: async () => {},
+      fetcher: async () => {
+        n += 1;
+        return n === 1 ? buildResponse({ error: 'upstream' }, false) /* 500 */ : happyPathResponse();
+      },
+    });
+    const ok = await retrying.judge({ videoPath, userPrompt: 'p', durationMs: 1000 });
+    expect(n).toBe(2);
+    expect(ok.judgment.verdict).toBe('probably_human');
+
+    // 400 → no retry (fetcher called exactly once).
+    let m = 0;
+    const hard = new LlmVisionJudge({
+      apiKey: 'k',
+      maxAttempts: 3,
+      sleep: async () => {},
+      fetcher: async () => {
+        m += 1;
+        return new Response(JSON.stringify({ error: 'bad request' }), { status: 400 });
+      },
+    });
+    await expect(
+      hard.judge({ videoPath, userPrompt: 'p', durationMs: 1000 }),
+    ).rejects.toBeInstanceOf(RecordingJudgeError);
+    expect(m).toBe(1);
+  });
+
+  it('throws after exhausting all attempts on a persistently transient failure', async () => {
+    let calls = 0;
+    const judge = new LlmVisionJudge({
+      apiKey: 'k',
+      maxAttempts: 3,
+      sleep: async () => {},
+      fetcher: async () => {
+        calls += 1;
+        return buildResponse({ choices: [{ message: { content: '' }, finish_reason: 'length' }] });
+      },
+    });
+    await expect(
+      judge.judge({ videoPath, userPrompt: 'p', durationMs: 1000 }),
+    ).rejects.toBeInstanceOf(RecordingJudgeError);
+    expect(calls).toBe(3); // all attempts spent
   });
 });

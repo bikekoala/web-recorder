@@ -35,8 +35,16 @@ import type { IRecordingJudge, JudgeInput } from '../../ports/recording-judge.js
  * that itself succeeded).
  */
 export class RecordingJudgeError extends DomainError {
-  constructor(message: string, cause?: unknown) {
+  /**
+   * True for transient failure classes the judge retry loop should re-attempt
+   * (network, 5xx, 429, empty content, JSON-parse, schema). False for hard
+   * request errors (4xx≠429) where a retry can't help. Defaults to false so
+   * an untagged throw is treated conservatively as non-retryable.
+   */
+  readonly retryable: boolean;
+  constructor(message: string, cause?: unknown, opts: { retryable?: boolean } = {}) {
     super('RECORDING_JUDGE_FAILED', message, cause);
+    this.retryable = opts.retryable ?? false;
   }
 }
 
@@ -51,6 +59,10 @@ interface LlmVisionJudgeOpts {
    * Inject a fetch (test seam). Defaults to globalThis.fetch.
    */
   fetcher?: typeof fetch;
+  /** Override the retry attempt cap (test seam). Defaults to config.judgeMaxAttempts. */
+  maxAttempts?: number;
+  /** Override the inter-attempt backoff sleep (test seam — pass a no-op for fast tests). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class LlmVisionJudge implements IRecordingJudge {
@@ -58,6 +70,8 @@ export class LlmVisionJudge implements IRecordingJudge {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly fetcher: typeof fetch;
+  private readonly maxAttempts: number;
+  private readonly sleep: (ms: number) => Promise<void>;
   private readonly logger = rootLogger.child({ component: 'LlmVisionJudge' });
 
   constructor(opts: LlmVisionJudgeOpts = {}) {
@@ -65,6 +79,8 @@ export class LlmVisionJudge implements IRecordingJudge {
     this.baseUrl = opts.baseUrl ?? config.openrouterBaseUrl;
     this.apiKey = opts.apiKey ?? config.openrouterApiKey;
     this.fetcher = opts.fetcher ?? globalThis.fetch;
+    this.maxAttempts = opts.maxAttempts ?? config.judgeMaxAttempts;
+    this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   }
 
   get modelId(): string {
@@ -72,6 +88,38 @@ export class LlmVisionJudge implements IRecordingJudge {
   }
 
   async judge(input: JudgeInput): Promise<RecordingJudgeReport> {
+    // Video-capable models (Gemini 3.1 Pro) are flaky on longer videos —
+    // empty content / truncated JSON happen on ~2/3 of 25 s recordings
+    // (2026-05-19 sweep) and almost always clear on a re-request. Retry
+    // transient classes; surface a hard request error (4xx≠429) at once.
+    const maxAttempts = this.maxAttempts;
+    let lastErr: RecordingJudgeError | undefined;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.judgeOnce(input, attempt, maxAttempts);
+      } catch (err) {
+        if (!(err instanceof RecordingJudgeError) || !err.retryable || attempt === maxAttempts) {
+          throw err;
+        }
+        lastErr = err;
+        const backoffMs = Math.min(8000, 1000 * 2 ** (attempt - 1));
+        this.logger.warn(
+          { attempt, maxAttempts, backoffMs, reason: err.message.slice(0, 160) },
+          'judge attempt failed (transient) — retrying after backoff',
+        );
+        await this.sleep(backoffMs);
+      }
+    }
+    // Unreachable (the loop either returns or throws), but satisfies the
+    // type checker and is a defensive backstop.
+    throw lastErr ?? new RecordingJudgeError('judge exhausted all attempts');
+  }
+
+  private async judgeOnce(
+    input: JudgeInput,
+    attempt: number,
+    maxAttempts: number,
+  ): Promise<RecordingJudgeReport> {
     const t0 = Date.now();
 
     // Read the video file. We base64-encode inline; for our typical
@@ -113,7 +161,7 @@ export class LlmVisionJudge implements IRecordingJudge {
     };
 
     this.logger.info(
-      { model: this.model, videoBytes: videoBytes.length, mime },
+      { model: this.model, videoBytes: videoBytes.length, mime, attempt, maxAttempts },
       'judge call starting',
     );
 
@@ -128,13 +176,19 @@ export class LlmVisionJudge implements IRecordingJudge {
         body: JSON.stringify(body),
       });
     } catch (err) {
-      throw new RecordingJudgeError('judge HTTP call failed (network)', err);
+      // Network blip — transient.
+      throw new RecordingJudgeError('judge HTTP call failed (network)', err, { retryable: true });
     }
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => '<unreadable>');
+      // 5xx + 429 (rate limit) are transient; other 4xx is a hard request
+      // error (bad body / unsupported model / auth) — retrying won't help.
+      const retryable = resp.status >= 500 || resp.status === 429;
       throw new RecordingJudgeError(
         `judge HTTP ${resp.status}: ${text.slice(0, 400)}`,
+        undefined,
+        { retryable },
       );
     }
 
@@ -142,28 +196,43 @@ export class LlmVisionJudge implements IRecordingJudge {
     try {
       completion = (await resp.json()) as ChatCompletionLike;
     } catch (err) {
-      throw new RecordingJudgeError('judge response was not JSON', err);
+      throw new RecordingJudgeError('judge response was not JSON', err, { retryable: true });
     }
 
-    const rawContent = completion.choices?.[0]?.message?.content ?? '';
+    const choice = completion.choices?.[0];
+    const rawContent = choice?.message?.content ?? '';
     if (!rawContent) {
-      throw new RecordingJudgeError('judge returned empty content');
+      // Gemini commonly returns empty content with a finish_reason on long
+      // videos (safety filter / processing timeout / silent drop). Transient
+      // — a re-request usually returns a full judgment. Surface finish_reason
+      // for triage.
+      throw new RecordingJudgeError(
+        `judge returned empty content (finish_reason=${choice?.finish_reason ?? 'unknown'})`,
+        undefined,
+        { retryable: true },
+      );
     }
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(stripCodeFence(rawContent));
     } catch (err) {
+      // Truncated / malformed JSON — usually a mid-stream cutoff. Transient.
       throw new RecordingJudgeError(
         `judge JSON parse failed: ${rawContent.slice(0, 200)}`,
         err,
+        { retryable: true },
       );
     }
 
     const validation = RecordingJudgmentSchema.safeParse(parsed);
     if (!validation.success) {
+      // Model returned well-formed JSON of the wrong shape — re-rolling the
+      // sample often yields a conformant one (temperature 0.1, not 0).
       throw new RecordingJudgeError(
         `judge output failed schema: ${validation.error.message.slice(0, 400)}`,
+        undefined,
+        { retryable: true },
       );
     }
     const judgment: RecordingJudgment = validation.data;
@@ -192,6 +261,7 @@ export class LlmVisionJudge implements IRecordingJudge {
 interface ChatCompletionLike {
   choices?: Array<{
     message?: { content?: string };
+    finish_reason?: string;
   }>;
 }
 

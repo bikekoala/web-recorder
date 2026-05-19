@@ -188,6 +188,19 @@ const Schema = z.object({
   llmJudgeModel: z.string().min(1).default('google/gemini-3.1-pro-preview'),
 
   /**
+   * How many times to attempt the judge LLM call before giving up. The
+   * video-capable models (Gemini 3.1 Pro) are flaky on longer videos —
+   * the 2026-05-19 stability sweep measured ~67% empty-content / parse
+   * failures on 25 s Wiki recordings, all transient (a re-request usually
+   * succeeds). Retried failure classes: network, 5xx, 429, empty content,
+   * JSON-parse, schema. 4xx (other than 429) is a hard request error and
+   * is NOT retried. Total failure still throws RecordingJudgeError so the
+   * caller's "skip the assertion, don't red-fail" contract is preserved.
+   * Override with JUDGE_MAX_ATTEMPTS.
+   */
+  judgeMaxAttempts: z.coerce.number().int().min(1).max(6).default(3),
+
+  /**
    * Recording window hard cap as multiple of `durationMs`. The
    * PerformanceDirector forcibly stops playback if the recording exceeds
    * this.
@@ -349,6 +362,7 @@ const raw = {
   blockerDismissMaxMs: process.env.BLOCKER_DISMISS_MAX_MS,
   llmBlockerModel: process.env.LLM_BLOCKER_MODEL,
   llmJudgeModel: process.env.LLM_JUDGE_MODEL,
+  judgeMaxAttempts: process.env.JUDGE_MAX_ATTEMPTS,
   directorHardBudgetMult: process.env.DIRECTOR_HARD_BUDGET_MULT
     ? Number(process.env.DIRECTOR_HARD_BUDGET_MULT)
     : undefined,
